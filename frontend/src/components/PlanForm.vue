@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, reactive } from 'vue'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
+import { computed, reactive } from "vue";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import {
   Card,
   CardContent,
@@ -9,74 +9,80 @@ import {
   CardFooter,
   CardHeader,
   CardTitle,
-} from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Select } from '@/components/ui/select'
-import { Textarea } from '@/components/ui/textarea'
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import {
   INTEREST_PRESETS,
   LEVEL_OPTIONS,
   type Level,
   type PlanRequest,
-} from '@/types/agent'
+} from "@/types/agent";
 
 /**
  * PlanForm：学习需求输入表单。
  * 字段：学习目标 / 当前水平 / 每周可用小时 / 期望周数 / 偏好方向（多选标签）/ 已有基础。
  * 校验通过后向上抛出 submit 事件，由 App.vue 调用 useAgent 发起请求。
  */
-const props = defineProps<{ loading?: boolean }>()
-const emit = defineEmits<{ (e: 'submit', payload: PlanRequest): void }>()
+const props = defineProps<{ loading?: boolean }>();
+const emit = defineEmits<{ (e: "submit", payload: PlanRequest): void }>();
 
 /** 表单数据（与 PlanRequest 字段一一对应） */
 const form = reactive({
-  goal: '',
-  level: 'beginner' as Level,
+  goal: "",
+  level: "beginner" as Level,
   weeklyHours: 10,
   weeks: 12,
   interests: [] as string[],
-  background: '',
-})
+  background: "",
+});
 
 /** 行内校验错误 */
-const errors = reactive({ goal: '', weeklyHours: '', weeks: '' })
+const errors = reactive({ goal: "", weeklyHours: "", weeks: "" });
 
 /** 偏好方向标签是否可提交（仅用于按钮禁用态展示） */
-const canSubmit = computed(() => !props.loading)
+const canSubmit = computed(() => !props.loading);
 
 /** 切换偏好方向标签的选中状态 */
 function toggleInterest(tag: string) {
-  const idx = form.interests.indexOf(tag)
+  const idx = form.interests.indexOf(tag);
   if (idx >= 0) {
-    form.interests.splice(idx, 1)
+    form.interests.splice(idx, 1);
   } else {
-    form.interests.push(tag)
+    form.interests.push(tag);
   }
 }
 
 /** 行内校验：目标长度 / 小时数 / 周数 */
 function validate(): boolean {
-  errors.goal = form.goal.trim().length < 4 ? '请至少用 4 个字描述你的学习目标' : ''
-  const hours = Number(form.weeklyHours)
+  errors.goal =
+    form.goal.trim().length < 4 ? "请至少用 4 个字描述你的学习目标" : "";
+  const hours = Number(form.weeklyHours);
   errors.weeklyHours =
-    !Number.isFinite(hours) || hours < 1 || hours > 80 ? '请填写 1-80 之间的数字' : ''
-  const weeks = Number(form.weeks)
-  errors.weeks = !Number.isFinite(weeks) || weeks < 1 || weeks > 52 ? '请填写 1-52 之间的整数' : ''
-  return !errors.goal && !errors.weeklyHours && !errors.weeks
+    !Number.isFinite(hours) || hours < 1 || hours > 80
+      ? "请填写 1-80 之间的数字"
+      : "";
+  const weeks = Number(form.weeks);
+  errors.weeks =
+    !Number.isFinite(weeks) || weeks < 1 || weeks > 52
+      ? "请填写 1-52 之间的整数"
+      : "";
+  return !errors.goal && !errors.weeklyHours && !errors.weeks;
 }
 
 /** 提交：校验通过后组装 PlanRequest 抛给父组件 */
 function onSubmit() {
-  if (props.loading || !validate()) return
-  emit('submit', {
+  if (props.loading || !validate()) return;
+  emit("submit", {
     goal: form.goal.trim(),
     level: form.level,
     weeklyHours: Math.round(Number(form.weeklyHours)),
     weeks: Math.round(Number(form.weeks)),
     interests: [...form.interests],
     background: form.background.trim(),
-  })
+  });
 }
 </script>
 
@@ -85,7 +91,8 @@ function onSubmit() {
     <CardHeader>
       <CardTitle>制定我的学习计划</CardTitle>
       <CardDescription>
-        填写学习需求，Agent 将生成"理论 + 实操 + 作业 + 项目"四位一体的分阶段计划。
+        填写学习需求，Agent 将生成"理论 + 实操 + 作业 +
+        项目"四位一体的分阶段计划。
       </CardDescription>
     </CardHeader>
 
@@ -99,13 +106,20 @@ function onSubmit() {
           placeholder="例如：三个月内成为能独立开发 Web 应用的后端工程师"
           :disabled="props.loading"
         />
-        <p v-if="errors.goal" class="text-xs text-destructive">{{ errors.goal }}</p>
+        <p v-if="errors.goal" class="text-xs text-destructive">
+          {{ errors.goal }}
+        </p>
       </div>
 
       <!-- 当前水平 -->
       <div class="space-y-1.5">
         <Label for="level">当前水平</Label>
-        <Select id="level" v-model="form.level" :options="LEVEL_OPTIONS" :disabled="props.loading" />
+        <Select
+          id="level"
+          v-model="form.level"
+          :options="LEVEL_OPTIONS"
+          :disabled="props.loading"
+        />
       </div>
 
       <!-- 每周可用小时 / 期望周数 -->
@@ -134,7 +148,9 @@ function onSubmit() {
             :max="52"
             :disabled="props.loading"
           />
-          <p v-if="errors.weeks" class="text-xs text-destructive">{{ errors.weeks }}</p>
+          <p v-if="errors.weeks" class="text-xs text-destructive">
+            {{ errors.weeks }}
+          </p>
         </div>
       </div>
 

@@ -162,10 +162,7 @@ pub enum AgentError {
 
 impl Serialize for AgentError {
     /// 序列化为 { code, message, hint }：message 给技术信息，hint 给用户可操作的提示
-    fn serialize<S: serde::Serializer>(
-        &self,
-        serializer: S,
-    ) -> Result<S::Ok, S::Error> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
 
         let (code, message, hint) = match self {
@@ -245,10 +242,6 @@ pub async fn generate_plan(request: PlanRequest) -> Result<PlanResponse, AgentEr
 #[tauri::command]
 pub async fn ping_agent() -> Result<bool, AgentError> {
     let url = format!("{}/health", agent_service_url().trim_end_matches('/'));
-    let response = http_client()
-        .get(&url)
-        .timeout(PING_TIMEOUT)
-        .send()
-        .await?;
+    let response = http_client().get(&url).timeout(PING_TIMEOUT).send().await?;
     Ok(response.status().is_success())
 }

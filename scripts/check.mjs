@@ -46,9 +46,9 @@ step("Python 语法检查（compileall）", "python", [
   "agent-service/app",
 ]);
 
-// 2. lint：uvx 临时运行 ruff（uv 是本仓库钦点的 Python 工具链，无需预装 ruff）
+// 2. lint：uvx 临时运行 ruff（uv 钦点工具链，无需预装；@锁定版本保证检查结果可复现）
 step("Python lint（ruff check）", "uvx", [
-  "ruff",
+  "ruff@0.16.9",
   "check",
   "agent-service/app",
   "scripts/check_prompts.py",

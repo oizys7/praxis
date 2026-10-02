@@ -1,16 +1,16 @@
 <script setup lang="ts">
-import type { HTMLAttributes } from 'vue'
-import { cn } from '@/lib/utils'
+import type { HTMLAttributes } from "vue";
+import { cn } from "@/lib/utils";
 
 /** Textarea 组件（shadcn-vue 风格） */
 const props = defineProps<{
-  class?: HTMLAttributes['class']
-  placeholder?: string
-  disabled?: boolean
-  rows?: number
-}>()
+  class?: HTMLAttributes["class"];
+  placeholder?: string;
+  disabled?: boolean;
+  rows?: number;
+}>();
 
-const model = defineModel<string>({ default: '' })
+const model = defineModel<string>({ default: "" });
 </script>
 
 <template>

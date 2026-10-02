@@ -72,13 +72,13 @@ scripts/               仓库级脚本（dev / check / format / build / tauri �
 
 ## 常用命令
 
-| 命令 | 作用 |
-| --- | --- |
-| `npm run dev` | 一键启动开发环境（uvicorn + tauri dev，tauri 会自动带起 Vite） |
-| `npm run check` | 自检：Python 语法编译 + 提示词 YAML 校验 + vue-tsc 类型检查 |
-| `npm run format` | Prettier 格式化（前端 / 脚本 / Markdown） |
-| `npm run build` | 生产构建（前端构建 + tauri build） |
-| `npm run tauri -- <cmd>` | 任意 tauri 子命令（icon / dev / build），**必须走这个入口** |
+| 命令                     | 作用                                                           |
+| ------------------------ | -------------------------------------------------------------- |
+| `npm run dev`            | 一键启动开发环境（uvicorn + tauri dev，tauri 会自动带起 Vite） |
+| `npm run check`          | 自检：Python 语法编译 + 提示词 YAML 校验 + vue-tsc 类型检查    |
+| `npm run format`         | Prettier 格式化（前端 / 脚本 / Markdown）                      |
+| `npm run build`          | 生产构建（前端构建 + tauri build）                             |
+| `npm run tauri -- <cmd>` | 任意 tauri 子命令（icon / dev / build），**必须走这个入口**    |
 
 ## 提交前验证（缺一不可）
 

@@ -31,9 +31,9 @@ function step(title, command, args, opts = {}) {
   console.log(`[format] ✓ ${title}`);
 }
 
-// 1. Python：uvx 临时运行 ruff（无需预装，uv 自动缓存）
+// 1. Python：uvx 临时运行 ruff（无需预装，uv 自动缓存；@锁定版本保证格式化可复现）
 step("Python 格式化（ruff format）", "uvx", [
-  "ruff",
+  "ruff@0.16.9",
   "format",
   "agent-service",
   "scripts/check_prompts.py",

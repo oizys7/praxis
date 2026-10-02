@@ -60,10 +60,6 @@
   body {
     @apply bg-background text-foreground antialiased;
     font-family:
-      'Segoe UI',
-      'PingFang SC',
-      'Microsoft YaHei',
-      system-ui,
-      sans-serif;
+      "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   }
 }

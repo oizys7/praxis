@@ -146,10 +146,10 @@ Praxis/
 ### 前端 → Rust（Tauri IPC）
 
 ```ts
-import { invoke } from '@tauri-apps/api/core'
+import { invoke } from "@tauri-apps/api/core";
 
-const response = await invoke<PlanResponse>('generate_plan', { request })
-const online = await invoke<boolean>('ping_agent')
+const response = await invoke<PlanResponse>("generate_plan", { request });
+const online = await invoke<boolean>("ping_agent");
 ```
 
 command 抛错时前端捕获到 `{ code, message, hint }`：`code ∈ connection | timeout | http | service | internal`，`hint` 是面向用户的可操作提示。
@@ -164,17 +164,17 @@ command 抛错时前端捕获到 `{ code, message, hint }`：`code ∈ connectio
 
 复制 `agent-service/.env.example` 为 `agent-service/.env` 后按需填写：
 
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `LLM_PROVIDER` | `openai` | `openai` 或 `anthropic` |
-| `OPENAI_API_KEY` | 空 | OpenAI API Key（provider=openai 时必填） |
-| `OPENAI_MODEL` | `gpt-4o-mini` | 模型名 |
-| `ANTHROPIC_API_KEY` | 空 | Anthropic API Key（provider=anthropic 时必填） |
-| `ANTHROPIC_MODEL` | `claude-3-5-sonnet-latest` | 模型名 |
-| `AGENT_SERVICE_HOST` | `127.0.0.1` | FastAPI 监听地址 |
-| `AGENT_SERVICE_PORT` | `8000` | FastAPI 监听端口 |
-| `AGENT_SERVICE_URL` | `http://127.0.0.1:8000` | Rust 端请求的 Agent 服务地址（进程环境变量） |
-| `PRAXIS_ALLOW_MOCK_LLM` | `false` | **离线演示模式**：不调用 LLM，返回确定性 Mock 计划 |
+| 变量                    | 默认值                     | 说明                                               |
+| ----------------------- | -------------------------- | -------------------------------------------------- |
+| `LLM_PROVIDER`          | `openai`                   | `openai` 或 `anthropic`                            |
+| `OPENAI_API_KEY`        | 空                         | OpenAI API Key（provider=openai 时必填）           |
+| `OPENAI_MODEL`          | `gpt-4o-mini`              | 模型名                                             |
+| `ANTHROPIC_API_KEY`     | 空                         | Anthropic API Key（provider=anthropic 时必填）     |
+| `ANTHROPIC_MODEL`       | `claude-3-5-sonnet-latest` | 模型名                                             |
+| `AGENT_SERVICE_HOST`    | `127.0.0.1`                | FastAPI 监听地址                                   |
+| `AGENT_SERVICE_PORT`    | `8000`                     | FastAPI 监听端口                                   |
+| `AGENT_SERVICE_URL`     | `http://127.0.0.1:8000`    | Rust 端请求的 Agent 服务地址（进程环境变量）       |
+| `PRAXIS_ALLOW_MOCK_LLM` | `false`                    | **离线演示模式**：不调用 LLM，返回确定性 Mock 计划 |
 
 ## 安装步骤
 
@@ -231,12 +231,12 @@ cd frontend && npm run dev      # 浏览器打开 http://localhost:5173
 
 ## 常用脚本（仓库根目录）
 
-| 命令 | 作用 |
-| --- | --- |
-| `npm run dev` | 一键启动开发环境（Python 服务 + Tauri） |
-| `npm run check` | 三端自检：Python（语法 + ruff lint）→ YAML → Rust（check + clippy）→ 前端（vue-tsc） |
-| `npm run format` | 三端格式化：ruff（Python）+ cargo fmt（Rust）+ Prettier（前端 / 脚本 / Markdown） |
-| `npm run build` | 三端构建：Python 健全性 → 前端构建 → Tauri 打包（含 Rust release 编译） |
+| 命令             | 作用                                                                                 |
+| ---------------- | ------------------------------------------------------------------------------------ |
+| `npm run dev`    | 一键启动开发环境（Python 服务 + Tauri）                                              |
+| `npm run check`  | 三端自检：Python（语法 + ruff lint）→ YAML → Rust（check + clippy）→ 前端（vue-tsc） |
+| `npm run format` | 三端格式化：ruff（Python）+ cargo fmt（Rust）+ Prettier（前端 / 脚本 / Markdown）    |
+| `npm run build`  | 三端构建：Python 健全性 → 前端构建 → Tauri 打包（含 Rust release 编译）              |
 
 ## 打包发布
 

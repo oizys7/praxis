@@ -1,36 +1,36 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
-import { useAgent } from '@/composables/useAgent'
-import { Badge } from '@/components/ui/badge'
-import { Button } from '@/components/ui/button'
-import { Card, CardContent } from '@/components/ui/card'
-import ClarificationPanel from '@/components/ClarificationPanel.vue'
-import PlanForm from '@/components/PlanForm.vue'
-import PlanResult from '@/components/PlanResult.vue'
-import type { PlanRequest } from '@/types/agent'
+import { onMounted, ref } from "vue";
+import { useAgent } from "@/composables/useAgent";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import ClarificationPanel from "@/components/ClarificationPanel.vue";
+import PlanForm from "@/components/PlanForm.vue";
+import PlanResult from "@/components/PlanResult.vue";
+import type { PlanRequest } from "@/types/agent";
 
 /**
  * App：页面骨架。
  * 左侧 PlanForm（输入）｜右侧结果区（加载中 / 错误 / 澄清问题 / 计划结果）。
  * 启动时通过 ping_agent 探测 Python 服务状态并展示徽标。
  */
-const { loading, error, result, generatePlan, pingAgent } = useAgent()
+const { loading, error, result, generatePlan, pingAgent } = useAgent();
 
 /** Agent 服务在线状态：null = 检测中 */
-const agentOnline = ref<boolean | null>(null)
+const agentOnline = ref<boolean | null>(null);
 
 onMounted(async () => {
-  agentOnline.value = await pingAgent()
-})
+  agentOnline.value = await pingAgent();
+});
 
 /** 表单提交 → 调用 Tauri command（Rust → Python） */
 function onSubmit(request: PlanRequest) {
-  void generatePlan(request)
+  void generatePlan(request);
 }
 
 /** 重试：清空错误后由用户重新提交 */
 function dismissError() {
-  error.value = null
+  error.value = null;
 }
 </script>
 
@@ -38,7 +38,9 @@ function dismissError() {
   <div class="min-h-screen bg-gradient-to-b from-background to-muted/40">
     <!-- 顶部栏 -->
     <header class="sticky top-0 z-10 border-b bg-background/80 backdrop-blur">
-      <div class="mx-auto flex max-w-6xl items-center justify-between px-6 py-3.5">
+      <div
+        class="mx-auto flex max-w-6xl items-center justify-between px-6 py-3.5"
+      >
         <div class="flex items-center gap-3">
           <div
             class="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-base font-black text-primary-foreground"
@@ -46,29 +48,43 @@ function dismissError() {
             P
           </div>
           <div>
-            <h1 class="text-base font-bold leading-tight">Praxis · 学习路线规划 Agent</h1>
-            <p class="text-xs text-muted-foreground">理论 + 实操 + 作业 + 项目，可执行可验收</p>
+            <h1 class="text-base font-bold leading-tight">
+              Praxis · 学习路线规划 Agent
+            </h1>
+            <p class="text-xs text-muted-foreground">
+              理论 + 实操 + 作业 + 项目，可执行可验收
+            </p>
           </div>
         </div>
         <Badge
           :variant="
-            agentOnline === null ? 'secondary' : agentOnline ? 'success' : 'destructive'
+            agentOnline === null
+              ? 'secondary'
+              : agentOnline
+                ? 'success'
+                : 'destructive'
           "
         >
           <span class="mr-1">●</span>
-          Agent 服务{{ agentOnline === null ? '检测中…' : agentOnline ? '在线' : '离线' }}
+          Agent 服务{{
+            agentOnline === null ? "检测中…" : agentOnline ? "在线" : "离线"
+          }}
         </Badge>
       </div>
     </header>
 
     <!-- 主体：左表单 / 右结果 -->
-    <main class="mx-auto grid max-w-6xl items-start gap-6 px-6 py-8 lg:grid-cols-[400px,1fr]">
+    <main
+      class="mx-auto grid max-w-6xl items-start gap-6 px-6 py-8 lg:grid-cols-[400px,1fr]"
+    >
       <PlanForm :loading="loading" @submit="onSubmit" />
 
       <section class="min-w-0 space-y-4">
         <!-- 加载中 -->
         <Card v-if="loading" class="animate-fade-in-up">
-          <CardContent class="flex flex-col items-center gap-4 py-14 text-center">
+          <CardContent
+            class="flex flex-col items-center gap-4 py-14 text-center"
+          >
             <div
               class="h-10 w-10 animate-spin rounded-full border-2 border-primary border-t-transparent"
             />
@@ -82,17 +98,24 @@ function dismissError() {
         </Card>
 
         <!-- 错误 -->
-        <Card v-else-if="error" class="animate-fade-in-up border-destructive/40">
+        <Card
+          v-else-if="error"
+          class="animate-fade-in-up border-destructive/40"
+        >
           <CardContent class="space-y-3 py-8 text-center">
             <div class="text-3xl">⚠️</div>
             <div>
-              <p class="font-semibold text-destructive">请求失败（{{ error.code }}）</p>
-              <p class="mt-1 break-all text-sm text-muted-foreground">{{ error.message }}</p>
-              <p v-if="error.hint" class="mt-2 text-sm">
-                💡 {{ error.hint }}
+              <p class="font-semibold text-destructive">
+                请求失败（{{ error.code }}）
               </p>
+              <p class="mt-1 break-all text-sm text-muted-foreground">
+                {{ error.message }}
+              </p>
+              <p v-if="error.hint" class="mt-2 text-sm">💡 {{ error.hint }}</p>
             </div>
-            <Button variant="outline" size="sm" @click="dismissError">我知道了</Button>
+            <Button variant="outline" size="sm" @click="dismissError"
+              >我知道了</Button
+            >
           </CardContent>
         </Card>
 
@@ -107,7 +130,9 @@ function dismissError() {
 
         <!-- 空态 -->
         <Card v-else class="border-dashed">
-          <CardContent class="flex flex-col items-center gap-2 py-16 text-center">
+          <CardContent
+            class="flex flex-col items-center gap-2 py-16 text-center"
+          >
             <div class="text-4xl">🗺️</div>
             <p class="font-medium">你的学习路线图将在这里出现</p>
             <p class="max-w-sm text-sm text-muted-foreground">

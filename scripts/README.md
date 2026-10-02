@@ -30,7 +30,7 @@
 三端依次执行六步，任一步失败即以非零码退出：
 
 1. `python -m compileall -q agent-service/app`（Python 语法）
-2. `uvx ruff check agent-service/app scripts/check_prompts.py`（Python lint，uvx 临时运行无需预装）
+2. `uvx ruff@0.16.9 check agent-service/app scripts/check_prompts.py`（Python lint，uvx 临时运行无需预装，版本锁定保证结果可复现）
 3. `python scripts/check_prompts.py`（YAML 可解析，强制 UTF-8）
 4. `cargo check`（Rust 编译检查，src-tauri/）
 5. `cargo clippy`（Rust lint）
@@ -40,7 +40,7 @@
 
 三端依次格式化：
 
-1. `uvx ruff format agent-service scripts/check_prompts.py`（Python）
+1. `uvx ruff@0.16.9 format agent-service scripts/check_prompts.py`（Python，版本锁定保证格式化可复现）
 2. `cargo fmt`（Rust，rustfmt 默认风格）
 3. Prettier：`frontend/src`、前端配置、`scripts/*.mjs`、根目录 `*.md`
 
