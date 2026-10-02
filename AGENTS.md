@@ -82,10 +82,9 @@ scripts/               仓库级脚本（dev / check / format / build / tauri �
 
 ## 提交前验证（缺一不可）
 
-1. `npm run check` 全绿
-2. 改了 Rust：`cd src-tauri && cargo check && cargo clippy`，零警告
-3. 改了 Python：`cd agent-service && uv run python -c "import app.main"` 烟测导入
-4. 警告也要清零：防御性保留的代码用 `#[allow(dead_code)]` + 注释说明意图，而不是放任警告
+1. `npm run check` 全绿（三端已内置：Python 语法 + ruff lint、Rust cargo check/clippy、前端 vue-tsc）
+2. 改了 Python 运行时：`cd agent-service && uv run python -c "import app.main"` 烟测导入
+3. 警告也要清零：防御性保留的代码用 `#[allow(dead_code)]` + 注释说明意图，而不是放任警告
 
 ## 已知陷阱
 

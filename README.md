@@ -234,9 +234,9 @@ cd frontend && npm run dev      # 浏览器打开 http://localhost:5173
 | 命令 | 作用 |
 | --- | --- |
 | `npm run dev` | 一键启动开发环境（Python 服务 + Tauri） |
-| `npm run check` | 自检：Python 语法 → 提示词 YAML → 前端类型（vue-tsc） |
-| `npm run format` | Prettier 格式化（前端 / 脚本 / Markdown） |
-| `npm run build` | 生产构建：前端构建 + Tauri 打包 |
+| `npm run check` | 三端自检：Python（语法 + ruff lint）→ YAML → Rust（check + clippy）→ 前端（vue-tsc） |
+| `npm run format` | 三端格式化：ruff（Python）+ cargo fmt（Rust）+ Prettier（前端 / 脚本 / Markdown） |
+| `npm run build` | 三端构建：Python 健全性 → 前端构建 → Tauri 打包（含 Rust release 编译） |
 
 ## 打包发布
 
