@@ -1,0 +1,30 @@
+[package]
+name = "praxis"
+version = "0.1.0"
+description = "Praxis - 学习路线规划 Agent 桌面应用"
+license = "MIT"
+edition = "2021"
+
+# Tauri 2 构建脚本依赖：负责在编译期处理 tauri.conf.json、生成上下文等
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Tauri 2 核心库（桌面端无需额外 feature）
+tauri = { version = "2", features = [] }
+# 序列化：Rust 结构体 <-> JSON（与 Python/前端约定 camelCase）
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# HTTP 客户端：Rust -> Python FastAPI 服务
+# 本地通信走 http://127.0.0.1，不强制 TLS；保留默认 TLS 以兼容远程 Agent 服务
+reqwest = { version = "0.12", features = ["json"] }
+# 异步运行时（Tauri 自带 tokio，这里显式引入以便 reqwest/超时工作）
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "time"] }
+# 错误定义：为 AgentError 自动实现 std::error::Error / Display
+thiserror = "2"
+
+[profile.release]
+# 减小产物体积的常见配置
+codegen-units = 1
+lto = true
+strip = true

@@ -1,0 +1,8 @@
+# Pyright 配置：让语言服务器正确解析 app 包与 .venv 依赖
+{
+  "venvPath": ".",
+  "venv": ".venv",
+  "include": ["app"],
+  "pythonVersion": "3.10",
+  "reportMissingTypeStubs": "none"
+}

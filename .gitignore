@@ -1,0 +1,27 @@
+# ===== 通用 =====
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+
+# ===== Rust / Tauri =====
+src-tauri/target/
+src-tauri/gen/
+
+# ===== 前端 =====
+node_modules/
+frontend/dist/
+
+# ===== Python =====
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# ===== 环境变量（含密钥，禁止提交）=====
+.env
+frontend/.env
+agent-service/.env

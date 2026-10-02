@@ -1,0 +1,17 @@
+{
+  "name": "praxis",
+  "private": true,
+  "version": "0.1.0",
+  "license": "MIT",
+  "description": "Praxis - 学习路线规划 Agent 桌面应用（仓库级脚本入口）",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "check": "node scripts/check.mjs",
+    "format": "node scripts/format.mjs",
+    "build": "node scripts/build.mjs",
+    "tauri": "node scripts/tauri.mjs"
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3"
+  }
+}
