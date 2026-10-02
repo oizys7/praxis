@@ -1,16 +1,55 @@
 # scripts/ 工具脚本
 
-仓库级的自动化脚本（Node 编写，Windows / macOS / Linux 通用）。统一从仓库根目录通过 npm scripts 调用：
+仓库级自动化脚本，统一从**仓库根目录**通过 npm scripts 调用（Windows / macOS / Linux 通用）。
 
-| 命令 | 脚本 | 作用 |
+首次使用前：根目录与 `frontend/` 各执行一次 `npm install`。
+
+## 总览
+
+| 文件 | 调用方式 | 职责 |
 | --- | --- | --- |
-| `npm run dev` | `dev.mjs` | 一键启动开发环境：同时拉起 Python Agent 服务（uvicorn --reload）与 Tauri 桌面端（自动带起 Vite），Ctrl+C 一次性停止全部子进程 |
-| `npm run check` | `check.mjs` | 提交前自检：Python 语法检查 → 提示词 YAML 校验 → 前端类型检查（vue-tsc） |
-| `npm run format` | `format.mjs` | 用 Prettier 格式化前端源码、脚本、根目录 Markdown（Python 侧建议用 `ruff format agent-service`） |
-| `npm run build` | `build.mjs` | 生产构建：前端构建 + Tauri 桌面打包 |
+| `dev.mjs` | `npm run dev` | 一键启动开发环境：uvicorn + tauri dev（自动带起 Vite） |
+| `check.mjs` | `npm run check` | 提交前自检：Python 语法 → 提示词 YAML → vue-tsc |
+| `format.mjs` | `npm run format` | Prettier 格式化（前端 / 脚本 / 根 Markdown） |
+| `build.mjs` | `npm run build` | 生产构建：前端构建 + Tauri 桌面打包 |
+| `tauri.mjs` | `npm run tauri -- <子命令>` | tauri-cli 转发器，固定以仓库根为 cwd |
+| `check_prompts.py` | 被 `check.mjs` 内部调用 | 校验提示词 YAML 可解析；不单独运行 |
 
-## 注意事项
+## 用法说明
 
-- 首次使用前需安装依赖：根目录 `npm install`（提供 Prettier）、`frontend/` 下 `npm install`。
-- `dev.mjs` 启动前会检查 `agent-service/.env` 是否存在，缺失时打印配置提示（不会阻塞启动）。
-- Windows 下子进程通过 `taskkill /T /F` 清理进程树；Unix 下使用进程组信号。
+### `npm run dev` — dev.mjs
+
+1. 检查 `agent-service/.env` 是否存在（缺失仅打印提示，不阻塞）；
+2. 优先用 `agent-service/.venv` 的解释器启动 uvicorn（`.venv` 缺失时报错退出，并给出
+   `uv venv && uv pip install -r requirements.txt` 指引）；
+3. 从仓库根启动 tauri dev，其 `beforeDevCommand` 自动带起 Vite（5173）；
+4. Ctrl+C 一次性清理全部子进程（Windows 用 `taskkill /T /F`，Unix 用进程组信号）。
+
+### `npm run check` — check.mjs
+
+依次执行三步，任一步失败即以非零码退出：
+
+1. `python -m compileall agent-service/app`（Python 语法）
+2. `python scripts/check_prompts.py`（YAML 可解析，强制 UTF-8）
+3. `npx vue-tsc --noEmit`（前端类型，权威判据——`.vue` 的 "Cannot find module" LSP 报告是误报）
+
+### `npm run format` — format.mjs
+
+Prettier 覆盖 `frontend/src`、前端配置文件、`scripts/*.mjs`、根目录 `*.md`。
+Python 代码不在其范围内，另用 `ruff format agent-service`。
+
+### `npm run build` — build.mjs
+
+先构建前端（产物 `frontend/dist`），再执行 `tauri build`
+（安装包产物在 `src-tauri/target/release/bundle/`）。
+
+### `npm run tauri -- <子命令>` — tauri.mjs
+
+tauri-cli 只在当前目录子树内查找 `tauri.conf.json`，因此必须固定以仓库根为 cwd、
+调用 `frontend/node_modules/.bin` 下的 cli。本脚本封装了这两点。示例：
+
+```bash
+npm run tauri -- dev                      # 开发调试（一般用 npm run dev 即可）
+npm run tauri -- icon app-icon.png        # 从根目录源图重新生成全套图标
+npm run tauri -- build                    # 仅打包桌面应用（不含前端构建）
+```
