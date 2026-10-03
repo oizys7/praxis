@@ -4,6 +4,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod logging;
+mod settings;
 
 fn main() {
     tauri::Builder::default()
@@ -13,7 +15,24 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::generate_plan,
             commands::ping_agent,
+            commands::get_settings,
+            commands::save_settings,
         ])
+        .setup(|app| {
+            use tauri::Manager;
+            // 日志在 setup 钩子初始化：目录由 Tauri app_log_dir() 统一管理，
+            // 与设置（app_data_dir）同属应用 identifier 目录；并经 PRAXIS_LOG_DIR
+            // 注入 sidecar，Python 端写同一目录。guard 挂到应用状态，
+            // 进程退出时随 state 释放并触发异步刷盘。
+            let log_dir = app
+                .path()
+                .app_log_dir()
+                .map_err(|e| format!("无法定位日志目录：{e}"))?;
+            let guard = logging::init(&log_dir);
+            app.manage(guard);
+            tracing::info!("Praxis 桌面壳启动");
+            Ok(())
+        })
         .build(tauri::generate_context!())
         .expect("Praxis 桌面应用启动失败")
         .run(|_app, event| {
@@ -22,6 +41,7 @@ fn main() {
                 event,
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
+                tracing::info!("应用退出，收割 sidecar 子进程");
                 commands::shutdown_agent();
             }
         });

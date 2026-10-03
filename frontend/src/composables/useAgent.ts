@@ -3,6 +3,21 @@ import { invoke } from "@tauri-apps/api/core";
 import type { CommandError, PlanRequest, PlanResponse } from "@/types/agent";
 
 /**
+ * Tauri command 的 Err / panic 会以任意形态抛到 JS 侧：
+ * 字符串或 { code, message, hint } 对象，统一归一化处理。
+ * 模块级导出：useAgent 与 useSettings 共用。
+ */
+export function normalizeError(e: unknown): CommandError {
+  if (typeof e === "string") {
+    return { code: "unknown", message: e };
+  }
+  if (e && typeof e === "object" && "message" in e) {
+    return e as CommandError;
+  }
+  return { code: "unknown", message: String(e) };
+}
+
+/**
  * useAgent：与 Tauri 后端（Rust -> Python Agent 服务）通信的复用逻辑。
  *
  * 封装：
@@ -17,20 +32,6 @@ export function useAgent() {
   const error = shallowRef<CommandError | null>(null);
   /** 最近一次成功响应（统一包络） */
   const result = shallowRef<PlanResponse | null>(null);
-
-  /**
-   * Tauri command 的 Err / panic 会以任意形态抛到 JS 侧：
-   * 字符串或 { code, message, hint } 对象，统一归一化处理。
-   */
-  function normalizeError(e: unknown): CommandError {
-    if (typeof e === "string") {
-      return { code: "unknown", message: e };
-    }
-    if (e && typeof e === "object" && "message" in e) {
-      return e as CommandError;
-    }
-    return { code: "unknown", message: String(e) };
-  }
 
   /** 请求 Agent 生成学习计划 */
   async function generatePlan(request: PlanRequest) {

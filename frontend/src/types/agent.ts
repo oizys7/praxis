@@ -108,3 +108,98 @@ export const INTEREST_PRESETS = [
   "游戏",
   "嵌入式",
 ] as const;
+
+// ---------------------------------------------------------------------------
+// 应用设置（AgentSettings）：三端协议对齐 settings.rs / schemas.py
+// ---------------------------------------------------------------------------
+
+/** LLM 提供商：五家独立 Key / 模型名，切换互不覆盖 */
+export type LlmProvider =
+  | "openai"
+  | "anthropic"
+  | "deepseek"
+  | "glm"
+  | "opencode";
+
+/** Agent 运行配置：设置页读写的载体，Rust 持久化到 settings.json 并热推给 Python */
+export interface AgentSettings {
+  llmProvider: LlmProvider;
+  openaiApiKey: string;
+  openaiModel: string;
+  anthropicApiKey: string;
+  anthropicModel: string;
+  deepseekApiKey: string;
+  deepseekModel: string;
+  glmApiKey: string;
+  glmModel: string;
+  opencodeApiKey: string;
+  opencodeModel: string;
+  allowMockLlm: boolean;
+}
+
+/** 提供商展示元数据（设置页下拉与表单渲染） */
+export interface ProviderMeta {
+  id: LlmProvider;
+  label: string;
+  keyPlaceholder: string;
+  modelPlaceholder: string;
+  /** 接入方式说明 */
+  endpointNote: string;
+}
+
+/** 提供商下拉选项（顺序即展示顺序） */
+export const PROVIDER_OPTIONS: ProviderMeta[] = [
+  {
+    id: "openai",
+    label: "通用 OpenAI",
+    keyPlaceholder: "sk-…",
+    modelPlaceholder: "gpt-4o-mini",
+    endpointNote: "官方 OpenAI API",
+  },
+  {
+    id: "deepseek",
+    label: "DeepSeek",
+    keyPlaceholder: "sk-…",
+    modelPlaceholder: "deepseek-chat",
+    endpointNote: "官方 SDK · api.deepseek.com",
+  },
+  {
+    id: "glm",
+    label: "智谱 GLM",
+    keyPlaceholder: "…",
+    modelPlaceholder: "glm-5.3-flash",
+    endpointNote: "官方集成 · open.bigmodel.cn",
+  },
+  {
+    id: "opencode",
+    label: "OpenCode Go",
+    keyPlaceholder: "订阅 API Key…",
+    modelPlaceholder: "grok-4.7",
+    endpointNote: "OpenAI 兼容 · opencode.ai/zen/go",
+  },
+  {
+    id: "anthropic",
+    label: "Anthropic Claude",
+    keyPlaceholder: "sk-ant-…",
+    modelPlaceholder: "claude-3-5-sonnet-latest",
+    endpointNote: "官方 SDK",
+  },
+];
+
+/** 空白设置（默认值，与 Rust with_defaults / Python Settings 默认对齐） */
+export function defaultAgentSettings(): AgentSettings {
+  return {
+    llmProvider: "openai",
+    openaiApiKey: "",
+    openaiModel: "gpt-4o-mini",
+    anthropicApiKey: "",
+    anthropicModel: "claude-3-5-sonnet-latest",
+    deepseekApiKey: "",
+    deepseekModel: "deepseek-chat",
+    glmApiKey: "",
+    glmModel: "glm-5.3-flash",
+    opencodeApiKey: "",
+    opencodeModel: "grok-4.7",
+    allowMockLlm: false,
+  };
+}

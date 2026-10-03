@@ -45,8 +45,13 @@ scripts/               仓库级脚本（dev / check / format / build / tauri �
 任何涉及请求/响应字段的修改，必须同步以下三处，字段全部 **camelCase**：
 
 - `frontend/src/types/agent.ts`
-- `src-tauri/src/commands.rs`
+- `src-tauri/src/commands.rs`（设置相关结构在 `src-tauri/src/settings.rs`）
 - `agent-service/app/schemas.py`
+
+设置链路额外约定：应用设置（AgentSettings，十二个 LLM 字段 + 提供商 + mock 开关）
+持久化在应用数据目录 `settings.json`（不入库），由设置页编辑、Rust 写盘并经
+`POST /api/config` 热推给 Python；五家提供商（openai/anthropic/deepseek/glm/opencode）
+各自独立的 Key 与模型名，切换互不覆盖。
 
 统一响应包络：`{ status: "plan" | "clarification" | "error", plan?, clarifications?, error? }`。
 业务错误走 HTTP 200 + `status=error`（不抛 4xx/5xx）；网络层错误才由 Rust 归一为 `{ code, message, hint }` 抛给前端。
@@ -62,8 +67,10 @@ scripts/               仓库级脚本（dev / check / format / build / tauri �
 ### 3. 提示词与 LLM
 
 - 提示词只写在 `agent-service/prompts/*.yaml`，模板变量用 `{{ var }}` 渲染；**禁止把提示词硬编码进 Python**
-- LLM Key 一律走环境变量（`OPENAI_API_KEY` / `ANTHROPIC_API_KEY`），配置项见 `agent-service/.env.example`
-- 无 Key 开发/联调：设 `PRAXIS_ALLOW_MOCK_LLM=true` 走离线 mock，全链路可跑
+- LLM 配置主入口是应用「设置」页（保存即热加载）；环境变量（`OPENAI_API_KEY`、`DEEPSEEK_API_KEY`、`GLM_API_KEY`、`OPENCODE_API_KEY` 等，见 `agent-service/.env.example`）只作为设置页从未保存时的冷启动初始值
+- 五家提供商的接入差异封装在 `app/llm.py`：anthropic / deepseek 走官方 SDK，glm / opencode 走 OpenAI 兼容端点（baseUrl 常量 `ZHIPU_BASE_URL` / `OPENCODE_BASE_URL`）
+- 配置热更新后必须调用 `reset_chat_model_cache()` 重建 LLM 客户端（已封装在 `/api/config` 端点内）
+- 无 Key 开发/联调：设置页勾选离线演示模式（或 `PRAXIS_ALLOW_MOCK_LLM=true`）走 mock，全链路可跑
 - `.env` / `.env.*` 不入库（.gitignore 已覆盖）；`.env.example` 是唯一可提交的模板
 
 ### 4. 代码风格

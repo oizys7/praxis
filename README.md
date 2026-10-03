@@ -157,24 +157,32 @@ command 抛错时前端捕获到 `{ code, message, hint }`：`code ∈ connectio
 ### 健康检查 `GET /health`
 
 ```json
-{ "status": "ok", "service": "praxis-agent", "version": "0.1.0" }
+{ "status": "ok", "service": "praxis-agent", "version": "0.0.1" }
 ```
 
-## 环境变量
+## 配置（设置页优先）
 
-复制 `agent-service/.env.example` 为 `agent-service/.env` 后按需填写：
+**推荐方式**：应用内置「设置」页（⚙️ 菜单）随时配置五家 LLM 提供商，保存即写盘（Tauri 应用数据目录 `%APPDATA%/com.praxis.desktop/settings.json`，与日志 `%LOCALAPPDATA%/com.praxis.desktop/logs/` 同属 identifier 目录）并**热加载**到 Agent 服务，无需重启应用。五家提供商的 API Key 与模型名各自独立，切换互不覆盖：
 
-| 变量                    | 默认值                     | 说明                                               |
-| ----------------------- | -------------------------- | -------------------------------------------------- |
-| `LLM_PROVIDER`          | `openai`                   | `openai` 或 `anthropic`                            |
-| `OPENAI_API_KEY`        | 空                         | OpenAI API Key（provider=openai 时必填）           |
-| `OPENAI_MODEL`          | `gpt-4o-mini`              | 模型名                                             |
-| `ANTHROPIC_API_KEY`     | 空                         | Anthropic API Key（provider=anthropic 时必填）     |
-| `ANTHROPIC_MODEL`       | `claude-3-5-sonnet-latest` | 模型名                                             |
-| `AGENT_SERVICE_HOST`    | `127.0.0.1`                | FastAPI 监听地址                                   |
-| `AGENT_SERVICE_PORT`    | `8000`                     | FastAPI 监听端口                                   |
-| `AGENT_SERVICE_URL`     | `http://127.0.0.1:8000`    | Rust 端请求的 Agent 服务地址（进程环境变量）       |
-| `PRAXIS_ALLOW_MOCK_LLM` | `false`                    | **离线演示模式**：不调用 LLM，返回确定性 Mock 计划 |
+| 提供商      | 接入方式                          | 默认模型                   |
+| ----------- | --------------------------------- | -------------------------- |
+| OpenAI      | 官方 API                          | `gpt-4o-mini`              |
+| Anthropic   | 官方 SDK                          | `claude-3-5-sonnet-latest` |
+| DeepSeek    | 官方 SDK（api.deepseek.com）      | `deepseek-chat`            |
+| 智谱 GLM    | OpenAI 兼容（open.bigmodel.cn）   | `glm-5.3-flash`            |
+| OpenCode Go | OpenAI 兼容（opencode.ai/zen/go） | `grok-4.7`                 |
+
+**冷启动初始值（可选）**：设置页从未保存过时，服务才读取环境变量（`agent-service/.env`，模板见 `.env.example`，含五家提供商的全部变量）。release 安装包由 Rust 壳把 settings.json 注入 sidecar 环境变量，进程一起动就带配置；运行中的服务由 `POST /api/config` 热更新（`LLM_PROVIDER` / 各家 Key 与模型名 / `PRAXIS_ALLOW_MOCK_LLM`）。监听地址与端口属进程生命周期属性，不支持热更。
+
+| 变量                    | 默认值                  | 说明                                                                               |
+| ----------------------- | ----------------------- | ---------------------------------------------------------------------------------- |
+| `LLM_PROVIDER`          | `openai`                | `openai` / `anthropic` / `deepseek` / `glm` / `opencode`                           |
+| `OPENAI_API_KEY` 等     | 空                      | 五家各自的 Key：`OPENAI_` / `ANTHROPIC_` / `DEEPSEEK_` / `GLM_` / `OPENCODE_` 前缀 |
+| `OPENAI_MODEL` 等       | 各家默认                | 五家各自的模型名，同上前缀                                                         |
+| `AGENT_SERVICE_HOST`    | `127.0.0.1`             | FastAPI 监听地址                                                                   |
+| `AGENT_SERVICE_PORT`    | `8000`                  | FastAPI 监听端口                                                                   |
+| `AGENT_SERVICE_URL`     | `http://127.0.0.1:8000` | Rust 端请求的 Agent 服务地址（仅开发模式）                                         |
+| `PRAXIS_ALLOW_MOCK_LLM` | `false`                 | **离线演示模式**：不调用 LLM，返回确定性 Mock 计划                                 |
 
 ## 安装步骤
 
@@ -193,8 +201,9 @@ npm install
 cd agent-service
 uv sync
 
-# 4) 配置环境变量
-cp .env.example .env      # 填入 OPENAI_API_KEY；没有 Key 可先设 PRAXIS_ALLOW_MOCK_LLM=true
+# 4) 配置（可选）：应用内置「设置」页随时可配置五家 LLM 提供商并热加载，无需改文件。
+#    如需预置冷启动初始值，才复制 .env 模板：
+# cp .env.example .env
 ```
 
 > Tauri 在 Windows 上还需要 WebView2（Win10/11 一般自带）与 Visual Studio C++ 构建工具。
@@ -252,10 +261,10 @@ npm run build
 安装包内置 PyInstaller 打包的 Agent 服务（sidecar 模式），**其他设备无需安装
 Python / uv / Node**，双击安装即可使用（唯一系统依赖 WebView2，Win10/11 自带）：
 
-| 模式 | Agent 服务来源 | 端口 | 适用场景 |
-| --- | --- | --- | --- |
-| 开发（debug） | `scripts/dev.mjs` 启动的 uvicorn，或手动 `uv run uvicorn` | 固定 8000 | 本仓库开发 |
-| 生产（安装包） | 应用自动拉起内置 `agent/praxis-agent.exe` | 动态随机分配 | 终端用户 |
+| 模式           | Agent 服务来源                                            | 端口         | 适用场景   |
+| -------------- | --------------------------------------------------------- | ------------ | ---------- |
+| 开发（debug）  | `scripts/dev.mjs` 启动的 uvicorn，或手动 `uv run uvicorn` | 固定 8000    | 本仓库开发 |
+| 生产（安装包） | 应用自动拉起内置 `agent/praxis-agent.exe`                 | 动态随机分配 | 终端用户   |
 
 - 生产模式下 `praxis.exe` 启动时自动拉起 sidecar 子进程（随机空闲端口经
   `AGENT_SERVICE_PORT` 传给子进程），轮询 `/health` 就绪后才开始服务；

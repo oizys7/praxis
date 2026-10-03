@@ -68,6 +68,8 @@ if (process.env.PRAXIS_SKIP_AGENT === "1") {
       "--noconfirm",
       "--clean",
       "--onedir",
+      // 无控制台子系统：避免 release 壳拉起子进程时弹出终端窗口
+      "--noconsole",
       "agent_entry.py",
     ],
     { cwd: path.join(ROOT, "agent-service") },

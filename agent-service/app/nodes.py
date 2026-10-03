@@ -10,9 +10,11 @@
 from __future__ import annotations
 
 import json
-from typing import Any, TypedDict
+import logging
+from typing import Any, TypedDict, cast
 
 from langchain_core.messages import HumanMessage, SystemMessage
+from pydantic import ValidationError
 
 from app import prompts
 from app.config import settings
@@ -87,6 +89,9 @@ def _detect_issues(req: PlanRequest) -> list[tuple[str, str]]:
     return issues
 
 
+logger = logging.getLogger("praxis.nodes")
+
+
 async def clarify_node(state: AgentState) -> dict[str, Any]:
     """澄清节点：规则检查发现信息缺口时，让 LLM 生成友好的澄清问题。
 
@@ -99,6 +104,7 @@ async def clarify_node(state: AgentState) -> dict[str, Any]:
     # 输入完整 → 空列表，条件边将放行到 plan 节点
     if not issues:
         return {"clarifications": []}
+    logger.info("检测到 %d 个信息缺口，触发澄清", len(issues))
 
     fallback = prompts.fallback_questions("clarify")
     fallback_answers = [fallback.get(code, desc) for code, desc in issues]
@@ -110,20 +116,26 @@ async def clarify_node(state: AgentState) -> dict[str, Any]:
     # 正常路径：LLM 生成更自然的澄清问题
     try:
         template = prompts.load_prompt("clarify")
-        structured = get_chat_model().with_structured_output(ClarificationOutput)
-        output: ClarificationOutput = await structured.ainvoke(
-            [
-                SystemMessage(content=template["system"]),
-                HumanMessage(
-                    content=prompts.render(
-                        template["human"],
-                        request=json.dumps(
-                            state.get("request", {}), ensure_ascii=False
-                        ),
-                        issues="\n".join(f"- {desc}" for _, desc in issues),
-                    )
-                ),
-            ]
+        structured = get_chat_model().with_structured_output(
+            ClarificationOutput, method="function_calling"
+        )
+        # ainvoke 静态签名宽泛（dict | BaseModel），运行时必为 ClarificationOutput
+        output = cast(
+            ClarificationOutput,
+            await structured.ainvoke(
+                [
+                    SystemMessage(content=template["system"]),
+                    HumanMessage(
+                        content=prompts.render(
+                            template["human"],
+                            request=json.dumps(
+                                state.get("request", {}), ensure_ascii=False
+                            ),
+                            issues="\n".join(f"- {desc}" for _, desc in issues),
+                        )
+                    ),
+                ]
+            ),
         )
         questions = [q.strip() for q in output.questions if q.strip()]
         # LLM 返回为空时仍回退到内置文案
@@ -159,24 +171,50 @@ async def plan_node(state: AgentState) -> dict[str, Any]:
         )
 
     template = prompts.load_prompt("plan")
-    structured = get_chat_model().with_structured_output(StudyPlan)
-    plan: StudyPlan = await structured.ainvoke(
-        [
-            SystemMessage(content=template["system"]),
-            HumanMessage(
-                content=prompts.render(
-                    template["human"],
-                    goal=req.goal,
-                    level=req.level.value,
-                    weekly_hours=str(req.weekly_hours),
-                    weeks=str(req.weeks),
-                    interests="、".join(req.interests) if req.interests else "未填写",
-                    background=req.background or "未填写",
-                    review_notes=review_notes or "（首次生成，无评审意见）",
-                )
-            ),
-        ]
+    structured = get_chat_model().with_structured_output(
+        StudyPlan, method="function_calling"
     )
+    messages = [
+        SystemMessage(content=template["system"]),
+        HumanMessage(
+            content=prompts.render(
+                template["human"],
+                goal=req.goal,
+                level=req.level.value,
+                weekly_hours=str(req.weekly_hours),
+                weeks=str(req.weeks),
+                interests="、".join(req.interests) if req.interests else "未填写",
+                background=req.background or "未填写",
+                review_notes=review_notes or "（首次生成，无评审意见）",
+            )
+        ),
+    ]
+
+    # glm-5.3 等思考模型对大嵌套 schema 的工具参数偶发拼接错乱
+    # （字段丢失 / 类型漂移），解析失败自动重试一次
+    plan: StudyPlan | None = None
+    for attempt in range(2):
+        try:
+            # ainvoke 静态签名宽泛（dict | BaseModel），运行时必为 StudyPlan
+            plan = cast(StudyPlan, await structured.ainvoke(messages))
+            break
+        except ValidationError:
+            logger.warning(
+                "计划结构化输出校验失败（第 %d 次），%s",
+                attempt + 1,
+                "重试" if attempt == 0 else "放弃本次生成",
+            )
+
+    # 回炉场景的兑底：重试仍失败时回退到上一轮已成功解析的计划，
+    # 避免「评审回炉 → 生成损坏 → 整个请求 500」的链路
+    if plan is None:
+        previous = state.get("plan")
+        if revised and previous:
+            logger.warning("回炉生成失败，回退到上一轮计划")
+            return {"plan": previous, "revised": True}
+        raise AgentServiceError(
+            "学习计划生成失败：模型返回内容无法解析为结构化计划，请重试。"
+        )
 
     # 以 camelCase JSON 形式存入状态（与响应包络直接对齐）
     return {"plan": plan.model_dump(mode="json", by_alias=True), "revised": revised}
@@ -199,21 +237,33 @@ async def review_node(state: AgentState) -> dict[str, Any]:
         return {"passed": True, "review_notes": "（未配置 API Key：跳过评审）"}
 
     template = prompts.load_prompt("review")
-    structured = get_chat_model().with_structured_output(ReviewOutput)
-    output: ReviewOutput = await structured.ainvoke(
-        [
-            SystemMessage(content=template["system"]),
-            HumanMessage(
-                content=prompts.render(
-                    template["human"],
-                    plan=json.dumps(
-                        state.get("plan", {}), ensure_ascii=False, indent=2
-                    ),
-                )
-            ),
-        ]
+    structured = get_chat_model().with_structured_output(
+        ReviewOutput, method="function_calling"
+    )
+    # ainvoke 静态签名宽泛（dict | BaseModel），运行时必为 ReviewOutput
+    output = cast(
+        ReviewOutput,
+        await structured.ainvoke(
+            [
+                SystemMessage(content=template["system"]),
+                HumanMessage(
+                    content=prompts.render(
+                        template["human"],
+                        plan=json.dumps(
+                            state.get("plan", {}), ensure_ascii=False, indent=2
+                        ),
+                    )
+                ),
+            ]
+        ),
     )
 
+    logger.info(
+        "评审完成 passed=%s issues=%d suggestions=%d",
+        output.passed,
+        len(output.issues),
+        len(output.suggestions),
+    )
     notes = "\n".join([*output.issues, *output.suggestions]).strip()
     return {
         "passed": output.passed,

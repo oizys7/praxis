@@ -135,6 +135,36 @@ class HealthResponse(CamelModel):
     version: str = "0.0.1"
 
 
+class AgentSettingsModel(CamelModel):
+    """Agent 运行配置（三端协议 AgentSettings）。
+
+    设置页读写的载体：Rust 壳持久化到 settings.json，并经 POST /api/config
+    推送给本服务热加载。API Key 原文传输（桌面单用户本机场景）。
+    五家提供商各自独立的 Key 与模型名，切换互不覆盖。
+    """
+
+    llm_provider: Literal["openai", "anthropic", "deepseek", "glm", "opencode"] = (
+        "openai"
+    )
+    # 通用 OpenAI
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+    # Anthropic（Claude）
+    anthropic_api_key: str = ""
+    anthropic_model: str = "claude-3-5-sonnet-latest"
+    # DeepSeek（官方 SDK）
+    deepseek_api_key: str = ""
+    deepseek_model: str = "deepseek-chat"
+    # 智谱 GLM
+    glm_api_key: str = ""
+    glm_model: str = "glm-4-flash"
+    # OpenCode Go 套餐（OpenAI 兼容端点）
+    opencode_api_key: str = ""
+    opencode_model: str = "grok-4.7"
+    # 离线演示模式：不调用 LLM，返回确定性 mock 计划
+    allow_mock_llm: bool = False
+
+
 # ---------------------------------------------------------------------------
 # LLM 结构化输出模型（作为 with_structured_output 的 schema）
 # ---------------------------------------------------------------------------
