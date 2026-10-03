@@ -10,9 +10,10 @@
 //! - frontend/src/types/agent.ts
 //! - agent-service/app/schemas.py
 
-use std::{env, time::Duration};
+use std::{env, process::Stdio, sync::OnceLock, time::Duration};
 
 use serde::{Deserialize, Serialize};
+use tokio::{process::Child, sync::Mutex};
 
 /// Python Agent 服务地址，可用环境变量 AGENT_SERVICE_URL 覆盖（见 agent-service/.env.example）
 const DEFAULT_SERVICE_URL: &str = "http://127.0.0.1:8000";
@@ -21,8 +22,20 @@ const PLAN_TIMEOUT: Duration = Duration::from_secs(180);
 /// 健康检查使用短超时，快速探测服务是否在线
 const PING_TIMEOUT: Duration = Duration::from_secs(3);
 
-/// 读取 Agent 服务地址（环境变量优先，缺省为本地 8000 端口）
+/// sidecar 子进程句柄：release 模式由 ensure_agent_running 拉起，应用退出时收割
+static AGENT_CHILD: Mutex<Option<Child>> = Mutex::const_new(None);
+/// sidecar 实际监听的动态端口（http://127.0.0.1:{port}）
+static AGENT_PORT: OnceLock<u16> = OnceLock::new();
+
+/// 读取 Agent 服务地址：
+/// - release：优先使用 sidecar 动态端口（每次启动随机分配，避免端口冲突）
+/// - 开发：环境变量 AGENT_SERVICE_URL 优先，缺省本地 8000（scripts/dev.mjs 启动的服务）
 fn agent_service_url() -> String {
+    if !cfg!(debug_assertions) {
+        if let Some(port) = AGENT_PORT.get() {
+            return format!("http://127.0.0.1:{port}");
+        }
+    }
     env::var("AGENT_SERVICE_URL").unwrap_or_else(|_| DEFAULT_SERVICE_URL.to_string())
 }
 
@@ -158,6 +171,9 @@ pub enum AgentError {
     #[error("{0}")]
     #[allow(dead_code)]
     Other(String),
+    /// sidecar 生命周期错误（release 模式内置 Agent 子进程的启动/就绪失败）
+    #[error("{0}")]
+    Sidecar(String),
 }
 
 impl Serialize for AgentError {
@@ -187,6 +203,11 @@ impl Serialize for AgentError {
                 "Agent 服务处理失败，请查看 agent-service 终端日志",
             ),
             AgentError::Other(msg) => ("internal", msg.clone(), "Tauri 内部错误"),
+            AgentError::Sidecar(msg) => (
+                "sidecar",
+                msg.clone(),
+                "内置 Agent 组件异常：请尝试重新安装 Praxis 桌面应用",
+            ),
         };
 
         let mut s = serializer.serialize_struct("AgentError", 3)?;
@@ -194,6 +215,86 @@ impl Serialize for AgentError {
         s.serialize_field("message", &message)?;
         s.serialize_field("hint", hint)?;
         s.end()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// sidecar 生命周期（release 模式）：动态端口 + 拉起内置 Agent + 等待就绪
+// ---------------------------------------------------------------------------
+
+/// 确保内置 Agent 服务已启动且就绪。
+///
+/// - debug 构建：不做任何事，服务由 scripts/dev.mjs（或手动 uvicorn）管理
+/// - release 构建：拉起安装目录 agent/praxis-agent.exe，
+///   用 127.0.0.1 随机空闲端口避免冲突，经 AGENT_SERVICE_PORT 传给子进程
+async fn ensure_agent_running() -> Result<(), AgentError> {
+    if cfg!(debug_assertions) {
+        return Ok(());
+    }
+
+    // 已有存活的子进程则直接复用；已退出/状态未知则清理句柄后重新拉起
+    {
+        let mut guard = AGENT_CHILD.lock().await;
+        if let Some(child) = guard.as_mut() {
+            match child.try_wait() {
+                Ok(None) => return Ok(()),
+                _ => *guard = None,
+            }
+        }
+    }
+
+    // 向系统申请一个随机空闲端口（绑定后立即释放，让给子进程绑定）
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")
+        .map_err(|e| AgentError::Sidecar(format!("无法分配本地端口：{e}")))?;
+    let port = listener
+        .local_addr()
+        .map_err(|e| AgentError::Sidecar(format!("无法读取本地端口：{e}")))?
+        .port();
+    drop(listener);
+
+    // 定位随应用分发的 sidecar 可执行文件
+    let sidecar = env::current_exe()
+        .map_err(|e| AgentError::Sidecar(format!("无法定位应用目录：{e}")))?
+        .parent()
+        .ok_or_else(|| AgentError::Sidecar("无法定位应用目录".into()))?
+        .join("agent")
+        .join("praxis-agent.exe");
+    if !sidecar.exists() {
+        return Err(AgentError::Sidecar(format!(
+            "未找到内置 Agent 组件：{}",
+            sidecar.display()
+        )));
+    }
+
+    let child = tokio::process::Command::new(&sidecar)
+        .env("AGENT_SERVICE_PORT", port.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| AgentError::Sidecar(format!("启动内置 Agent 失败：{e}")))?;
+    *AGENT_CHILD.lock().await = Some(child);
+    let _ = AGENT_PORT.set(port);
+
+    // 轮询 /health 直到就绪（PyInstaller onedir 冷启动约 1~3 秒）
+    let url = format!("http://127.0.0.1:{port}/health");
+    let client = http_client();
+    for _ in 0..25 {
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        if let Ok(response) = client.get(&url).timeout(PING_TIMEOUT).send().await {
+            if response.status().is_success() {
+                return Ok(());
+            }
+        }
+    }
+    Err(AgentError::Sidecar("内置 Agent 服务启动超时".into()))
+}
+
+/// 应用退出时收割 sidecar 子进程（同步上下文调用：main 的 RunEvent 回调）
+pub fn shutdown_agent() {
+    if let Ok(mut guard) = AGENT_CHILD.try_lock() {
+        if let Some(child) = guard.as_mut() {
+            let _ = child.start_kill();
+        }
     }
 }
 
@@ -207,6 +308,8 @@ impl Serialize for AgentError {
 /// 因此这里解析成功即可整体透传；仅当 HTTP 非 2xx 且包络缺 error 时补一条。
 #[tauri::command]
 pub async fn generate_plan(request: PlanRequest) -> Result<PlanResponse, AgentError> {
+    ensure_agent_running().await?;
+
     let url = format!(
         "{}/api/generate-plan",
         agent_service_url().trim_end_matches('/')
@@ -241,6 +344,8 @@ pub async fn generate_plan(request: PlanRequest) -> Result<PlanResponse, AgentEr
 /// 健康检查：GET {AGENT_SERVICE_URL}/health，前端启动时调用以显示在线状态
 #[tauri::command]
 pub async fn ping_agent() -> Result<bool, AgentError> {
+    ensure_agent_running().await?;
+
     let url = format!("{}/health", agent_service_url().trim_end_matches('/'));
     let response = http_client().get(&url).timeout(PING_TIMEOUT).send().await?;
     Ok(response.status().is_success())

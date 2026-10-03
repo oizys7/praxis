@@ -11,7 +11,7 @@
 | `dev.mjs` | `npm run dev` | 一键启动开发环境：uvicorn + tauri dev（自动带起 Vite） |
 | `check.mjs` | `npm run check` | 三端自检：Python（语法 + ruff lint）→ YAML → Rust（check + clippy）→ 前端（vue-tsc） |
 | `format.mjs` | `npm run format` | 三端格式化：ruff（Python）+ cargo fmt（Rust）+ Prettier（前端 / 脚本 / Markdown） |
-| `build.mjs` | `npm run build` | 三端构建：Python 健全性 → 前端构建 → Tauri 打包（含 Rust release 编译） |
+| `build.mjs` | `npm run build` | 四步构建：Python 健全性 → 前端构建 → Agent sidecar 打包（PyInstaller）→ Tauri 打包（含 Rust release 编译） |
 | `tauri.mjs` | `npm run tauri -- <子命令>` | tauri-cli 转发器，固定以仓库根为 cwd |
 | `check_prompts.py` | 被 `check.mjs` 内部调用 | 校验提示词 YAML 可解析；不单独运行 |
 
@@ -21,7 +21,7 @@
 
 1. 检查 `agent-service/.env` 是否存在（缺失仅打印提示，不阻塞）；
 2. 优先用 `agent-service/.venv` 的解释器启动 uvicorn（`.venv` 缺失时报错退出，并给出
-   `uv venv && uv pip install -r requirements.txt` 指引）；
+   `uv sync` 指引）；
 3. 从仓库根启动 tauri dev，其 `beforeDevCommand` 自动带起 Vite（5173）；
 4. Ctrl+C 一次性清理全部子进程（Windows 用 `taskkill /T /F`，Unix 用进程组信号）。
 
@@ -50,7 +50,10 @@
 
 1. `python -m compileall -q agent-service/app`（Python 语法健全性，解释型无构建产物）
 2. 前端构建（vue-tsc + vite，产物 `frontend/dist`）
-3. `tauri build`（内含 Rust release 编译，安装包在 `src-tauri/target/release/bundle/`）
+3. Agent sidecar 打包：`uv run pyinstaller --name praxis-agent --onedir agent_entry.py`
+   （cwd `agent-service/`，产物 `dist/praxis-agent/`，经 tauri resources 进安装包；
+   `PRAXIS_SKIP_AGENT=1` 可跳过）
+4. `tauri build`（内含 Rust release 编译，安装包在 `src-tauri/target/release/bundle/`）
 
 ### `npm run tauri -- <子命令>` — tauri.mjs
 

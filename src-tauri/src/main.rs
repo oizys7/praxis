@@ -14,6 +14,15 @@ fn main() {
             commands::generate_plan,
             commands::ping_agent,
         ])
-        .run(tauri::generate_context!())
-        .expect("Praxis 桌面应用启动失败");
+        .build(tauri::generate_context!())
+        .expect("Praxis 桌面应用启动失败")
+        .run(|_app, event| {
+            // 应用退出时收割 sidecar 子进程，避免遗留孤儿进程占用资源
+            if matches!(
+                event,
+                tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
+            ) {
+                commands::shutdown_agent();
+            }
+        });
 }

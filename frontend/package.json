@@ -1,7 +1,8 @@
 {
   "name": "praxis-frontend",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.0.1",
+  "description": "Praxis 学习路线规划 Agent 桌面前端：目标/水平/周数表单、分阶段计划展示、澄清问题交互与 Agent 在线状态徽标（Vue 3 + TS + Tailwind）",
   "type": "module",
   "scripts": {
     "dev": "vite",

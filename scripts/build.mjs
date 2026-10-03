@@ -5,7 +5,8 @@
  * 步骤：
  *   1. Python 健全性：compileall 语法编译（解释型语言无构建产物，确保可运行）
  *   2. 前端构建：vue-tsc 类型检查 + vite build（产物 frontend/dist）
- *   3. Rust 编译 + 桌面打包：tauri build（内含 cargo release 编译，
+ *   3. Agent sidecar：PyInstaller 打包内置 Agent 服务（PRAXIS_SKIP_AGENT=1 跳过）
+ *   4. Rust 编译 + 桌面打包：tauri build（内含 cargo release 编译，
  *      产物 src-tauri/target/release/bundle）
  *
  * 注意：打包安装包前需要应用图标（仓库已内置，见 README「打包发布」）。
@@ -50,7 +51,30 @@ step("构建前端（vue-tsc + vite build）", "npm", [
   "build",
 ]);
 
-// 3. Rust：tauri build 内含 cargo release 编译 + 平台安装包生成。
+// 3. Agent sidecar：PyInstaller 把 agent-service 打成独立可执行目录
+//    （dist/praxis-agent/，经 tauri resources 进安装包），供 release 版
+//    praxis.exe 作为子进程拉起。PRAXIS_SKIP_AGENT=1 可跳过（调试桌面壳时）。
+if (process.env.PRAXIS_SKIP_AGENT === "1") {
+  console.log("\n[build] ⏭ 跳过 Agent sidecar 打包（PRAXIS_SKIP_AGENT=1）");
+} else {
+  step(
+    "打包 Agent sidecar（PyInstaller）",
+    "uv",
+    [
+      "run",
+      "pyinstaller",
+      "--name",
+      "praxis-agent",
+      "--noconfirm",
+      "--clean",
+      "--onedir",
+      "agent_entry.py",
+    ],
+    { cwd: path.join(ROOT, "agent-service") },
+  );
+}
+
+// 4. Rust：tauri build 内含 cargo release 编译 + 平台安装包生成。
 //    tauri-cli 必须从仓库根运行（原因同 scripts/dev.mjs），
 //    直接调用 frontend/node_modules/.bin 下的 cli。
 const tauriBin = path.join(

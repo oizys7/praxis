@@ -11,7 +11,7 @@
 
 ## 架构
 
-```
+```text
 ┌─────────────────────────── Tauri 桌面应用 ───────────────────────────┐
 │                                                                      │
 │  ┌──────────────┐  Tauri IPC invoke   ┌───────────────────────────┐  │
@@ -39,7 +39,7 @@
 
 ## 目录结构
 
-```
+```text
 Praxis/
 ├── package.json            # 仓库级脚本入口（npm run dev / check / format / build）
 ├── scripts/                # 构建、格式化、自检等自动化脚本（见 scripts/README.md）
@@ -70,7 +70,7 @@ Praxis/
     │   ├── mock.py         # 离线演示模式的确定性计划
     │   └── config.py       # 环境变量配置
     ├── prompts/            # 提示词 YAML（clarify / plan / review）
-    ├── requirements.txt
+    ├── pyproject.toml
     └── .env.example
 ```
 
@@ -189,10 +189,9 @@ npm install
 cd ..
 npm install
 
-# 3) Python Agent 服务（uv 创建虚拟环境 + 安装依赖）
+# 3) Python Agent 服务（uv sync：自动创建 .venv 并按 pyproject.toml 安装依赖）
 cd agent-service
-uv venv
-uv pip install -r requirements.txt
+uv sync
 
 # 4) 配置环境变量
 cp .env.example .env      # 填入 OPENAI_API_KEY；没有 Key 可先设 PRAXIS_ALLOW_MOCK_LLM=true
@@ -248,9 +247,29 @@ npm run build
 默认应用图标已内置（源图：根目录 `app-icon.png`，1024×1024 紫底白 P）。替换品牌图标时，
 用新图覆盖 `app-icon.png` 后重新生成全套：`npm run tauri -- icon app-icon.png`。
 
+## 分发与安装包
+
+安装包内置 PyInstaller 打包的 Agent 服务（sidecar 模式），**其他设备无需安装
+Python / uv / Node**，双击安装即可使用（唯一系统依赖 WebView2，Win10/11 自带）：
+
+| 模式 | Agent 服务来源 | 端口 | 适用场景 |
+| --- | --- | --- | --- |
+| 开发（debug） | `scripts/dev.mjs` 启动的 uvicorn，或手动 `uv run uvicorn` | 固定 8000 | 本仓库开发 |
+| 生产（安装包） | 应用自动拉起内置 `agent/praxis-agent.exe` | 动态随机分配 | 终端用户 |
+
+- 生产模式下 `praxis.exe` 启动时自动拉起 sidecar 子进程（随机空闲端口经
+  `AGENT_SERVICE_PORT` 传给子进程），轮询 `/health` 就绪后才开始服务；
+  应用退出时自动收割子进程，无孤儿进程。
+- `AGENT_SERVICE_URL` 环境变量在开发模式仍可覆盖服务地址；生产模式不适用。
+- 安装包体积约 35-50 MB（内置 CPython 运行时与依赖，压缩后）。
+- PyInstaller 不支持交叉编译：Windows 包在 Windows 上构建，macOS/Linux
+  需在对应系统执行 `npm run build`。
+- 构建时可用 `PRAXIS_SKIP_AGENT=1 npm run build` 跳过 sidecar 打包
+  （仅调试桌面壳时使用）。
+
 ## Agent 工作流（LangGraph）
 
-```
+```text
 clarify ──信息不完整──→ END（返回澄清问题，前端高亮展示）
    │ 规则校验通过（goal 长度 / 小时数 / 周数 / 已有基础）
    ▼
@@ -268,8 +287,8 @@ clarify ──信息不完整──→ END（返回澄清问题，前端高亮�
 
 - **提示"无法连接 Python Agent 服务"**：先启动 agent-service（见上），并确认端口与 `AGENT_SERVICE_URL` 一致；前端顶栏徽标可实时查看在线状态。
 - **编译报 `icons/icon.ico not found`**：项目已内置默认图标；若误删 `src-tauri/icons/`，执行 `npm run tauri -- icon app-icon.png` 重新生成。
-- **`npm run dev` 报 No module named uvicorn 或 tauri 找不到配置**：前者先执行 `cd agent-service && uv venv && uv pip install -r requirements.txt`；后者是因为 tauri-cli 必须从仓库根运行，请统一使用 `npm run tauri -- <命令>`（已内置处理）。
-- **Windows pip 报 GBK 编码错误**：本项目推荐使用 uv（`uv pip install`）；`requirements.txt` 保持纯 ASCII。
+- **`npm run dev` 报 No module named uvicorn 或 tauri 找不到配置**：前者先执行 `cd agent-service && uv sync`；后者是因为 tauri-cli 必须从仓库根运行，请统一使用 `npm run tauri -- <命令>`（已内置处理）。
+- **Windows pip 报 GBK 编码错误**：本项目已全面改用 uv（`uv sync`），不再经过 pip；依赖统一声明在 `agent-service/pyproject.toml`。
 - **更换 LLM 提供商**：`.env` 中设 `LLM_PROVIDER=anthropic` 并填对应 Key，无需改代码。
 
 ## 开源协议

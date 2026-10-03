@@ -34,6 +34,7 @@ agent-service/         Python FastAPI + LangGraph
   app/graph.py           StateGraph 装配（条件边 + 回炉上限）
   app/mock.py            离线 mock 计划（PRAXIS_ALLOW_MOCK_LLM=true）
   prompts/*.yaml         所有 LLM 提示词（改文案不需要动代码）
+  agent_entry.py         PyInstaller 打包入口（sidecar 生产模式引导）
 scripts/               仓库级脚本（dev / check / format / build / tauri 转发）
 ```
 
@@ -52,8 +53,9 @@ scripts/               仓库级脚本（dev / check / format / build / tauri �
 
 ### 2. 工具链
 
-- **Python 一律用 uv，不要用 pip**：`cd agent-service && uv venv && uv pip install -r requirements.txt`
-- `requirements.txt` 保持纯 ASCII（Windows pip 按 GBK 解码该文件，中文注释会直接 UnicodeDecodeError）
+- **Python 一律用 uv，不要用 pip**：依赖定义在 `agent-service/pyproject.toml`（uv 项目模式，
+  `[tool.uv] package = false` 应用不打包），安装/同步用 `cd agent-service && uv sync`
+  （自动创建 .venv、生成 uv.lock）
 - tauri-cli 必须从仓库根运行：统一走 `npm run tauri -- <子命令>`（`scripts/tauri.mjs` 已处理 cwd 与 `.bin` 解析）
 - Python 服务用 `.venv` 解释器启动；手动方式：`cd agent-service && uv run uvicorn app.main:app --reload`（`uv run` 自动发现 `.venv`，无需 activate）
 
@@ -93,6 +95,9 @@ scripts/               仓库级脚本（dev / check / format / build / tauri �
 - tauri-cli 只在 cwd 子树内查找 `tauri.conf.json`——在 `frontend/` 里直接跑 `tauri dev` 会 panic（找不到兄弟目录 `src-tauri/`）
 - `src-tauri/icons/` 被误删后：`npm run tauri -- icon app-icon.png` 从根目录源图重新生成全套
 - reqwest 默认无全局超时，本项目按请求单独设置（ping 3s / plan 180s），新增 HTTP 调用记得带超时
+- PyInstaller 不支持交叉编译：Windows 安装包只能在 Windows 上构建，macOS/Linux 需在对应系统执行 `npm run build`
+- PyInstaller onedir 产物必须整目录分发（`praxis-agent.exe` 依赖同目录 `_internal/`），tauri resources 已按目录映射，勿只取 exe
+- sidecar 动态端口经环境变量 `AGENT_SERVICE_PORT` 传给子进程，仅 release 生效；开发模式仍走固定 8000（dev.mjs）
 
 ## Git 约定
 

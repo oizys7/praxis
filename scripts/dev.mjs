@@ -79,7 +79,7 @@ const venvPython =
 if (!existsSync(venvPython)) {
   console.error(
     "[dev] 未找到 agent-service/.venv 虚拟环境，无法启动 Agent 服务。\n" +
-      "      请先执行：cd agent-service && uv venv && uv pip install -r requirements.txt",
+      "      请先执行：cd agent-service && uv sync",
   );
   process.exit(1);
 }
