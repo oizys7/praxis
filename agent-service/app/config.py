@@ -50,6 +50,23 @@ _PROVIDER_FIELDS: dict[str, tuple[str, str]] = {
     "opencode": ("opencode_api_key", "opencode_model"),
 }
 
+# 热更新字段映射：三端协议的 camelCase 名 → Settings 字段名。
+# 显式列出而非运行时推导：协议本身是三端手写对齐的，这里保持同样直观，
+# 「哪些字段可热更」一眼可查（推导版本曾因大小写规则出错丢失中间段）
+_RUNTIME_FIELDS: dict[str, str] = {
+    "llmProvider": "llm_provider",
+    "openaiApiKey": "openai_api_key",
+    "openaiModel": "openai_model",
+    "anthropicApiKey": "anthropic_api_key",
+    "anthropicModel": "anthropic_model",
+    "deepseekApiKey": "deepseek_api_key",
+    "deepseekModel": "deepseek_model",
+    "glmApiKey": "glm_api_key",
+    "glmModel": "glm_model",
+    "opencodeApiKey": "opencode_api_key",
+    "opencodeModel": "opencode_model",
+}
+
 
 @dataclass
 class Settings:
@@ -68,9 +85,7 @@ class Settings:
 
     # Anthropic（Claude）
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
-    anthropic_model: str = os.getenv(
-        "ANTHROPIC_MODEL", "claude-3-5-sonnet-latest"
-    )
+    anthropic_model: str = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-latest")
 
     # DeepSeek（官方 SDK 约定的环境变量名 DEEPSEEK_API_KEY）
     deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", "")
@@ -111,26 +126,13 @@ class Settings:
         - 缺失的键保留当前值，因此 Rust 端可以安全地推送「全量或部分」配置；
         - 监听地址 / 端口刻意不在此列：进程绑定后不可热更。
         """
-        self.llm_provider = (
-            str(payload.get("llmProvider", self.llm_provider)).strip().lower()
-        )
-        str_keys = (
-            "openai_api_key",
-            "openai_model",
-            "anthropic_api_key",
-            "anthropic_model",
-            "deepseek_api_key",
-            "deepseek_model",
-            "glm_api_key",
-            "glm_model",
-            "opencode_api_key",
-            "opencode_model",
-        )
-        for key in str_keys:
-            parts = key.split("_")
-            camel = parts[0] + "".join(word.capitalize() for word in parts[1:])
-            if camel in payload:
-                setattr(self, key, str(payload[camel]).strip())
+        for camel, field in _RUNTIME_FIELDS.items():
+            if camel not in payload:
+                continue
+            value = str(payload[camel]).strip()
+            if camel == "llmProvider":
+                value = value.lower()
+            setattr(self, field, value)
         if "allowMockLlm" in payload:
             self.allow_mock_llm = bool(payload["allowMockLlm"])
 

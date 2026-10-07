@@ -17,20 +17,16 @@ from __future__ import annotations
 
 import logging
 
-import httpx
 from fastapi import FastAPI, Request
-from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 
 from app.config import settings
+from app.errors import register_error_handlers
 from app.graph import agent_graph
 from app.llm import reset_chat_model_cache
 from app.logging_config import setup_logging, uvicorn_log_config
-from app.nodes import AgentServiceError
 from app.schemas import (
     AgentSettingsModel,
-    ErrorDetail,
     HealthResponse,
     PlanRequest,
     PlanResponse,
@@ -59,6 +55,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 全局异常处理：任何异常统一转成 200/500 + status=error 包络（定义见 app/errors.py）
+register_error_handlers(app)
+
 
 # ---------------------------------------------------------------------------
 # 请求日志 + 跨进程关联：Rust 壳为每个请求生成 req_id 经 X-Request-ID 头传入，
@@ -86,10 +85,12 @@ async def _log_requests(request: Request, call_next):
 @app.post(
     "/api/generate-plan", response_model=PlanResponse, response_model_by_alias=True
 )
-async def generate_plan(
-    request: PlanRequest, http_request: Request
-) -> PlanResponse:
-    """生成学习计划：驱动 LangGraph 状态图并组装统一包络。"""
+async def generate_plan(request: PlanRequest) -> PlanResponse:
+    """生成学习计划：驱动 LangGraph 状态图并组装统一包络。
+
+    LLM 超时 / 网络失败等可预期业务异常已在 llm 层翻译为 AgentServiceError，
+    由全局 exception_handler 转成 200 + status=error 包络；此端点只负责编排。
+    """
     logger.info(
         "收到计划请求：goal=%r level=%s weeklyHours=%s weeks=%s",
         request.goal,
@@ -98,32 +99,9 @@ async def generate_plan(
         request.weeks,
     )
 
-    # LangGraph 执行：clarify → plan → review（mock / 真实 LLM 由配置决定）
-    # LLM 超时 / 网络错误是可预期的业务失败，归一为 200 + status=error 包络（不裸 500）
-    try:
-        final_state = await agent_graph.ainvoke(
-            {"request": request.model_dump(by_alias=True)}
-        )
-    except AgentServiceError:
-        raise  # 业务错误已有统一 handler
-    except (httpx.TimeoutException, TimeoutError) as exc:
-        logger.error(
-            "LLM 响应超时 req_id=%s",
-            http_request.headers.get("x-request-id", "-"),
-            exc_info=exc,
-        )
-        raise AgentServiceError(
-            "模型响应超时，请稍后重试，或在设置页更换更快的模型"
-        ) from exc
-    except httpx.HTTPError as exc:
-        logger.error(
-            "LLM 网络错误 req_id=%s",
-            http_request.headers.get("x-request-id", "-"),
-            exc_info=exc,
-        )
-        raise AgentServiceError(
-            "无法连接模型服务，请检查网络连接与 API Key"
-        ) from exc
+    final_state = await agent_graph.ainvoke(
+        {"request": request.model_dump(by_alias=True)}
+    )
 
     # 路径一：clarify 节点判定信息不完整，返回澄清问题
     if final_state.get("clarifications"):
@@ -167,49 +145,6 @@ async def update_config(payload: AgentSettingsModel) -> AgentSettingsModel:
 async def health() -> HealthResponse:
     """健康检查：供 Tauri 端启动时探测服务在线状态。"""
     return HealthResponse()
-
-
-# ---------------------------------------------------------------------------
-# 异常处理：统一转成 PlanResponse 包络
-# ---------------------------------------------------------------------------
-
-
-def _error_envelope(code: str, message: str) -> dict:
-    """构造包络 dict（camelCase），供 JSONResponse 使用。"""
-    return PlanResponse(
-        status="error",
-        error=ErrorDetail(code=code, message=message),
-    ).model_dump(by_alias=True)
-
-
-@app.exception_handler(AgentServiceError)
-async def agent_service_error_handler(
-    _: Request, exc: AgentServiceError
-) -> JSONResponse:
-    """业务错误（如未配置 API Key）：200 + envelope，前端展示友好提示。"""
-    logger.warning("业务错误：%s", exc)
-    return JSONResponse(status_code=200, content=_error_envelope("service", str(exc)))
-
-
-@app.exception_handler(RequestValidationError)
-async def validation_error_handler(
-    _: Request, exc: RequestValidationError
-) -> JSONResponse:
-    """请求参数校验失败：200 + envelope，列出前 3 条错误。"""
-    errors = exc.errors()[:3]
-    message = f"请求参数不合法：{errors}"
-    logger.warning("参数校验失败：%s", message)
-    return JSONResponse(status_code=200, content=_error_envelope("validation", message))
-
-
-@app.exception_handler(Exception)
-async def unexpected_error_handler(_: Request, exc: Exception) -> JSONResponse:
-    """未捕获异常：500 + envelope，同时记录完整堆栈。"""
-    logger.exception("未处理异常：%s", exc)
-    return JSONResponse(
-        status_code=500,
-        content=_error_envelope("internal", f"服务内部错误：{exc}"),
-    )
 
 
 # ---------------------------------------------------------------------------

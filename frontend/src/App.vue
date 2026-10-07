@@ -102,10 +102,7 @@ function dismissError() {
       />
 
       <!-- 学习计划页：左表单 / 右结果 -->
-      <main
-        v-if="activePage === 'plan'"
-        class="min-w-0 flex-1 overflow-y-auto"
-      >
+      <main v-if="activePage === 'plan'" class="min-w-0 flex-1 overflow-y-auto">
         <div
           class="mx-auto grid w-full max-w-6xl items-start gap-6 px-6 py-8 lg:grid-cols-[400px,1fr]"
         >

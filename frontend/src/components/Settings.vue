@@ -25,8 +25,15 @@ import {
  * 保存即写盘（settings.json）+ 热加载（POST /api/config），无需重启应用。
  * 五家提供商各自的 Key / 模型名独立保存，切换提供商互不覆盖。
  */
-const { settings, loading, loadError, saving, saveNotice, loadSettings, saveSettings } =
-  useSettings();
+const {
+  settings,
+  loading,
+  loadError,
+  saving,
+  saveNotice,
+  loadSettings,
+  saveSettings,
+} = useSettings();
 
 /** 本地草稿：全量字段常驻内存，仅按当前提供商渲染对应输入框 */
 const draft = reactive<AgentSettings>(defaultAgentSettings());
@@ -86,20 +93,25 @@ function onSubmit() {
       <CardHeader>
         <CardTitle>设置</CardTitle>
         <CardDescription>
-          Agent
-          运行配置。保存后立即热加载到服务，无需重启应用；Key 仅保存在本机
+          Agent 运行配置。保存后立即热加载到服务，无需重启应用；Key 仅保存在本机
           settings.json。
         </CardDescription>
       </CardHeader>
 
       <CardContent>
         <!-- 加载中 -->
-        <p v-if="loading" class="py-8 text-center text-sm text-muted-foreground">
+        <p
+          v-if="loading"
+          class="py-8 text-center text-sm text-muted-foreground"
+        >
           正在读取设置…
         </p>
 
         <!-- 读取失败 -->
-        <p v-else-if="loadError" class="py-8 text-center text-sm text-destructive">
+        <p
+          v-else-if="loadError"
+          class="py-8 text-center text-sm text-destructive"
+        >
           读取设置失败：{{ loadError }}
         </p>
 
@@ -110,7 +122,9 @@ function onSubmit() {
             <Select
               id="provider"
               :model-value="draft.llmProvider"
-              :options="PROVIDER_OPTIONS.map((p) => ({ value: p.id, label: p.label }))"
+              :options="
+                PROVIDER_OPTIONS.map((p) => ({ value: p.id, label: p.label }))
+              "
               @update:model-value="
                 (v: string) => onProviderChange(v as LlmProvider)
               "
@@ -153,7 +167,9 @@ function onSubmit() {
               type="checkbox"
               class="h-4 w-4 accent-[hsl(var(--primary))]"
             />
-            <Label for="mock">离线演示模式（不调用 LLM，返回确定性 mock 计划）</Label>
+            <Label for="mock"
+              >离线演示模式（不调用 LLM，返回确定性 mock 计划）</Label
+            >
           </div>
 
           <!-- 保存 -->
@@ -169,7 +185,10 @@ function onSubmit() {
             <Badge v-if="saveNotice?.kind === 'ok'" variant="success">
               ✓ {{ saveNotice.text }}
             </Badge>
-            <Badge v-else-if="saveNotice?.kind === 'warn'" variant="destructive">
+            <Badge
+              v-else-if="saveNotice?.kind === 'warn'"
+              variant="destructive"
+            >
               {{ saveNotice.text }}
             </Badge>
           </div>

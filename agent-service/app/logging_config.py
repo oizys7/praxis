@@ -52,8 +52,10 @@ class IsoFormatter(logging.Formatter):
     """ISO 8601 本地时间（毫秒 + 时区偏移），与 Rust 端输出逐字符一致。"""
 
     def formatTime(self, record: logging.LogRecord, datefmt: str | None = None) -> str:
-        return datetime.fromtimestamp(record.created).astimezone().isoformat(
-            timespec="milliseconds"
+        return (
+            datetime.fromtimestamp(record.created)
+            .astimezone()
+            .isoformat(timespec="milliseconds")
         )
 
 

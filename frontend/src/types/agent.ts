@@ -115,11 +115,7 @@ export const INTEREST_PRESETS = [
 
 /** LLM 提供商：五家独立 Key / 模型名，切换互不覆盖 */
 export type LlmProvider =
-  | "openai"
-  | "anthropic"
-  | "deepseek"
-  | "glm"
-  | "opencode";
+  "openai" | "anthropic" | "deepseek" | "glm" | "opencode";
 
 /** Agent 运行配置：设置页读写的载体，Rust 持久化到 settings.json 并热推给 Python */
 export interface AgentSettings {

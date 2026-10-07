@@ -3,9 +3,13 @@
 // 在 release 模式下隐藏 Windows 控制台窗口（Tauri 官方模板标准写法，勿删）
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent_client;
 mod commands;
+mod error;
 mod logging;
+mod protocol;
 mod settings;
+mod sidecar;
 
 fn main() {
     tauri::Builder::default()
@@ -42,7 +46,7 @@ fn main() {
                 tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit
             ) {
                 tracing::info!("应用退出，收割 sidecar 子进程");
-                commands::shutdown_agent();
+                sidecar::shutdown_agent();
             }
         });
 }
