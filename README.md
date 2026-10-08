@@ -45,31 +45,42 @@ Praxis/
 ├── scripts/                # 构建、格式化、自检等自动化脚本（见 scripts/README.md）
 ├── src-tauri/              # Tauri 2 Rust 后端
 │   ├── src/
-│   │   ├── main.rs         # 入口：注册 Tauri commands
-│   │   └── commands.rs     # generate_plan / ping_agent，reqwest 转发 + 错误归一化
+│   │   ├── main.rs         # 入口：注册 Tauri commands + 日志初始化 + 退出收割 sidecar
+│   │   ├── commands.rs     # Tauri commands 薄壳（计划生成/健康检查/设置/云端库）
+│   │   ├── protocol.rs     # 三端协议数据模型（camelCase）
+│   │   ├── error.rs        # AgentError：统一序列化为 { code, message, hint }
+│   │   ├── agent_client.rs # Python 服务的 HTTP 出口（req_id / 超时 / 日志）
+│   │   ├── sidecar.rs      # 内置 Agent 子进程生命周期（release 动态端口）
+│   │   ├── db.rs           # 云端 PostgreSQL 持久化（学习计划历史，首连自动建表）
+│   │   ├── settings.rs     # settings.json（LLM 配置 + 云端库连接配置）
+│   │   └── logging.rs      # 统一日志（格式契约 + 10MB×4 大小轮转）
 │   ├── capabilities/       # Tauri 2 权限配置
 │   ├── Cargo.toml
 │   ├── build.rs
 │   └── tauri.conf.json
+├── docs/                   # 部署与运维文档（如 docs/deploy-ecs.md 云端数据库部署）
 ├── frontend/               # Vue 3 前端
 │   └── src/
-│       ├── App.vue         # 页面骨架：左表单 / 右结果
-│       ├── components/     # PlanForm、PhaseCard、ClarificationPanel、PlanResult
+│       ├── App.vue         # 页面骨架：学习计划（列表 ⇄ 生成/查看两态）/ 设置
+│       ├── components/     # PlanListView、PlanForm、PlanResult、PhaseCard、ClarificationPanel、Settings
 │       │   └── ui/         # shadcn-vue 风格基础组件（button/card/input/…）
-│       ├── composables/useAgent.ts   # invoke 封装：loading/error/result
+│       ├── composables/    # useAgent / useSettings / usePlanHistory
 │       ├── types/agent.ts  # 三端统一类型（camelCase）
 │       └── lib/utils.ts    # cn() 类名合并
-└── agent-service/          # Python Agent 服务
+└── agent-service/          # Python Agent 服务（仅任务编排与 LLM 调用）
     ├── app/
-    │   ├── main.py         # FastAPI 入口 + 统一异常处理
+    │   ├── main.py         # FastAPI 入口 + 路由（统一异常包络见 errors.py）
     │   ├── graph.py        # LangGraph 状态图定义
-    │   ├── nodes.py        # clarify / plan / review 节点逻辑
+    │   ├── nodes.py        # clarify / plan / review 薄节点
+    │   ├── errors.py       # AgentServiceError + register_error_handlers
     │   ├── schemas.py      # Pydantic 请求/响应模型（camelCase alias）
     │   ├── prompts.py      # YAML 提示词加载与渲染
-    │   ├── llm.py          # LLM 工厂（OpenAI / Anthropic 可切换）
+    │   ├── llm.py          # LLM 工厂 + invoke_structured（五提供商）
     │   ├── mock.py         # 离线演示模式的确定性计划
-    │   └── config.py       # 环境变量配置
+    │   ├── logging_config.py # 统一日志（与 Rust 格式契约对齐）
+    │   └── config.py       # 运行配置（env 冷启动 + /api/config 热更新）
     ├── prompts/            # 提示词 YAML（clarify / plan / review）
+    ├── agent_entry.py      # PyInstaller 打包入口（sidecar 引导）
     ├── pyproject.toml
     └── .env.example
 ```
@@ -77,7 +88,7 @@ Praxis/
 ## 通信协议（三端统一）
 
 所有 JSON 字段均为 **camelCase**，三处定义严格对齐：
-`frontend/src/types/agent.ts` ⇔ `src-tauri/src/commands.rs` ⇔ `agent-service/app/schemas.py`。
+`frontend/src/types/agent.ts` ⇔ `src-tauri/src/protocol.rs` ⇔ `agent-service/app/schemas.py`。
 
 ### 请求 `POST /api/generate-plan`
 

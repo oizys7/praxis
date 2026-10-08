@@ -12,9 +12,21 @@
 use tracing::{debug, error, info, warn};
 
 use crate::agent_client::{new_request_id, send, PING_TIMEOUT, PLAN_TIMEOUT};
+use crate::db;
 use crate::error::AgentError;
-use crate::protocol::{AgentErrorDetail, PlanRequest, PlanResponse};
+use crate::protocol::{
+    AgentErrorDetail, PlanRecord, PlanRequest, PlanResponse, PlanSummary, SavePlanRequest,
+};
 use crate::settings::{load_settings, save_settings_to_disk, AgentSettings};
+
+/// 读取云端数据库配置（config.yaml）；密码经主密钥解密为内存明文，
+/// 手写明文会在加载时自动加密回写（见 config::AppConfig::load_from）
+fn load_db_config(app: &tauri::AppHandle) -> crate::config::DbConfig {
+    match crate::settings::key_dir(app) {
+        Ok(dir) => crate::config::AppConfig::load(&dir).db,
+        Err(_) => crate::config::DbConfig::default(),
+    }
+}
 use crate::sidecar::ensure_agent_running;
 
 /// 生成学习计划：POST /api/generate-plan，透传 Python 的统一包络。
@@ -139,4 +151,49 @@ pub async fn save_settings(
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 云端数据库（学习计划历史）：db.rs 的薄壳，每次从 config.yaml 读取连接配置
+// ---------------------------------------------------------------------------
+
+/// 保存学习计划到云端（新记录），返回生成的计划 id
+#[tauri::command]
+pub async fn save_plan(
+    app: tauri::AppHandle,
+    record: SavePlanRequest,
+) -> Result<String, AgentError> {
+    let config = load_db_config(&app);
+    db::save_plan(&config, &record).await
+}
+
+/// 计划列表（不含整份计划）：收藏置顶 + 创建时间倒序；query 非空时模糊过滤标题/目标
+#[tauri::command]
+pub async fn list_plans(
+    app: tauri::AppHandle,
+    query: Option<String>,
+) -> Result<Vec<PlanSummary>, AgentError> {
+    let config = load_db_config(&app);
+    db::list_plans(&config, query.as_deref().unwrap_or("")).await
+}
+
+/// 读取完整计划记录（含整份计划）
+#[tauri::command]
+pub async fn get_plan(app: tauri::AppHandle, id: String) -> Result<PlanRecord, AgentError> {
+    let config = load_db_config(&app);
+    db::get_plan(&config, &id).await
+}
+
+/// 删除计划（幂等）
+#[tauri::command]
+pub async fn delete_plan(app: tauri::AppHandle, id: String) -> Result<(), AgentError> {
+    let config = load_db_config(&app);
+    db::delete_plan(&config, &id).await
+}
+
+/// 切换收藏状态，返回切换后的值
+#[tauri::command]
+pub async fn toggle_favorite(app: tauri::AppHandle, id: String) -> Result<bool, AgentError> {
+    let config = load_db_config(&app);
+    db::toggle_favorite(&config, &id).await
 }

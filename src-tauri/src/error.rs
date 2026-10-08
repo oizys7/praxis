@@ -19,6 +19,9 @@ pub enum AgentError {
     /// sidecar 生命周期错误（release 模式内置 Agent 子进程的启动/就绪失败）
     #[error("{0}")]
     Sidecar(String),
+    /// 云端数据库错误（学习计划持久化：连接/建表/查询失败）
+    #[error("{0}")]
+    Db(String),
 }
 
 impl Serialize for AgentError {
@@ -51,6 +54,11 @@ impl Serialize for AgentError {
                 "sidecar",
                 msg.clone(),
                 "内置 Agent 组件异常：请尝试重新安装 Praxis 桌面应用",
+            ),
+            AgentError::Db(msg) => (
+                "db",
+                msg.clone(),
+                "无法访问云端数据库：请检查网络、服务器状态与设置页「云端数据库」配置",
             ),
         };
 

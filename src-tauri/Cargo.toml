@@ -29,6 +29,21 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tracing-appender = "0.2"
 # 日志时间戳：ISO 8601 本地时间（与 Python datetime.isoformat 对齐）
 chrono = "0.4"
+# 云端 PostgreSQL 持久化（学习计划历史）：纯 Rust 驱动，运行时查询
+# json：plan_json JSONB 列经 sqlx::types::Json 编解码；v1 不启用 TLS（sslmode=disable）
+sqlx = { version = "0.8", default-features = false, features = [
+  "postgres",
+  "runtime-tokio",
+  "chrono",
+  "uuid",
+  "json",
+] }
+# 计划记录 id（uuid v4，Rust 端生成）
+uuid = { version = "1", features = ["v4"] }
+aes-gcm = "0.10"
+base64 = "0.22"
+rand = "0.8"
+serde_yaml = "0.9"
 
 [profile.release]
 # 减小产物体积的常见配置

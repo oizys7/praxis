@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from "vue";
+import { onMounted, ref, shallowRef, watch } from "vue";
 import { BookOpen, Settings } from "lucide-vue-next";
 import { useAgent } from "@/composables/useAgent";
 import { Badge } from "@/components/ui/badge";
@@ -8,9 +8,10 @@ import { Card, CardContent } from "@/components/ui/card";
 import AppSidebar, { type MenuItem } from "@/components/AppSidebar.vue";
 import ClarificationPanel from "@/components/ClarificationPanel.vue";
 import PlanForm from "@/components/PlanForm.vue";
+import PlanListView from "@/components/PlanListView.vue";
 import PlanResult from "@/components/PlanResult.vue";
 import SettingsPage from "@/components/Settings.vue";
-import type { PlanRequest } from "@/types/agent";
+import type { PlanRecord, PlanRequest } from "@/types/agent";
 
 /**
  * App：页面骨架。
@@ -39,13 +40,45 @@ const MENU_ITEMS: MenuItem[] = [
   { id: "settings", label: "设置", icon: Settings },
 ];
 
+/** 学习计划页内部视图：列表（默认） / 生成表单与结果 */
+const planView = ref<"list" | "create">("list");
+/** 历史查看模式：右侧展示已保存计划，隐藏左侧表单与保存按钮 */
+const historyMode = ref(false);
+/** 最近一次生成请求（保存到云端时取 goal / level / weeks 元数据） */
+const lastRequest = shallowRef<PlanRequest | null>(null);
+
 onMounted(async () => {
   agentOnline.value = await pingAgent();
 });
 
+/** 点「新建计划」：切到生成视图（清空上次生成状态，展示干净表单） */
+function onCreate() {
+  historyMode.value = false;
+  lastRequest.value = null;
+  result.value = null;
+  error.value = null;
+  planView.value = "create";
+}
+
 /** 表单提交 → 调用 Tauri command（Rust → Python） */
 function onSubmit(request: PlanRequest) {
+  lastRequest.value = request;
+  historyMode.value = false;
   void generatePlan(request);
+}
+
+/** 查看历史计划：注入已保存的计划并切到查看视图 */
+function openHistoryPlan(record: PlanRecord) {
+  historyMode.value = true;
+  lastRequest.value = null;
+  error.value = null;
+  result.value = {
+    status: "plan",
+    plan: record.plan,
+    clarifications: null,
+    error: null,
+  };
+  planView.value = "create";
 }
 
 /** 重试：清空错误后由用户重新提交 */
@@ -101,81 +134,103 @@ function dismissError() {
         :items="MENU_ITEMS"
       />
 
-      <!-- 学习计划页：左表单 / 右结果 -->
+      <!-- 学习计划页：列表（默认） / 生成与查看 -->
       <main v-if="activePage === 'plan'" class="min-w-0 flex-1 overflow-y-auto">
-        <div
-          class="mx-auto grid w-full max-w-6xl items-start gap-6 px-6 py-8 lg:grid-cols-[400px,1fr]"
-        >
-          <PlanForm :loading="loading" @submit="onSubmit" />
+        <PlanListView
+          v-if="planView === 'list'"
+          @create="onCreate"
+          @open="openHistoryPlan"
+        />
 
-          <section class="min-w-0 space-y-4">
-            <!-- 加载中 -->
-            <Card v-if="loading" class="animate-fade-in-up">
-              <CardContent
-                class="flex flex-col items-center gap-4 py-14 text-center"
-              >
-                <div
-                  class="h-10 w-10 animate-spin rounded-full border-2 border-primary border-t-transparent"
-                />
-                <div>
-                  <p class="font-medium">Agent 正在编排你的学习计划…</p>
-                  <p class="mt-1 text-sm text-muted-foreground">
-                    流程：澄清检查 → 规划生成 → 质量评审（约需 30~90 秒）
-                  </p>
-                </div>
-              </CardContent>
-            </Card>
+        <div v-else class="mx-auto w-full max-w-6xl px-6 py-8">
+          <div class="mb-4">
+            <Button variant="ghost" size="sm" @click="planView = 'list'">
+              ← 返回列表
+            </Button>
+          </div>
+          <div
+            class="grid w-full items-start gap-6"
+            :class="historyMode ? 'lg:grid-cols-1' : 'lg:grid-cols-[400px,1fr]'"
+          >
+            <PlanForm
+              v-if="!historyMode"
+              :loading="loading"
+              @submit="onSubmit"
+            />
 
-            <!-- 错误 -->
-            <Card
-              v-else-if="error"
-              class="animate-fade-in-up border-destructive/40"
-            >
-              <CardContent class="space-y-3 py-8 text-center">
-                <div class="text-3xl">⚠️</div>
-                <div>
-                  <p class="font-semibold text-destructive">
-                    请求失败（{{ error.code }}）
-                  </p>
-                  <p class="mt-1 break-all text-sm text-muted-foreground">
-                    {{ error.message }}
-                  </p>
-                  <p v-if="error.hint" class="mt-2 text-sm">
-                    💡 {{ error.hint }}
-                  </p>
-                </div>
-                <Button variant="outline" size="sm" @click="dismissError"
-                  >我知道了</Button
+            <section class="min-w-0 space-y-4">
+              <!-- 加载中 -->
+              <Card v-if="loading" class="animate-fade-in-up">
+                <CardContent
+                  class="flex flex-col items-center gap-4 py-14 text-center"
                 >
-              </CardContent>
-            </Card>
+                  <div
+                    class="h-10 w-10 animate-spin rounded-full border-2 border-primary border-t-transparent"
+                  />
+                  <div>
+                    <p class="font-medium">Agent 正在编排你的学习计划…</p>
+                    <p class="mt-1 text-sm text-muted-foreground">
+                      流程：澄清检查 → 规划生成 → 质量评审（约需 30~90 秒）
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
 
-            <!-- 澄清问题 -->
-            <ClarificationPanel
-              v-else-if="result?.status === 'clarification'"
-              :questions="result.clarifications"
-            />
-
-            <!-- 计划结果 -->
-            <PlanResult
-              v-else-if="result?.status === 'plan'"
-              :plan="result.plan"
-            />
-
-            <!-- 空态 -->
-            <Card v-else class="border-dashed">
-              <CardContent
-                class="flex flex-col items-center gap-2 py-16 text-center"
+              <!-- 错误 -->
+              <Card
+                v-else-if="error"
+                class="animate-fade-in-up border-destructive/40"
               >
-                <div class="text-4xl">🗺️</div>
-                <p class="font-medium">你的学习路线图将在这里出现</p>
-                <p class="max-w-sm text-sm text-muted-foreground">
-                  填写左侧表单并点击「生成学习计划」，Agent
-                  会先检查信息是否完整，再生成、评审并输出分阶段计划。
-                </p>
-              </CardContent>
-            </Card>
-          </section>
+                <CardContent class="space-y-3 py-8 text-center">
+                  <div class="text-3xl">⚠️</div>
+                  <div>
+                    <p class="font-semibold text-destructive">
+                      请求失败（{{ error.code }}）
+                    </p>
+                    <p class="mt-1 break-all text-sm text-muted-foreground">
+                      {{ error.message }}
+                    </p>
+                    <p v-if="error.hint" class="mt-2 text-sm">
+                      💡 {{ error.hint }}
+                    </p>
+                  </div>
+                  <Button variant="outline" size="sm" @click="dismissError"
+                    >我知道了</Button
+                  >
+                </CardContent>
+              </Card>
+
+              <!-- 澄清问题 -->
+              <ClarificationPanel
+                v-else-if="result?.status === 'clarification'"
+                :questions="result.clarifications"
+              />
+
+              <!-- 计划结果 -->
+              <PlanResult
+                v-else-if="result?.status === 'plan'"
+                :plan="result.plan"
+                :goal="lastRequest?.goal"
+                :level="lastRequest?.level"
+                :weeks="lastRequest?.weeks"
+                :history-mode="historyMode"
+              />
+
+              <!-- 空态 -->
+              <Card v-else class="border-dashed">
+                <CardContent
+                  class="flex flex-col items-center gap-2 py-16 text-center"
+                >
+                  <div class="text-4xl">🗺️</div>
+                  <p class="font-medium">你的学习路线图将在这里出现</p>
+                  <p class="max-w-sm text-sm text-muted-foreground">
+                    填写左侧表单并点击「生成学习计划」，Agent
+                    会先检查信息是否完整，再生成、评审并输出分阶段计划。
+                  </p>
+                </CardContent>
+              </Card>
+            </section>
+          </div>
         </div>
       </main>
 

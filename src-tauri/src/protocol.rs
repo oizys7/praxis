@@ -112,3 +112,59 @@ pub struct PlanResponse {
     #[serde(default)]
     pub error: Option<AgentErrorDetail>,
 }
+
+/// 保存学习计划请求（前端 -> Rust）：id 与保存时间由 Rust 端生成，不在请求内。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavePlanRequest {
+    pub title: String,
+    pub goal: String,
+    #[serde(default)]
+    pub overview: String,
+    #[serde(default)]
+    pub level: String,
+    #[serde(default)]
+    pub weeks: u32,
+    pub plan: StudyPlan,
+}
+
+/// 学习计划历史记录（完整行：元数据 + 整份计划）。
+/// 仅 Rust <-> 前端两端使用，不涉及 Python。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanRecord {
+    pub id: String,
+    pub title: String,
+    pub goal: String,
+    #[serde(default)]
+    pub overview: String,
+    /// 保存时的学习水平（冗余自 PlanRequest，列表页展示用）
+    #[serde(default)]
+    pub level: String,
+    #[serde(default)]
+    pub weeks: u32,
+    #[serde(default)]
+    pub favorite: bool,
+    /// 保存时间（ISO 8601）
+    pub created_at: String,
+    /// 整份计划
+    pub plan: StudyPlan,
+}
+
+/// 计划列表行（不含整份计划，列表页轻量加载）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanSummary {
+    pub id: String,
+    pub title: String,
+    pub goal: String,
+    #[serde(default)]
+    pub overview: String,
+    #[serde(default)]
+    pub level: String,
+    #[serde(default)]
+    pub weeks: u32,
+    #[serde(default)]
+    pub favorite: bool,
+    pub created_at: String,
+}

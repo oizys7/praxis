@@ -5,11 +5,16 @@
 //!    - frontend/src/types/agent.ts
 //!    - agent-service/app/schemas.py（AgentSettingsModel）
 //! 2. settings.json 的读写（文件不存在 / 损坏时回退默认值，保证可用性）
+//!    - 敏感字段（各提供商 API Key）落盘自动加密（见 crate::secret），
+//!      读取时解密；历史明文在加载时自动迁移为密文（明文不留盘）
 //! 3. 生成注入 sidecar 子进程的环境变量（冷启动即生效；运行中由 /api/config 热更）
 
+use std::path::Path;
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+
+use crate::secret;
 
 /// Agent 运行配置。
 ///
@@ -77,45 +82,93 @@ impl AgentSettings {
     }
 }
 
-/// settings.json 路径：{app_data_dir}/settings.json（Tauri 统一管理：Roaming + 应用 identifier）
-fn settings_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+/// settings.json 与主密钥目录（Tauri app_data_dir 统一管理，全平台一致）
+fn paths(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
     use tauri::Manager;
     let dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("无法定位应用数据目录：{e}"))?;
-    Ok(dir.join("settings.json"))
+    Ok((dir.join("settings.json"), dir))
 }
 
-/// 读取设置；文件不存在或损坏时返回默认值（不报错，保证应用可用）
+/// 主密钥目录（app_data_dir）：供 config.yaml 的 db.password 加解密使用
+pub fn key_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(paths(app)?.1)
+}
+
+/// 读取设置；文件不存在或损坏时返回默认值（不报错，保证应用可用）。
+/// 敏感字段解密为内存明文（IPC / sidecar 使用）；发现历史明文则立即回写密文。
 pub fn load_settings(app: &tauri::AppHandle) -> AgentSettings {
-    let Ok(path) = settings_path(app) else {
+    let (path, key_dir) = match paths(app) {
+        Ok(v) => v,
+        Err(_) => return AgentSettings::with_defaults(),
+    };
+    let Ok(content) = std::fs::read_to_string(&path) else {
         return AgentSettings::with_defaults();
     };
-    match std::fs::read_to_string(&path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|e| {
+    let mut settings = match serde_json::from_str::<AgentSettings>(&content) {
+        Ok(s) => s,
+        Err(e) => {
             tracing::warn!(
                 error = %e,
                 path = %path.display(),
                 "settings.json 解析失败，使用默认配置"
             );
-            AgentSettings::with_defaults()
-        }),
-        Err(_) => AgentSettings::with_defaults(),
+            return AgentSettings::with_defaults();
+        }
+    };
+
+    let mut had_plain = false;
+    unseal_field(&mut settings.openai_api_key, &key_dir, &mut had_plain);
+    unseal_field(&mut settings.anthropic_api_key, &key_dir, &mut had_plain);
+    unseal_field(&mut settings.deepseek_api_key, &key_dir, &mut had_plain);
+    unseal_field(&mut settings.glm_api_key, &key_dir, &mut had_plain);
+    unseal_field(&mut settings.opencode_api_key, &key_dir, &mut had_plain);
+    if had_plain {
+        match save_settings_to_disk(app, &settings) {
+            Ok(()) => tracing::info!("settings.json 敏感字段已由明文迁移为加密存储"),
+            Err(e) => {
+                tracing::warn!(error = %e, "敏感字段加密迁移失败（下次保存时自动重试）")
+            }
+        }
     }
+    settings
 }
 
-/// 保存设置到 settings.json（父目录不存在时自动创建）
+/// 保存设置到 settings.json（父目录不存在时自动创建）。
+/// 敏感字段加密后落盘；内存中的 AgentSettings 始终为明文（供 IPC / sidecar 使用）。
 pub fn save_settings_to_disk(
     app: &tauri::AppHandle,
     settings: &AgentSettings,
 ) -> Result<(), String> {
-    let path = settings_path(app)?;
+    let (path, key_dir) = paths(app)?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("无法创建设置目录：{e}"))?;
     }
+    let sealed = sealed_for_disk(settings, &key_dir)?;
     let content =
-        serde_json::to_string_pretty(settings).map_err(|e| format!("设置序列化失败：{e}"))?;
+        serde_json::to_string_pretty(&sealed).map_err(|e| format!("设置序列化失败：{e}"))?;
     std::fs::write(&path, content).map_err(|e| format!("无法写入设置文件：{e}"))?;
     Ok(())
+}
+
+/// 敏感字段加密副本：返回可安全序列化到磁盘的 AgentSettings（密文替换明文）
+fn sealed_for_disk(settings: &AgentSettings, key_dir: &Path) -> Result<AgentSettings, String> {
+    Ok(AgentSettings {
+        openai_api_key: secret::seal(key_dir, &settings.openai_api_key)?,
+        anthropic_api_key: secret::seal(key_dir, &settings.anthropic_api_key)?,
+        deepseek_api_key: secret::seal(key_dir, &settings.deepseek_api_key)?,
+        glm_api_key: secret::seal(key_dir, &settings.glm_api_key)?,
+        opencode_api_key: secret::seal(key_dir, &settings.opencode_api_key)?,
+        ..settings.clone()
+    })
+}
+
+/// 解密单个敏感字段；发现历史明文时置 had_plain（触发一次性迁移回写）
+fn unseal_field(field: &mut String, key_dir: &Path, had_plain: &mut bool) {
+    if !field.is_empty() && !secret::is_sealed(field) {
+        *had_plain = true;
+    }
+    *field = secret::open(key_dir, field);
 }

@@ -5,9 +5,12 @@
 
 mod agent_client;
 mod commands;
+mod config;
+mod db;
 mod error;
 mod logging;
 mod protocol;
+mod secret;
 mod settings;
 mod sidecar;
 
@@ -21,6 +24,11 @@ fn main() {
             commands::ping_agent,
             commands::get_settings,
             commands::save_settings,
+            commands::save_plan,
+            commands::list_plans,
+            commands::get_plan,
+            commands::delete_plan,
+            commands::toggle_favorite,
         ])
         .setup(|app| {
             use tauri::Manager;

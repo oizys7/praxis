@@ -199,3 +199,42 @@ export function defaultAgentSettings(): AgentSettings {
     allowMockLlm: false,
   };
 }
+
+// ---------------------------------------------------------------------------
+// 学习计划历史（云端持久化）：仅 Rust <-> 前端两端，不涉及 Python
+// ---------------------------------------------------------------------------
+
+/** 保存学习计划请求：id 与保存时间由 Rust 端生成 */
+export interface SavePlanInput {
+  title: string;
+  goal: string;
+  overview: string;
+  level: string;
+  weeks: number;
+  plan: StudyPlan;
+}
+
+/** 学习计划历史记录（完整行：元数据 + 整份计划） */
+export interface PlanRecord {
+  id: string;
+  title: string;
+  goal: string;
+  overview: string;
+  level: string;
+  weeks: number;
+  favorite: boolean;
+  createdAt: string;
+  plan: StudyPlan;
+}
+
+/** 计划列表行（不含整份计划，列表页轻量加载） */
+export interface PlanSummary {
+  id: string;
+  title: string;
+  goal: string;
+  overview: string;
+  level: string;
+  weeks: number;
+  favorite: boolean;
+  createdAt: string;
+}

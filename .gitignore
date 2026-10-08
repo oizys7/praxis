@@ -29,3 +29,6 @@ venv/
 .env
 frontend/.env
 agent-service/.env
+
+# 本机应用配置（云端数据库连接，含敏感信息，不入库）
+src-tauri/config.yaml
