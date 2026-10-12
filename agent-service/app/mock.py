@@ -310,23 +310,3 @@ def build_mock_phase(
         ],
         "project": project,
     }
-
-
-def build_mock_plan(request: dict[str, Any]) -> dict[str, Any]:
-    """兼容入口：outline + 逐阶段扩展拼装完整 StudyPlan dict（camelCase，无 theory）。
-
-    旧调用方（nodes.plan_node）在任务 5 重构前仍依赖本函数；任务 5 接入
-    outline_node / expand_phase_node 两个节点后将删除本 shim。
-    """
-    outline = build_mock_outline(request)
-    return {
-        "title": outline["title"],
-        "overview": outline["overview"],
-        "estimatedTotalHours": outline["estimatedTotalHours"],
-        "phases": [
-            build_mock_phase(request, phase_outline, index)
-            for index, phase_outline in enumerate(outline["phases"])
-        ],
-        "resources": outline["resources"],
-        "reviewNotes": "（Mock 模式：未执行真实 LLM 评审）",
-    }

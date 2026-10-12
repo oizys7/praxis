@@ -5,7 +5,7 @@ build_mock_outline / build_mock_phase 均为 camelCase dict 进出（与 schemas
 拼出的整计划必须能通过 validate_plan 零 pending（裁决 2）。
 """
 
-from app.mock import build_mock_outline, build_mock_phase, build_mock_plan
+from app.mock import build_mock_outline, build_mock_phase
 from app.validators import validate_plan
 
 # camelCase 请求，形状等同 PlanRequest.model_dump(by_alias=True)
@@ -17,19 +17,6 @@ REQUEST = {
     "interests": ["前端", "Python"],
     "background": "写过一些脚本",
 }
-
-
-def _collect_keys(obj) -> set:
-    """递归收集 dict/list 中出现的所有键，用于断言无残留旧键（如 theory）。"""
-    keys: set = set()
-    if isinstance(obj, dict):
-        for key, value in obj.items():
-            keys.add(key)
-            keys |= _collect_keys(value)
-    elif isinstance(obj, list):
-        for item in obj:
-            keys |= _collect_keys(item)
-    return keys
 
 
 def _assemble_plan(request: dict) -> dict:
@@ -166,21 +153,8 @@ def test_project_templates_complete():
 
 
 # ---------------------------------------------------------------------------
-# 补充用例：旧入口 shim 与确定性
+# 补充用例：确定性
 # ---------------------------------------------------------------------------
-
-
-def test_build_mock_plan_shim():
-    """旧 build_mock_plan 保留导出：拼出新形状 StudyPlan dict，无 theory 键。"""
-    plan = build_mock_plan(REQUEST)
-    assert plan["estimatedTotalHours"] == REQUEST["weeklyHours"] * REQUEST["weeks"]
-    assert len(plan["phases"]) == 3
-    assert {"title", "overview", "estimatedTotalHours", "phases", "resources"} <= (
-        set(plan)
-    )
-    keys = _collect_keys(plan)
-    assert "theory" not in keys, "新形状不应残留旧 theory 键"
-    assert "chapters" in keys and "deepDives" in keys, "应含 chapters/deepDives 新键"
 
 
 def test_mock_generation_deterministic():

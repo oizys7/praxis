@@ -1,29 +1,63 @@
-"""LangGraph 节点实现：clarify（澄清）→ plan（规划）→ review（评审）。
+"""LangGraph 节点实现：分层生成的编排逻辑。
+
+生成流程分四步（骨架 → 并行展开 → 拼装校验 → 评审与定向回炉）：
+- outline_node：先产出计划骨架（PlanOutline，只含阶段大纲，不写章节正文）；
+- expand_phase_node：Send 并行逐阶段扩展为 StudyPhase 草稿（并发上限 3）；
+- assemble_node：按索引排序拼装 StudyPlan，并跑程序化校验（app.validators）；
+- review_node：结合校验问题做 LLM 评审，汇总出待回炉阶段索引，
+  由 expand_revision_node 定向回炉（最多一次，条件边在图侧控制）。
 
 节点只写业务编排逻辑（检查输入 → 调 LLM → 产出状态增量）。
 LLM 调用细节（提示词渲染、结构化解析、解析重试、传输层异常翻译）
 全部收敛在 app.llm.invoke_structured；异常类型定义见 app.errors。
 
 约定：
-- 每个节点接收状态 dict，返回需要合并进状态的「增量 dict」；
+- 每个节点接收状态（expand_phase_node 例外：收 Send payload dict），
+  返回需要合并进状态的「增量 dict」；
+- phase_drafts 采用「<阶段索引字符串> -> 阶段 camelCase dict」的整值
+  存储：并行扩展时各实例只返回自己负责的键，增量必须携带完整 dict；
 - 所有提示词文案均来自 prompts/*.yaml，代码中不硬编码；
 - mock 模式 / 未配置 API Key 时有明确的降级路径，保证服务可用或报错清晰。
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, TypedDict
 
-from app import prompts
+from app import prompts, validators
 from app.config import settings
 from app.errors import AgentServiceError
 from app.llm import has_llm_config, invoke_structured
-from app.mock import build_mock_plan
-from app.schemas import ClarificationOutput, PlanRequest, ReviewOutput, StudyPlan
+from app.mock import build_mock_outline, build_mock_phase
+from app.schemas import (
+    ClarificationOutput,
+    PlanOutline,
+    PlanRequest,
+    ReviewOutput,
+    StudyPhase,
+)
 
 logger = logging.getLogger("praxis.nodes")
+
+# 单请求阶段扩展的并发上限：骨架一次拆出多阶段时，避免同时打开
+# 过多 LLM 连接（首展 Send 多实例与定向回炉 gather 共用同一信号量）
+_EXPAND_SEMAPHORE = asyncio.Semaphore(3)
+
+# 未配置 Key 的统一引导文案（mock 判定之后、真实 LLM 调用之前抛出）
+_NO_KEY_HINT = (
+    "未配置 LLM API Key：请复制 agent-service/.env.example 为 .env 并填入 "
+    "OPENAI_API_KEY（或 ANTHROPIC_API_KEY）；"
+    "或设置 PRAXIS_ALLOW_MOCK_LLM=true 使用离线演示模式。"
+)
+
+# 首次展开阶段时注入 phase.yaml 的占位评审意见（模板据此判断「非回炉」）
+_FIRST_EXPAND_REVIEW_NOTES = "（首次生成，无评审意见）"
+
+# 程序化校验问题为空时注入 review.yaml 的占位说明
+_NO_VALIDATION_ISSUES = "（无程序化校验问题）"
 
 
 class AgentState(TypedDict, total=False):
@@ -34,10 +68,16 @@ class AgentState(TypedDict, total=False):
 
     request: dict[str, Any]  # PlanRequest 的 camelCase dict
     clarifications: list[str]  # clarify 产出：非空则流程终止，返回澄清问题
-    plan: dict[str, Any]  # plan 产出：StudyPlan 的 camelCase dict
+    outline: dict[str, Any]  # outline 产出：PlanOutline 的 camelCase dict（骨架）
+    phase_drafts: dict[
+        str, Any
+    ]  # 阶段草稿：阶段索引字符串 -> StudyPhase camelCase dict
+    plan: dict[str, Any]  # assemble 产出：StudyPlan 的 camelCase dict
     passed: bool  # review 产出：计划是否通过质量评审
-    review_notes: str  # review 产出：问题与建议（回炉时作为重新规划的输入）
+    review_notes: list[str]  # review 产出：评审问题与回炉备注（回炉时作为重生成输入）
     revised: bool  # 是否已按评审意见修订过（保证最多回炉一次，防止死循环）
+    validation_issues: list[str]  # assemble 产出：程序化校验问题描述列表
+    pending_phase_indexes: list[int]  # 待定向回炉的阶段索引（0-based，升序去重）
 
 
 def _request_of(state: AgentState) -> PlanRequest:
@@ -70,7 +110,10 @@ def _detect_issues(req: PlanRequest) -> list[tuple[str, str]]:
         )
     if not 1 <= req.weeks <= 52:
         issues.append(
-            ("weeks_out_of_range", f"期望周数 {req.weeks} 超出合理范围（1-52）")
+            (
+                "weeks_out_of_range",
+                f"期望周数 {req.weeks} 超出合理范围（1-52）",
+            )
         )
     if not req.background.strip():
         issues.append(("background_missing", "未描述已有基础，无法校准学习起点"))
@@ -122,87 +165,254 @@ async def clarify_node(state: AgentState) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 节点 2：plan —— 调用 LLM 生成结构化学习计划
+# 节点 2：outline —— 只产出计划骨架（阶段大纲，不写章节正文）
 # ---------------------------------------------------------------------------
 
 
-async def plan_node(state: AgentState) -> dict[str, Any]:
-    """规划节点：用 plan.yaml 提示词生成 StudyPlan。
+async def outline_node(state: AgentState) -> dict[str, Any]:
+    """骨架规划节点：用 outline.yaml 产出 PlanOutline（计划标题 / 阶段大纲 / 资源）。
 
-    若状态中带有 review_notes（说明是评审回炉），会将其注入提示词，
-    要求 LLM 逐条落实评审意见，并标记 revised=True。
+    骨架只描述每个阶段的目标、周区间、章节标题与项目简介，
+    章节正文由后续 expand_phase_node 逐阶段展开。
     """
     req = _request_of(state)
-    review_notes: str = state.get("review_notes", "")
-    revised = bool(review_notes)
 
     if settings.allow_mock_llm:
-        return {"plan": build_mock_plan(state.get("request", {})), "revised": revised}
-
+        return {"outline": build_mock_outline(state.get("request", {}))}
     if not has_llm_config():
-        raise AgentServiceError(
-            "未配置 LLM API Key：请复制 agent-service/.env.example 为 .env 并填入 "
-            "OPENAI_API_KEY（或 ANTHROPIC_API_KEY）；"
-            "或设置 PRAXIS_ALLOW_MOCK_LLM=true 使用离线演示模式。"
-        )
+        raise AgentServiceError(_NO_KEY_HINT)
 
-    try:
-        plan = await invoke_structured(
-            StudyPlan,
-            "plan",
-            {
-                "goal": req.goal,
-                "level": req.level.value,
-                "weekly_hours": str(req.weekly_hours),
-                "weeks": str(req.weeks),
-                "interests": "、".join(req.interests) if req.interests else "未填写",
-                "background": req.background or "未填写",
-                "review_notes": review_notes or "（首次生成，无评审意见）",
-            },
-        )
-    except AgentServiceError:
-        # 回炉场景兜底：重新生成失败（解析损坏 / 网络抖动）时回退到上一轮
-        # 已成功解析的计划——回炉是质量优化手段，不能让整个请求失败
-        previous = state.get("plan")
-        if revised and previous:
-            logger.warning("回炉生成失败，回退到上一轮计划")
-            return {"plan": previous, "revised": True}
-        raise
-
-    # 以 camelCase JSON 形式存入状态（与响应包络直接对齐）
-    return {"plan": plan.model_dump(mode="json", by_alias=True), "revised": revised}
+    outline = await invoke_structured(
+        PlanOutline,
+        "outline",
+        {
+            "goal": req.goal,
+            "level": req.level.value,
+            "weekly_hours": str(req.weekly_hours),
+            "weeks": str(req.weeks),
+            "interests": "、".join(req.interests) if req.interests else "未填写",
+            "background": req.background or "未填写",
+        },
+    )
+    # 以 camelCase JSON 形式存入状态（与后续节点及响应包络直接对齐）
+    return {"outline": outline.model_dump(mode="json", by_alias=True)}
 
 
 # ---------------------------------------------------------------------------
-# 节点 3：review —— 第二次 LLM 调用，评审计划质量
+# 阶段扩展共用逻辑：单阶段草稿生成（首展与定向回炉两条路径共用）
+# ---------------------------------------------------------------------------
+
+
+def build_plan_context(outline: dict[str, Any], phase_index: int) -> str:
+    """从大纲构造阶段扩展用的计划上下文（标题 / 概述 / 相邻阶段名称）。
+
+    首展构造 Send payload 与定向回炉重建上下文共用本函数，
+    保证两条路径注入给 LLM 的上下文形状一致。
+    """
+    phases = outline.get("phases") or []
+
+    def _phase_name(index: int) -> str:
+        if 0 <= index < len(phases):
+            return (phases[index] or {}).get("name") or f"第 {index + 1} 阶段"
+        return "（无）"
+
+    return (
+        f"计划标题：{outline.get('title', '')}\n"
+        f"整体概述：{outline.get('overview', '')}\n"
+        f"上一阶段：{_phase_name(phase_index - 1)}\n"
+        f"下一阶段：{_phase_name(phase_index + 1)}"
+    )
+
+
+async def _expand_phase_draft(
+    request: dict[str, Any],
+    phase_outline: dict[str, Any],
+    phase_index: int,
+    *,
+    plan_context: str,
+    review_notes: str,
+) -> dict[str, Any]:
+    """扩展单个阶段草稿（mock / 真实 LLM 双路径），返回 StudyPhase camelCase dict。
+
+    并发闸在此收口：首展（Send 多实例）与定向回炉（gather）共用
+    _EXPAND_SEMAPHORE，同一请求最多 3 个阶段同时调用 LLM。
+    """
+    if settings.allow_mock_llm:
+        return build_mock_phase(request, phase_outline, phase_index)
+    if not has_llm_config():
+        raise AgentServiceError(_NO_KEY_HINT)
+
+    async with _EXPAND_SEMAPHORE:
+        phase = await invoke_structured(
+            StudyPhase,
+            "phase",
+            {
+                "plan_context": plan_context,
+                "phase_outline": json.dumps(phase_outline, ensure_ascii=False),
+                "review_notes": review_notes,
+            },
+        )
+    return phase.model_dump(mode="json", by_alias=True)
+
+
+# ---------------------------------------------------------------------------
+# 节点 3：expand_phase —— Send 目标节点，并行扩展单个阶段
+# ---------------------------------------------------------------------------
+
+
+async def expand_phase_node(payload: dict[str, Any]) -> dict[str, Any]:
+    """阶段扩展节点：把 payload 指定的单个阶段骨架扩展为完整正文。
+
+    由图侧经 Send API 分发，收到的是 payload dict（含 request /
+    phase_outline / phase_index / plan_context）而非全局状态。
+    返回增量只含自己负责的索引键——多实例并行时各写各键，互不覆盖。
+    """
+    request: dict[str, Any] = payload["request"]
+    phase_outline: dict[str, Any] = payload["phase_outline"]
+    phase_index: int = payload["phase_index"]
+
+    draft = await _expand_phase_draft(
+        request,
+        phase_outline,
+        phase_index,
+        plan_context=payload["plan_context"],
+        # 首展不是回炉：注入占位意见，phase.yaml 据此跳过意见落实
+        review_notes=_FIRST_EXPAND_REVIEW_NOTES,
+    )
+    return {"phase_drafts": {str(phase_index): draft}}
+
+
+# ---------------------------------------------------------------------------
+# 节点 4：expand_revision —— 定向回炉，只重生成未通过的阶段
+# ---------------------------------------------------------------------------
+
+
+async def expand_revision_node(state: AgentState) -> dict[str, Any]:
+    """定向回炉节点：仅重生成 pending_phase_indexes 中的阶段。
+
+    与整计划回炉不同：gather 收集异常而不传播，单个阶段失败不拖垮
+    整轮——失败阶段保留旧草稿，并把原因追加进 review_notes。
+    """
+    req = _request_of(state)
+    request = req.model_dump(by_alias=True)
+    outline = state.get("outline") or {}
+    drafts: dict[str, dict[str, Any]] = dict(state.get("phase_drafts") or {})
+    pending: list[int] = state.get("pending_phase_indexes") or []
+    notes: list[str] = list(state.get("review_notes") or [])
+    # 注入给重生成调用的评审意见（失败备注在 gather 之后才追加，互不污染）
+    review_notes_text = "\n".join(notes) or _FIRST_EXPAND_REVIEW_NOTES
+
+    async def _redo(index: int) -> tuple[int, dict[str, Any]]:
+        phase_outline = (outline.get("phases") or [])[index]
+        draft = await _expand_phase_draft(
+            request,
+            phase_outline,
+            index,
+            plan_context=build_plan_context(outline, index),
+            review_notes=review_notes_text,
+        )
+        return index, draft
+
+    results = await asyncio.gather(
+        *(_redo(index) for index in pending), return_exceptions=True
+    )
+
+    for index, result in zip(pending, results, strict=True):  # gather 保序且一一对应
+        if isinstance(result, BaseException):
+            notes.append(f"第 {index + 1} 阶段重生成失败，保留原稿：{result}")
+            continue
+        _, draft = result
+        drafts[str(index)] = draft
+
+    return {"phase_drafts": drafts, "revised": True, "review_notes": notes}
+
+
+# ---------------------------------------------------------------------------
+# 节点 5：assemble —— 拼装完整计划 + 程序化校验
+# ---------------------------------------------------------------------------
+
+
+async def assemble_node(state: AgentState) -> dict[str, Any]:
+    """拼装节点：阶段草稿按索引升序拼成 StudyPlan，并跑程序化校验。
+
+    本节点不调用 LLM；校验不通过的阶段索引写入 pending_phase_indexes，
+    与评审失败索引一起构成定向回炉的唯一输入。
+    """
+    req = _request_of(state)
+    outline = state.get("outline") or {}
+    drafts: dict[str, dict[str, Any]] = state.get("phase_drafts") or {}
+
+    phases = [drafts[key] for key in sorted(drafts, key=int)]
+    plan = {
+        "title": outline.get("title", ""),
+        "overview": outline.get("overview", ""),
+        "estimatedTotalHours": outline.get("estimatedTotalHours", 0),
+        "phases": phases,
+        "resources": outline.get("resources") or [],
+        "reviewNotes": "\n".join(state.get("review_notes") or []),
+    }
+
+    issues, failed_indexes = validators.validate_plan(plan, req.weekly_hours, req.weeks)
+    logger.info(
+        "拼装完成 phases=%d 校验问题=%d 待回炉阶段=%s",
+        len(phases),
+        len(issues),
+        failed_indexes,
+    )
+    return {
+        "plan": plan,
+        "validation_issues": issues,
+        "pending_phase_indexes": failed_indexes,
+    }
+
+
+# ---------------------------------------------------------------------------
+# 节点 6：review —— LLM 评审 + 汇总定向回炉索引
 # ---------------------------------------------------------------------------
 
 
 async def review_node(state: AgentState) -> dict[str, Any]:
-    """评审节点：从结构完整性 / 验收标准可测性 / 时间可行性 / 难度递进四个维度审查。
+    """评审节点：结合程序化校验结果，从结构完整 / 主要知识 / 可测性 /
+    时间可行 / 难度递进 / 方向契合等维度审查。
 
-    未通过时条件边会把流程送回 plan 节点（最多一次）。
+    LLM 判定失败的阶段索引与校验失败索引取并集后写入
+    pending_phase_indexes（定向回炉的唯一入口）。
+    mock / 未配置 Key：跳过评审直接放行，保证全链路可用。
     """
-    # mock / 未配置 Key：跳过评审直接放行
+    plan = state.get("plan") or {}
+    validation_issues: list[str] = state.get("validation_issues") or []
+
     if settings.allow_mock_llm:
-        return {"passed": True, "review_notes": "（Mock 模式：未执行真实 LLM 评审）"}
+        return {"passed": True, "review_notes": ["（Mock 模式：未执行真实 LLM 评审）"]}
     if not has_llm_config():
-        return {"passed": True, "review_notes": "（未配置 API Key：跳过评审）"}
+        return {"passed": True, "review_notes": ["（未配置 API Key：跳过评审）"]}
 
     output = await invoke_structured(
         ReviewOutput,
         "review",
-        {"plan": json.dumps(state.get("plan", {}), ensure_ascii=False, indent=2)},
+        {
+            "plan": json.dumps(plan, ensure_ascii=False),
+            "validation_issues": (
+                "\n".join(f"- {issue}" for issue in validation_issues)
+                if validation_issues
+                else _NO_VALIDATION_ISSUES
+            ),
+        },
     )
 
     logger.info(
-        "评审完成 passed=%s issues=%d suggestions=%d",
+        "评审完成 passed=%s issues=%d suggestions=%d failed_phases=%s",
         output.passed,
         len(output.issues),
         len(output.suggestions),
+        output.failed_phase_indexes,
     )
-    notes = "\n".join([*output.issues, *output.suggestions]).strip()
+    merged_pending = sorted(
+        set(state.get("pending_phase_indexes") or []) | set(output.failed_phase_indexes)
+    )
     return {
         "passed": output.passed,
-        "review_notes": notes or "计划评审通过，未发现问题。",
+        "review_notes": [issue for issue in output.issues if issue.strip()],
+        "suggestions": list(output.suggestions),
+        "pending_phase_indexes": merged_pending,
     }
