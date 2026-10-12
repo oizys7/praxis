@@ -57,28 +57,86 @@ class PlanRequest(CamelModel):
 # ---------------------------------------------------------------------------
 
 
-class Project(CamelModel):
-    """阶段收尾项目及验收标准。"""
+class PhaseProject(CamelModel):
+    """阶段收尾项目：背景、步骤、产出与验收标准。"""
 
     name: str = Field(..., description="项目名称")
     description: str = Field(default="", description="项目描述")
+    background: str = Field(default="", description="项目背景与动机")
+    steps: list[str] = Field(default_factory=list, description="建议实施步骤（有序）")
+    estimated_hours: int = Field(default=0, description="预计投入学时")
     acceptance_criteria: list[str] = Field(
         default_factory=list, description="可验证的验收标准"
     )
 
 
-class Phase(CamelModel):
-    """学习计划的一个阶段：理论 / 实操 / 作业 / 项目 四位一体。"""
+class ConceptDef(CamelModel):
+    """章节核心概念定义。"""
+
+    name: str = Field(..., description="概念名称")
+    definition: str = Field(default="", description="一句话定义")
+
+
+class KnowledgePoint(CamelModel):
+    """章节知识点。"""
+
+    title: str = Field(..., description="知识点标题")
+    detail: str = Field(default="", description="要点说明")
+
+
+class KnowledgeDiagram(CamelModel):
+    """章节配图：Mermaid 源码由前端渲染。"""
+
+    title: str = Field(default="", description="图标题")
+    mermaid: str = Field(default="", description="Mermaid 源码")
+    caption: str = Field(default="", description="图注说明")
+
+
+class MainKnowledge(CamelModel):
+    """章节主要知识：概念 / 知识点 / 图示。"""
+
+    concepts: list[ConceptDef] = Field(default_factory=list, description="核心概念定义")
+    knowledge_points: list[KnowledgePoint] = Field(
+        default_factory=list, description="知识点列表"
+    )
+    diagrams: list[KnowledgeDiagram] = Field(
+        default_factory=list, description="Mermaid 图示"
+    )
+
+
+class DeepDive(CamelModel):
+    """章节深入内容：围绕主题的延伸长文。"""
+
+    topic: str = Field(..., description="深入主题")
+    angle: str = Field(default="", description="切入角度")
+    content: str = Field(default="", description="正文长文")
+
+
+class Chapter(CamelModel):
+    """阶段内的学习章节：主要知识 + 深入内容。"""
+
+    title: str = Field(..., description="章节标题")
+    summary: str = Field(default="", description="章节概述")
+    main_knowledge: MainKnowledge = Field(
+        default_factory=MainKnowledge, description="本章主要知识"
+    )
+    deep_dives: list[DeepDive] = Field(
+        default_factory=list, description="深入内容列表"
+    )
+
+
+class StudyPhase(CamelModel):
+    """学习计划的一个阶段：章节 / 实操 / 作业 / 项目。"""
 
     name: str = Field(..., description="阶段名称")
     week_range: str = Field(default="", description="周区间，如 '第 1-3 周'")
     objectives: list[str] = Field(default_factory=list, description="阶段目标")
-    theory: list[str] = Field(default_factory=list, description="理论学习内容")
+    chapters: list[Chapter] = Field(
+        default_factory=list, description="章节列表（替代旧 theory）"
+    )
     practice: list[str] = Field(default_factory=list, description="动手实操任务")
     assignments: list[str] = Field(default_factory=list, description="课后作业")
-    project: Project = Field(
-        default_factory=lambda: Project(name=""), description="阶段项目"
-    )
+    project: PhaseProject | None = Field(default=None, description="阶段项目")
 
 
 class Resource(CamelModel):
@@ -95,9 +153,34 @@ class StudyPlan(CamelModel):
     title: str = Field(..., description="计划标题")
     overview: str = Field(default="", description="整体概述")
     estimated_total_hours: int = Field(default=0, description="预计总学时")
-    phases: list[Phase] = Field(default_factory=list, description="阶段列表")
+    phases: list[StudyPhase] = Field(default_factory=list, description="阶段列表")
     resources: list[Resource] = Field(default_factory=list, description="推荐资源")
     review_notes: str = Field(default="", description="评审节点给出的备注")
+
+
+# ---------------------------------------------------------------------------
+# 图内流转内部模型（仅图内流转，不入响应协议）
+# ---------------------------------------------------------------------------
+
+
+class PhaseOutline(CamelModel):
+    """大纲阶段的轻量描述（仅图内流转，不入响应协议）。"""
+
+    name: str = Field(..., description="阶段名称")
+    week_range: str = Field(default="", description="周区间，如 '第 1-3 周'")
+    objectives: list[str] = Field(default_factory=list, description="阶段目标")
+    chapter_titles: list[str] = Field(default_factory=list, description="章节标题列表")
+    project_brief: str = Field(default="", description="阶段项目一句话简介")
+
+
+class PlanOutline(CamelModel):
+    """计划总大纲：先产出骨架，再逐阶段展开（仅图内流转，不入响应协议）。"""
+
+    title: str = Field(..., description="计划标题")
+    overview: str = Field(default="", description="整体概述")
+    estimated_total_hours: int = Field(default=0, description="预计总学时")
+    phases: list[PhaseOutline] = Field(default_factory=list, description="阶段大纲列表")
+    resources: list[Resource] = Field(default_factory=list, description="推荐资源")
 
 
 # ---------------------------------------------------------------------------
@@ -182,3 +265,6 @@ class ReviewOutput(BaseModel):
     passed: bool = Field(..., description="计划是否通过质量评审")
     issues: list[str] = Field(default_factory=list, description="发现的问题")
     suggestions: list[str] = Field(default_factory=list, description="改进建议")
+    failed_phase_indexes: list[int] = Field(
+        default_factory=list, description="评审未通过的阶段索引（0-based）"
+    )
