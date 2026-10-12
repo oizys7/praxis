@@ -25,7 +25,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, TypedDict
+import operator
+from typing import Annotated, Any, TypedDict
 
 from app import prompts, validators
 from app.config import settings
@@ -69,12 +70,14 @@ class AgentState(TypedDict, total=False):
     request: dict[str, Any]  # PlanRequest 的 camelCase dict
     clarifications: list[str]  # clarify 产出：非空则流程终止，返回澄清问题
     outline: dict[str, Any]  # outline 产出：PlanOutline 的 camelCase dict（骨架）
-    phase_drafts: dict[
-        str, Any
-    ]  # 阶段草稿：阶段索引字符串 -> StudyPhase camelCase dict
+    # 阶段草稿：阶段索引字符串 -> StudyPhase camelCase dict。
+    # Annotated reducer（operator.or_，即 dict union）：并行 Send 多实例
+    # 各写各的索引键，LangGraph 据此做增量合并而非整值覆盖
+    phase_drafts: Annotated[dict[str, dict[str, Any]], operator.or_]
     plan: dict[str, Any]  # assemble 产出：StudyPlan 的 camelCase dict
     passed: bool  # review 产出：计划是否通过质量评审
     review_notes: list[str]  # review 产出：评审问题与回炉备注（回炉时作为重生成输入）
+    suggestions: list[str]  # review 产出：改进建议（随响应包络返回给前端）
     revised: bool  # 是否已按评审意见修订过（保证最多回炉一次，防止死循环）
     validation_issues: list[str]  # assemble 产出：程序化校验问题描述列表
     pending_phase_indexes: list[int]  # 待定向回炉的阶段索引（0-based，升序去重）
