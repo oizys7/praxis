@@ -27,12 +27,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from app.config import settings
-from app.errors import register_error_handlers
+from app.errors import AgentServiceError, register_error_handlers
 from app.graph import agent_graph
 from app.llm import reset_chat_model_cache
 from app.logging_config import setup_logging, uvicorn_log_config
 from app.schemas import (
     AgentSettingsModel,
+    ErrorDetail,
     HealthResponse,
     PlanRequest,
     PlanResponse,
@@ -94,7 +95,8 @@ def build_response(final_state: dict[str, Any]) -> PlanResponse:
     路径一：clarify 节点判定信息不完整，返回澄清问题；
     路径二：正常产出计划。
     业务异常不在此处理：可预期异常已由 llm 层翻译为 AgentServiceError，
-    非流式端点由全局 exception_handler 转成 200 + status=error 包络。
+    非流式端点由全局 exception_handler、流式端点由生成器捕获后
+    分别转成 status=error 包络（前者 HTTP 200，后者为 done 终态行）。
     """
     # 路径一：澄清问题非空即 clarification 终态
     if final_state.get("clarifications"):
@@ -146,10 +148,14 @@ async def generate_plan_stream(request: PlanRequest) -> StreamingResponse:
     - {"type": "phase", "index": i, "phase": {…}}：每阶段完成推 1 条，
       可能乱序，回炉重生成时同 index 再次推送（覆盖语义）；
     - {"type": "done", "response": {…统一包络…}}：终态，必为最后一行
-      （clarification 终态同样走 done，此时无 outline / phase 事件）。
+      （plan / clarification / error 三种终态统一走 done；clarification
+      与 error 终态无 outline / phase 事件，error 之前可能已有部分
+      outline / phase 事件，消费方以 done.response.status 判定成败）。
 
-    生成器不做 try/except 吞错：异常直接抛出由 Starlette 中断流，
-    传输层错误由消费方处理；请求校验失败（422）发生在流开始前，无需处理。
+    业务异常（AgentServiceError）不中断流：生成器捕获后翻译为 error 包络的
+    done 终态，与非流式通道全局 handler 的产出语义一致（见 app/errors.py）；
+    意外异常不在此捕获，仍由 Starlette 中断流；请求校验失败（422）发生在
+    流开始前，无需处理。
     """
     logger.info(
         "收到流式计划请求：goal=%r level=%s weeklyHours=%s weeks=%s",
@@ -164,7 +170,13 @@ async def generate_plan_stream(request: PlanRequest) -> StreamingResponse:
 
 
 async def _stream_plan_events(request: PlanRequest) -> AsyncIterator[str]:
-    """驱动图流式执行，把节点增量翻译为 NDJSON 事件行。"""
+    """驱动图流式执行，把节点增量翻译为 NDJSON 事件行。
+
+    业务异常（AgentServiceError）在此捕获并翻译为 error 包络的 done 终态行
+    （形状与非流式通道全局 handler 的产出一致，见 app/errors.py），保证
+    「done 必为最后一行」的协议承诺在任何终态下都成立；意外异常不在此捕获，
+    仍由 Starlette 中断流。
+    """
     # langgraph v1 astream 的 Sequence stream_mode 重载未建模 (mode, chunk)
     # 元组返回形状，cast 对齐运行时实际产出（与 graph.py 的签名误报处理同理）
     stream = cast(
@@ -175,38 +187,48 @@ async def _stream_plan_events(request: PlanRequest) -> AsyncIterator[str]:
         ),
     )
     final_state: dict[str, Any] = {}
-    async for mode, chunk in stream:
-        if mode == "updates":
-            for node, update in chunk.items():
-                # 图终态哨兵（如 __end__）的增量可能非 dict，直接跳过
-                if not isinstance(update, dict):
-                    continue
-                # outline 节点增量到达：推 1 条 outline 事件
-                if node == "outline" and "outline" in update:
-                    outline = update["outline"]
-                    yield _ndjson_line(
-                        {
-                            "type": "outline",
-                            "phaseCount": len(outline.get("phases") or []),
-                            "title": outline.get("title", ""),
-                        }
-                    )
-                # 并行扩展 / 定向回炉的增量到达：逐阶段推 phase 事件
-                # （expand_revision 携带全量草稿，未点名阶段会重复推送，
-                # 消费方按 index 覆盖即可，语义不变）
-                elif node in ("expand_phase", "expand_revision") and (
-                    "phase_drafts" in update
-                ):
-                    for index, phase in update["phase_drafts"].items():
+    try:
+        async for mode, chunk in stream:
+            if mode == "updates":
+                for node, update in chunk.items():
+                    # 图终态哨兵（如 __end__）的增量可能非 dict，直接跳过
+                    if not isinstance(update, dict):
+                        continue
+                    # outline 节点增量到达：推 1 条 outline 事件
+                    if node == "outline" and "outline" in update:
+                        outline = update["outline"]
                         yield _ndjson_line(
-                            {"type": "phase", "index": int(index), "phase": phase}
+                            {
+                                "type": "outline",
+                                "phaseCount": len(outline.get("phases") or []),
+                                "title": outline.get("title", ""),
+                            }
                         )
-        else:  # values：整图状态快照，记录最新一份作为终态
-            final_state = chunk
+                    # 并行扩展 / 定向回炉的增量到达：逐阶段推 phase 事件
+                    # （expand_revision 携带全量草稿，未点名阶段会重复推送，
+                    # 消费方按 index 覆盖即可，语义不变）
+                    elif node in ("expand_phase", "expand_revision") and (
+                        "phase_drafts" in update
+                    ):
+                        for index, phase in update["phase_drafts"].items():
+                            yield _ndjson_line(
+                                {"type": "phase", "index": int(index), "phase": phase}
+                            )
+            else:  # values：整图状态快照，记录最新一份作为终态
+                final_state = chunk
+    except AgentServiceError as exc:
+        # 业务失败（无 Key / 超时 / 解析失败等）不中断流：翻译为 error 终态，
+        # 与非流式通道 agent_service_error_handler 同构（200 语义 + code=service）
+        logger.warning("流式生成业务失败：%s", exc)
+        response = PlanResponse(
+            status="error",
+            error=ErrorDetail(code="service", message=str(exc)),
+        )
+    else:
+        response = build_response(final_state)
 
     # 终态包络：mode="json" 先落成 JSON 安全标量（枚举 / UUID 安全），
-    # clarification / error 终态同样走 done
-    response = build_response(final_state)
+    # plan / clarification / error 三种终态统一走 done 收尾
     yield _ndjson_line(
         {"type": "done", "response": response.model_dump(mode="json", by_alias=True)}
     )

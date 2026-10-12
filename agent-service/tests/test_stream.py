@@ -12,7 +12,9 @@ from typing import Any
 import httpx
 import pytest
 
+from app import nodes
 from app.config import settings
+from app.errors import AgentServiceError
 from app.main import app
 
 # 合法请求：goal 足够长、background 非空——避开规则澄清，直达分层生成
@@ -69,6 +71,32 @@ async def test_stream_event_sequence(monkeypatch):
     assert done["response"]["status"] == "plan"
     assert done["response"]["plan"], "plan 终态必须携带计划体"
     assert {event["type"] for event in events} == {"outline", "phase", "done"}
+
+
+@pytest.mark.asyncio
+async def test_stream_business_error_yields_error_done(monkeypatch):
+    """业务异常（AgentServiceError）不中断流：恰为一行 error 包络的 done。
+
+    与非流式通道全局 handler 语义对齐（app/errors.py：code=service，
+    message 为异常文本）；done 必为最后一行的承诺在 error 终态同样成立。
+    """
+    monkeypatch.setattr(settings, "allow_mock_llm", False)
+
+    async def _boom(*args, **kwargs):
+        raise AgentServiceError("模型响应超时或网络异常，请稍后重试，或在设置页更换模型")
+
+    # outline_node 经 nodes 模块级导入调用 invoke_structured，patch 模块命名空间即生效
+    monkeypatch.setattr(nodes, "invoke_structured", _boom)
+
+    events = await _post_stream(VALID_REQUEST)
+
+    assert [event["type"] for event in events] == ["done"], (
+        "业务失败不得截断流，必须恰有一条 done 事件收尾"
+    )
+    response = events[0]["response"]
+    assert response["status"] == "error"
+    assert response["error"]["code"] == "service"
+    assert response["error"]["message"], "error 包络必须携带异常信息"
 
 
 @pytest.mark.asyncio
