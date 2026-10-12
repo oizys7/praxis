@@ -9,10 +9,15 @@ mod config;
 mod db;
 mod error;
 mod logging;
+mod plan_store;
 mod protocol;
 mod secret;
 mod settings;
 mod sidecar;
+
+// plan_store 集成测试（需 DATABASE_URL 指向本机可建的 PostgreSQL，见模块文档）
+#[cfg(test)]
+mod tests_plan_store;
 
 fn main() {
     tauri::Builder::default()

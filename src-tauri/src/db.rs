@@ -102,8 +102,10 @@ pub async fn pool(config: &DbConfig) -> Result<PgPool, AgentError> {
     Ok(pool)
 }
 
-/// 首连建表（幂等）：表结构与索引定义见 plan/2026-10-04_plan-persistence-pg.md
-async fn ensure_schema(pool: &PgPool) -> Result<(), AgentError> {
+/// 首连建表（幂等）：表结构与索引定义见 plan/2026-10-04_plan-persistence-pg.md。
+/// 章节化存储演化 DDL 见任务 9 简报（与 plan_store.rs 九表读写逐字对齐）。
+/// pub(crate)：plan_store 集成测试（tests_plan_store）复用同一套 DDL。
+pub(crate) async fn ensure_schema(pool: &PgPool) -> Result<(), AgentError> {
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS plans (
             id         UUID PRIMARY KEY,
@@ -125,17 +127,126 @@ async fn ensure_schema(pool: &PgPool) -> Result<(), AgentError> {
         .execute(pool)
         .await
         .map_err(|e| fail("初始化索引", e))?;
+
+    // ---- 章节化存储演化（幂等）----
+    // 旧列 plan_json 保留只读兼容：规范化新行不再写整串 JSON（新写入一律 NULL），
+    // 对已可空的列执行 DROP NOT NULL 幂等成功
+    sqlx::query("ALTER TABLE plans ALTER COLUMN plan_json DROP NOT NULL")
+        .execute(pool)
+        .await
+        .map_err(|e| fail("演化 plans 表", e))?;
+    // 生成状态：generating | complete | failed（默认 'complete' 保持旧行语义）
+    sqlx::query(
+        "ALTER TABLE plans ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'complete'",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| fail("演化 plans 表", e))?;
+    sqlx::query(
+        "ALTER TABLE plans ADD COLUMN IF NOT EXISTS estimated_total_hours INT NOT NULL DEFAULT 0",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| fail("演化 plans 表", e))?;
+    // 以下八张子表全部经外键 ON DELETE CASCADE 随 plans 行级联清理
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS phases (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          plan_id UUID NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+          idx INT NOT NULL, name TEXT NOT NULL, week_range TEXT NOT NULL DEFAULT '',
+          objectives JSONB NOT NULL DEFAULT '[]', practice JSONB NOT NULL DEFAULT '[]',
+          assignments JSONB NOT NULL DEFAULT '[]',
+          UNIQUE (plan_id, idx)
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| fail("初始化表结构", e))?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS projects (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          phase_id UUID NOT NULL UNIQUE REFERENCES phases(id) ON DELETE CASCADE,
+          name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '', background TEXT NOT NULL DEFAULT '',
+          steps JSONB NOT NULL DEFAULT '[]', acceptance_criteria JSONB NOT NULL DEFAULT '[]',
+          estimated_hours INT NOT NULL DEFAULT 0
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| fail("初始化表结构", e))?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS chapters (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          phase_id UUID NOT NULL REFERENCES phases(id) ON DELETE CASCADE,
+          idx INT NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '',
+          UNIQUE (phase_id, idx)
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| fail("初始化表结构", e))?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS concepts (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          chapter_id UUID NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+          idx INT NOT NULL, name TEXT NOT NULL, definition TEXT NOT NULL DEFAULT ''
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| fail("初始化表结构", e))?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS knowledge_points (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          chapter_id UUID NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+          idx INT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT ''
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| fail("初始化表结构", e))?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS diagrams (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          chapter_id UUID NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+          idx INT NOT NULL, title TEXT NOT NULL DEFAULT '', mermaid TEXT NOT NULL DEFAULT '', caption TEXT NOT NULL DEFAULT ''
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| fail("初始化表结构", e))?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS deep_dives (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          chapter_id UUID NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
+          idx INT NOT NULL, topic TEXT NOT NULL, angle TEXT NOT NULL DEFAULT '', content TEXT NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| fail("初始化表结构", e))?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS resources (
+          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+          plan_id UUID NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+          idx INT NOT NULL, title TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'docs', note TEXT NOT NULL DEFAULT ''
+        )",
+    )
+    .execute(pool)
+    .await
+    .map_err(|e| fail("初始化表结构", e))?;
     Ok(())
 }
 
-/// 操作失败统一记录日志并转 Db 错误（op 为中文动作名，直接拼进用户可见消息）
-fn fail(op: &str, e: sqlx::Error) -> AgentError {
+/// 操作失败统一记录日志并转 Db 错误（op 为中文动作名，直接拼进用户可见消息；
+/// pub(crate)：plan_store 复用同一套错误归一与日志风格）
+pub(crate) fn fail(op: &str, e: sqlx::Error) -> AgentError {
     warn!(op, error = %e, "云端数据库操作失败");
     AgentError::Db(format!("{op}失败：{e}"))
 }
 
 /// 行字段读取失败统一转 Db 错误
-fn db_err(e: sqlx::Error) -> AgentError {
+pub(crate) fn db_err(e: sqlx::Error) -> AgentError {
     fail("读取数据", e)
 }
 
@@ -203,33 +314,58 @@ pub async fn list_plans(config: &DbConfig, query: &str) -> Result<Vec<PlanSummar
     Ok(result)
 }
 
-/// 读取完整计划记录（含整份计划）
+/// 读取完整计划记录（含整份计划）：plan_json 旧行走旧反序列化路径（只读兼容），
+/// 规范化新行走多表重组路径（见 plan_store::load_study_plan）
 pub async fn get_plan(config: &DbConfig, id: &str) -> Result<PlanRecord, AgentError> {
     let pool = pool(config).await?;
+    get_plan_by_pool(&pool, id).await
+}
+
+/// get_plan 的 pool 版核心（pub(crate) 供集成测试直连临时库复用）
+pub(crate) async fn get_plan_by_pool(pool: &PgPool, id: &str) -> Result<PlanRecord, AgentError> {
     let row = sqlx::query(
-        "SELECT id, title, goal, overview, level, weeks, favorite, created_at, plan_json
+        "SELECT id, title, goal, overview, level, weeks, favorite, created_at, plan_json, estimated_total_hours
          FROM plans WHERE id = $1",
     )
     .bind(parse_id(id)?)
-    .fetch_optional(&pool)
+    .fetch_optional(pool)
     .await
     .map_err(|e| fail("查询计划", e))?
     .ok_or_else(|| AgentError::Db(format!("计划不存在或已被删除：{id}")))?;
 
-    let plan_json: sqlx::types::Json<StudyPlanAlias> = row.try_get("plan_json").map_err(db_err)?;
+    let plan_json: Option<sqlx::types::Json<StudyPlanAlias>> =
+        row.try_get("plan_json").map_err(db_err)?;
     let record_id: uuid::Uuid = row.try_get("id").map_err(db_err)?;
     let created: chrono::DateTime<chrono::Utc> = row.try_get("created_at").map_err(db_err)?;
     let weeks: i32 = row.try_get("weeks").map_err(db_err)?;
+    let estimated_total_hours: i32 = row.try_get("estimated_total_hours").map_err(db_err)?;
+    let title: String = row.try_get("title").map_err(db_err)?;
+    let overview: String = row.try_get("overview").map_err(db_err)?;
+    let plan = match plan_json {
+        // 旧行：整串 plan_json 反序列化（含 estimatedTotalHours，行为与改造前一致）
+        Some(json) => json.0,
+        // 规范化新行：多表按 idx 重组
+        None => {
+            crate::plan_store::load_study_plan(
+                pool,
+                record_id,
+                &title,
+                &overview,
+                estimated_total_hours,
+            )
+            .await?
+        }
+    };
     Ok(PlanRecord {
         id: record_id.to_string(),
-        title: row.try_get("title").map_err(db_err)?,
+        title,
         goal: row.try_get("goal").map_err(db_err)?,
-        overview: row.try_get("overview").map_err(db_err)?,
+        overview,
         level: row.try_get("level").map_err(db_err)?,
         weeks: weeks.max(0) as u32,
         favorite: row.try_get("favorite").map_err(db_err)?,
         created_at: created.to_rfc3339(),
-        plan: plan_json.0,
+        plan,
     })
 }
 
