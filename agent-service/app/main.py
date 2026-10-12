@@ -1,7 +1,9 @@
 """FastAPI 入口：Praxis Agent 服务。
 
 端点：
-- POST /api/generate-plan：生成学习计划（clarify → plan → review）
+- POST /api/generate-plan：生成学习计划（分层拓扑：outline → 并行扩展 → 拼装 → 评审）
+- POST /api/generate-plan/stream：同上，NDJSON 流式推送（outline/phase/done 事件，
+  供 Rust 侧逐阶段入库；done 必为最后一行）
 - GET  /api/config：返回当前生效配置（设置页读取）
 - POST /api/config：热更新配置（设置页保存后由 Rust 推送，无需重启）
 - GET  /health：健康检查（Tauri 端 ping_agent 探测在线状态）
@@ -15,10 +17,14 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from collections.abc import AsyncIterator
+from typing import Any, cast
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 
 from app.config import settings
 from app.errors import register_error_handlers
@@ -82,15 +88,31 @@ async def _log_requests(request: Request, call_next):
 # ---------------------------------------------------------------------------
 
 
+def build_response(final_state: dict[str, Any]) -> PlanResponse:
+    """把图终态组装成统一响应包络（流式 / 非流式两端点共用的纯函数）。
+
+    路径一：clarify 节点判定信息不完整，返回澄清问题；
+    路径二：正常产出计划。
+    业务异常不在此处理：可预期异常已由 llm 层翻译为 AgentServiceError，
+    非流式端点由全局 exception_handler 转成 200 + status=error 包络。
+    """
+    # 路径一：澄清问题非空即 clarification 终态
+    if final_state.get("clarifications"):
+        return PlanResponse(
+            status="clarification",
+            clarifications=list(final_state["clarifications"]),
+        )
+
+    # 路径二：正常产出计划
+    plan = StudyPlan.model_validate(final_state["plan"])
+    return PlanResponse(status="plan", plan=plan)
+
+
 @app.post(
     "/api/generate-plan", response_model=PlanResponse, response_model_by_alias=True
 )
 async def generate_plan(request: PlanRequest) -> PlanResponse:
-    """生成学习计划：驱动 LangGraph 状态图并组装统一包络。
-
-    LLM 超时 / 网络失败等可预期业务异常已在 llm 层翻译为 AgentServiceError，
-    由全局 exception_handler 转成 200 + status=error 包络；此端点只负责编排。
-    """
+    """生成学习计划：驱动 LangGraph 状态图并组装统一包络（一次性返回）。"""
     logger.info(
         "收到计划请求：goal=%r level=%s weeklyHours=%s weeks=%s",
         request.goal,
@@ -102,19 +124,97 @@ async def generate_plan(request: PlanRequest) -> PlanResponse:
     final_state = await agent_graph.ainvoke(
         {"request": request.model_dump(by_alias=True)}
     )
+    response = build_response(final_state)
 
-    # 路径一：clarify 节点判定信息不完整，返回澄清问题
-    if final_state.get("clarifications"):
-        logger.info("需要澄清：%d 个问题", len(final_state["clarifications"]))
-        return PlanResponse(
-            status="clarification",
-            clarifications=list(final_state["clarifications"]),
+    if response.status == "clarification":
+        logger.info("需要澄清：%d 个问题", len(response.clarifications or []))
+    else:
+        logger.info(
+            "计划生成成功：%s（%d 个阶段）",
+            response.plan.title if response.plan else "",
+            len(response.plan.phases) if response.plan else 0,
         )
+    return response
 
-    # 路径二：正常产出计划
-    plan = StudyPlan.model_validate(final_state["plan"])
-    logger.info("计划生成成功：%s（%d 个阶段）", plan.title, len(plan.phases))
-    return PlanResponse(status="plan", plan=plan)
+
+@app.post("/api/generate-plan/stream")
+async def generate_plan_stream(request: PlanRequest) -> StreamingResponse:
+    """流式生成学习计划：NDJSON 逐行推送事件，每阶段完成即到达。
+
+    事件序列（application/x-ndjson，每行一个 JSON 对象）：
+    - {"type": "outline", "phaseCount": N, "title": "…"}：骨架到达时推 1 条；
+    - {"type": "phase", "index": i, "phase": {…}}：每阶段完成推 1 条，
+      可能乱序，回炉重生成时同 index 再次推送（覆盖语义）；
+    - {"type": "done", "response": {…统一包络…}}：终态，必为最后一行
+      （clarification 终态同样走 done，此时无 outline / phase 事件）。
+
+    生成器不做 try/except 吞错：异常直接抛出由 Starlette 中断流，
+    传输层错误由消费方处理；请求校验失败（422）发生在流开始前，无需处理。
+    """
+    logger.info(
+        "收到流式计划请求：goal=%r level=%s weeklyHours=%s weeks=%s",
+        request.goal,
+        request.level.value,
+        request.weekly_hours,
+        request.weeks,
+    )
+    return StreamingResponse(
+        _stream_plan_events(request), media_type="application/x-ndjson"
+    )
+
+
+async def _stream_plan_events(request: PlanRequest) -> AsyncIterator[str]:
+    """驱动图流式执行，把节点增量翻译为 NDJSON 事件行。"""
+    # langgraph v1 astream 的 Sequence stream_mode 重载未建模 (mode, chunk)
+    # 元组返回形状，cast 对齐运行时实际产出（与 graph.py 的签名误报处理同理）
+    stream = cast(
+        AsyncIterator[tuple[str, Any]],
+        agent_graph.astream(
+            {"request": request.model_dump(by_alias=True)},
+            stream_mode=["updates", "values"],
+        ),
+    )
+    final_state: dict[str, Any] = {}
+    async for mode, chunk in stream:
+        if mode == "updates":
+            for node, update in chunk.items():
+                # 图终态哨兵（如 __end__）的增量可能非 dict，直接跳过
+                if not isinstance(update, dict):
+                    continue
+                # outline 节点增量到达：推 1 条 outline 事件
+                if node == "outline" and "outline" in update:
+                    outline = update["outline"]
+                    yield _ndjson_line(
+                        {
+                            "type": "outline",
+                            "phaseCount": len(outline.get("phases") or []),
+                            "title": outline.get("title", ""),
+                        }
+                    )
+                # 并行扩展 / 定向回炉的增量到达：逐阶段推 phase 事件
+                # （expand_revision 携带全量草稿，未点名阶段会重复推送，
+                # 消费方按 index 覆盖即可，语义不变）
+                elif node in ("expand_phase", "expand_revision") and (
+                    "phase_drafts" in update
+                ):
+                    for index, phase in update["phase_drafts"].items():
+                        yield _ndjson_line(
+                            {"type": "phase", "index": int(index), "phase": phase}
+                        )
+        else:  # values：整图状态快照，记录最新一份作为终态
+            final_state = chunk
+
+    # 终态包络：mode="json" 先落成 JSON 安全标量（枚举 / UUID 安全），
+    # clarification / error 终态同样走 done
+    response = build_response(final_state)
+    yield _ndjson_line(
+        {"type": "done", "response": response.model_dump(mode="json", by_alias=True)}
+    )
+
+
+def _ndjson_line(event: dict[str, Any]) -> str:
+    """单个事件序列化为一行 NDJSON（ensure_ascii=False 保留中文原文）。"""
+    return json.dumps(event, ensure_ascii=False) + "\n"
 
 
 @app.get("/api/config", response_model=AgentSettingsModel)
