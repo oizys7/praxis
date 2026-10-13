@@ -27,8 +27,7 @@ use crate::protocol::{
 /// 生成开始时预置 plans 行（id 由调用方生成）：status='generating'，
 /// title 暂用 goal 截断（大纲就绪后由 update_outline_meta / finalize_plan 覆写）。
 /// plan_json 保持 NULL（规范化新行不再写整串 JSON），overview 走列默认空串。
-/// 尚无消费方：任务 10（流式自动入库）将使用，防御性保留。
-#[allow(dead_code)]
+/// 消费方：commands::generate_plan（流式自动入库编排）。
 pub async fn create_generating_plan(
     pool: &PgPool,
     plan_id: Uuid,
@@ -52,8 +51,7 @@ pub async fn create_generating_plan(
 }
 
 /// 大纲就绪：覆写计划标题与预计总学时（title 暂为 goal 截断的占位时由本函数替换）。
-/// 尚无消费方：任务 10（流式自动入库）将使用，防御性保留。
-#[allow(dead_code)]
+/// 消费方：commands::generate_plan（outline 事件到达时）。
 pub async fn update_outline_meta(
     pool: &PgPool,
     plan_id: Uuid,
@@ -77,8 +75,7 @@ pub async fn update_outline_meta(
 /// 阶段级 upsert（单事务）：写入/更新 (plan_id, idx) 的 phases 行后，整体替换其
 /// chapters（concepts/knowledge_points/diagrams/deep_dives 随外键级联清空）与 project。
 /// 同一阶段回炉重写时旧数据不残留；事务保证半途失败不留脏数据。
-/// 尚无消费方：任务 10（流式自动入库）将使用，防御性保留。
-#[allow(dead_code)]
+/// 消费方：commands::generate_plan（phase 事件到达时）。
 pub async fn upsert_phase(
     pool: &PgPool,
     plan_id: Uuid,
@@ -219,8 +216,7 @@ pub async fn upsert_phase(
 
 /// 生成收尾：覆写 status（complete | failed）；title / estimated_total_hours
 /// 为 Some 时一并更新，None 保持原值。
-/// 尚无消费方：任务 10（流式自动入库）将使用，防御性保留。
-#[allow(dead_code)]
+/// 消费方：commands::generate_plan（done 终态与异常路径收尾）。
 pub async fn finalize_plan(
     pool: &PgPool,
     plan_id: Uuid,
@@ -249,8 +245,7 @@ pub async fn finalize_plan(
 
 /// 删除整份计划（硬删除）：子表全部经外键 ON DELETE CASCADE 级联清空；
 /// id 不存在视为已删除，幂等成功。
-/// 尚无消费方：任务 10（流式自动入库）将使用，防御性保留。
-#[allow(dead_code)]
+/// 消费方：commands::generate_plan（clarification 终态删 generating 行）。
 pub async fn delete_plan_full(pool: &PgPool, plan_id: Uuid) -> Result<(), AgentError> {
     sqlx::query("DELETE FROM plans WHERE id = $1")
         .bind(plan_id)

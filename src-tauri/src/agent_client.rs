@@ -57,3 +57,14 @@ pub async fn send<T: Serialize + ?Sized>(
     }
     request.send().await.map_err(Into::into)
 }
+
+/// 流式 POST：响应体为 NDJSON 长流，`timeout` 沿用 reqwest 总超时语义，
+/// 覆盖从建连到响应体读完的整个消费周期；逐行解析与事件分派由命令层负责。
+pub async fn post_stream<T: Serialize + ?Sized>(
+    path: &str,
+    body: &T,
+    timeout: Duration,
+    req_id: Option<&str>,
+) -> Result<reqwest::Response, AgentError> {
+    send(reqwest::Method::POST, path, timeout, Some(body), req_id).await
+}

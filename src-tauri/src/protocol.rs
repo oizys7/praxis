@@ -273,8 +273,7 @@ pub struct ReviewOutputDef {
 /// Rust -> 前端的生成进度事件（NDJSON 流式链路）。
 /// tag = "type" 产出 {"type":"outline","phaseCount":…} 形式；
 /// rename_all 作用于变体名，rename_all_fields 作用于字段名（serde >= 1.0.186）。
-/// 尚无消费方：任务 10（流式消费 + Channel 进度）将使用，防御性保留。
-#[allow(dead_code)]
+/// 消费方：commands::generate_plan 经 tauri::Channel 逐事件推送。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(
     tag = "type",
@@ -288,6 +287,38 @@ pub enum PlanProgressEvent {
     PhaseDone { index: u32, total: u32 },
     /// 存储层异常提示（生成不中断，前端降级提示）
     StorageIssue { message: String },
+}
+
+/// Python 流式端点的入站事件模型（消费方向：Python -> Rust，NDJSON 逐行）。
+/// 镜像 agent-service/app/main.py `_stream_plan_events` 的三种事件；与
+/// [PlanProgressEvent]（Rust -> 前端出站）是两个方向的独立模型：
+/// - {"type":"outline","phaseCount":N,"title":"…"}：骨架到达时 1 条；
+/// - {"type":"phase","index":i,"phase":{…camelCase 阶段…}}：每阶段 1 条，
+///   可乱序，回炉重生成时同 index 重复推送（覆盖语义）；
+/// - {"type":"done","response":{…统一包络…}}：终态，必为最后一行。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum StreamEvent {
+    /// 大纲就绪：阶段总数 + 计划标题
+    Outline { phase_count: u32, title: String },
+    /// 单个阶段扩展完成
+    Phase { index: u32, phase: StudyPhase },
+    /// 终态：统一包络（plan / clarification / error），必为最后一行
+    Done { response: PlanResponse },
+}
+
+/// NDJSON 行 -> 入站事件：空行 / 坏 JSON / 未知 type 一律返回 None，
+/// 由调用方决定告警与跳过策略（坏行不中断流）。
+pub fn parse_ndjson_line(line: &str) -> Option<StreamEvent> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    serde_json::from_str(line).ok()
 }
 
 #[cfg(test)]
@@ -401,6 +432,66 @@ mod tests {
         );
         assert_eq!(chapter["deepDives"][0]["topic"], "Drop 与 RAII");
         assert_eq!(value["phases"][0]["project"]["estimatedHours"], 12);
+    }
+
+    /// StreamEvent 行解析（任务 10 消费）：NDJSON 三种合法事件依次解析出正确变体与字段
+    #[test]
+    fn parse_ndjson_line_accepts_three_events() {
+        let outline = parse_ndjson_line(r#"{"type":"outline","phaseCount":4,"title":"Rust 入门"}"#)
+            .expect("outline 事件行应解析成功");
+        assert!(matches!(
+            outline,
+            StreamEvent::Outline { phase_count: 4, title } if title == "Rust 入门"
+        ));
+
+        let phase = parse_ndjson_line(
+            r#"{"type":"phase","index":2,"phase":{"name":"进阶","weekRange":"第 3-4 周"}}"#,
+        )
+        .expect("phase 事件行应解析成功");
+        match phase {
+            StreamEvent::Phase { index, phase } => {
+                assert_eq!(index, 2);
+                assert_eq!(phase.name, "进阶");
+            }
+            other => panic!("应为 Phase 事件，实际：{other:?}"),
+        }
+
+        let done = parse_ndjson_line(r#"{"type":"done","response":{"status":"plan"}}"#)
+            .expect("done 事件行应解析成功");
+        match done {
+            StreamEvent::Done { response } => assert_eq!(response.status, "plan"),
+            other => panic!("应为 Done 事件，实际：{other:?}"),
+        }
+    }
+
+    /// 空行 / 坏 JSON / 未知 type 一律 None（调用方告警跳过，不中断流）
+    #[test]
+    fn parse_ndjson_line_rejects_junk_lines() {
+        assert!(parse_ndjson_line("").is_none(), "空行应返回 None");
+        assert!(parse_ndjson_line("   ").is_none(), "纯空白行应返回 None");
+        assert!(
+            parse_ndjson_line("{not-json").is_none(),
+            "坏 JSON 应返回 None"
+        );
+        assert!(
+            parse_ndjson_line("null").is_none(),
+            "非对象 JSON 应返回 None"
+        );
+        assert!(
+            parse_ndjson_line(r#"{"type":"unknown","x":1}"#).is_none(),
+            "未知 type 应返回 None"
+        );
+    }
+
+    /// Windows 行尾：行尾 \r（含 \r\n 分帧产物）不应影响解析
+    #[test]
+    fn parse_ndjson_line_tolerates_trailing_cr() {
+        let event =
+            parse_ndjson_line("{\"type\":\"outline\",\"phaseCount\":2,\"title\":\"标题\"}\r");
+        assert!(
+            matches!(event, Some(StreamEvent::Outline { phase_count: 2, .. })),
+            "尾随 \\r 的事件行应容忍"
+        );
     }
 
     /// 进度事件（任务 10 消费）：type 标签 + camelCase 字段
