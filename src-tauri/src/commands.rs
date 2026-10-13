@@ -467,7 +467,8 @@ impl StreamEventSink for RegenSink<'_> {
         Box::pin(async move {
             match event {
                 StreamEvent::Phase { index, phase } if self.chapter_index.is_none() => {
-                    let idx = i32::try_from(index).unwrap_or(0);
+                    // 槽位以入口校验后的目标值为准（事件回显仅作显示），与单章路径防御口径一致
+                    let idx = i32::try_from(self.phase_index).unwrap_or(0);
                     if let Err(e) =
                         plan_store::upsert_phase(self.pool, self.plan_id, idx, &phase).await
                     {
@@ -702,6 +703,12 @@ async fn run_regen(
         Ok(envelope) if envelope.status == "plan" => {
             if let Err(e) = plan_store::finalize_regen_complete(&pool, plan_id).await {
                 warn!(%req_id, error = %e, "重生成计划行收尾失败");
+                notify(
+                    progress,
+                    PlanProgressEvent::StorageIssue {
+                        message: format!("重生成结果收尾未能保存：{e}"),
+                    },
+                );
             }
         }
         // done(error)（及防御性其他状态）/ 传输 Err：pending 行翻 failed
@@ -709,6 +716,12 @@ async fn run_regen(
         _ => {
             if let Err(e) = plan_store::finalize_failed(&pool, plan_id).await {
                 warn!(%req_id, error = %e, "重生成失败态收尾失败");
+                notify(
+                    progress,
+                    PlanProgressEvent::StorageIssue {
+                        message: format!("重生成失败态收尾未成功：{e}"),
+                    },
+                );
             }
         }
     }
