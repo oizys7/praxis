@@ -6,6 +6,19 @@
 
 use serde::{Deserialize, Serialize};
 
+/// 大纲阶段载荷（outline 事件携带）：仅骨架级三字段（计划 §3：
+/// objectives/project_brief 不进事件，保持事件轻），seed_outline 按此播种骨架行
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlinePhasePayload {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub week_range: String,
+    #[serde(default)]
+    pub chapter_titles: Vec<String>,
+}
+
 /// 学习计划生成请求（前端 -> Rust -> Python）
 /// Serialize：转发给 Python 时由 reqwest .json() 序列化；Deserialize：接收 Tauri IPC 参数
 #[derive(Debug, Serialize, Deserialize)]
@@ -84,6 +97,8 @@ pub struct DeepDiveDef {
 }
 
 /// 阶段内的学习章节：主要知识 + 深入内容
+/// status 为两级状态机章节位（pending | complete | failed）：旧数据/流式载荷缺省为
+/// None（无徽标语义），wire 只增不改
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChapterDef {
@@ -95,6 +110,8 @@ pub struct ChapterDef {
     pub main_knowledge: MainKnowledgeDef,
     #[serde(default)]
     pub deep_dives: Vec<DeepDiveDef>,
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 /// 阶段收尾项目：背景、步骤、产出与验收标准
@@ -117,6 +134,8 @@ pub struct PhaseProject {
 
 /// 学习计划中的一个阶段：章节 / 实操 / 作业 / 项目
 /// theory 为云端 PG plan_json 旧行只读兼容保留（只增不删演进策略），新数据不再产出
+/// status 为两级状态机阶段位（pending | complete | failed）：旧数据/流式载荷缺省为
+/// None（无徽标语义），wire 只增不改
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StudyPhase {
@@ -136,6 +155,8 @@ pub struct StudyPhase {
     pub assignments: Vec<String>,
     #[serde(default)]
     pub project: PhaseProject,
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 /// 推荐学习资源（type 字段与 Python 端对齐，Rust 侧改名避免关键字冲突）
@@ -281,8 +302,16 @@ pub struct ReviewOutputDef {
     rename_all_fields = "camelCase"
 )]
 pub enum PlanProgressEvent {
-    /// 大纲就绪：阶段总数 + 计划标题
-    Outline { phase_count: u32, title: String },
+    /// 大纲就绪：阶段总数 + 计划标题；phases/overview 为大纲骨架载荷
+    /// （渐进式大纲渲染，任务 16 消费；旧调用方可缺省反序列化）
+    Outline {
+        phase_count: u32,
+        title: String,
+        #[serde(default)]
+        overview: Option<String>,
+        #[serde(default)]
+        phases: Option<Vec<OutlinePhasePayload>>,
+    },
     /// 单个阶段扩展完成
     PhaseDone { index: u32, total: u32 },
     /// 存储层异常提示（生成不中断，前端降级提示）
@@ -303,8 +332,16 @@ pub enum PlanProgressEvent {
     rename_all_fields = "camelCase"
 )]
 pub enum StreamEvent {
-    /// 大纲就绪：阶段总数 + 计划标题
-    Outline { phase_count: u32, title: String },
+    /// 大纲就绪：阶段总数 + 计划标题；phases/overview 为可选骨架载荷
+    /// （任务 13 起由 Python outline 节点携带，缺省兼容旧载荷）
+    Outline {
+        phase_count: u32,
+        title: String,
+        #[serde(default)]
+        overview: Option<String>,
+        #[serde(default)]
+        phases: Option<Vec<OutlinePhasePayload>>,
+    },
     /// 单个阶段扩展完成
     Phase { index: u32, phase: StudyPhase },
     /// 终态：统一包络（plan / clarification / error），必为最后一行
@@ -403,6 +440,7 @@ mod tests {
                         angle: "资源管理视角".into(),
                         content: "Rust 借 RAII 在编译期保证资源释放".into(),
                     }],
+                    status: Some("complete".into()),
                 }],
                 project: PhaseProject {
                     name: "章节笔记站".into(),
@@ -412,6 +450,7 @@ mod tests {
                     estimated_hours: 12,
                     acceptance_criteria: vec!["页面可访问".into()],
                 },
+                status: Some("complete".into()),
             }],
             resources: vec![],
             review_notes: String::new(),
@@ -423,7 +462,8 @@ mod tests {
 
         // 线上格式抽查：新字段 camelCase 嵌套
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
-        let chapter = &value["phases"][0]["chapters"][0];
+        let phase = &value["phases"][0];
+        let chapter = &phase["chapters"][0];
         assert_eq!(chapter["title"], "所有权与借用");
         assert_eq!(chapter["mainKnowledge"]["concepts"][0]["name"], "所有权");
         assert_eq!(
@@ -431,17 +471,73 @@ mod tests {
             "移动语义"
         );
         assert_eq!(chapter["deepDives"][0]["topic"], "Drop 与 RAII");
-        assert_eq!(value["phases"][0]["project"]["estimatedHours"], 12);
+        assert_eq!(phase["project"]["estimatedHours"], 12);
+        // 两级状态机：status 走 camelCase，序列化不丢
+        assert_eq!(phase["status"], "complete");
     }
 
-    /// StreamEvent 行解析（任务 10 消费）：NDJSON 三种合法事件依次解析出正确变体与字段
+    /// 两级状态机字段（任务 13）：缺省反序列化为 None（旧数据兼容），
+    /// 显式值可无损回转
+    #[test]
+    fn two_level_status_defaults_and_roundtrip() {
+        // 旧 JSON（无 status）：StudyPhase/ChapterDef 均反序列化为 None
+        let old: StudyPhase = serde_json::from_str(
+            r#"{"name":"旧阶段","weekRange":"第 1 周","chapters":[{"title":"旧章"}]}"#,
+        )
+        .expect("旧 JSON 应可反序列化");
+        assert_eq!(old.status, None, "缺 status 应反序列化为 None");
+        assert_eq!(old.chapters[0].status, None);
+
+        // 新 JSON：status 显式携带
+        let new: StudyPhase = serde_json::from_str(
+            r#"{"name":"阶段","status":"failed","chapters":[{"title":"章","status":"pending"}]}"#,
+        )
+        .expect("新 JSON 应可反序列化");
+        assert_eq!(new.status.as_deref(), Some("failed"));
+        assert_eq!(new.chapters[0].status.as_deref(), Some("pending"));
+    }
+
+    /// OutlinePhasePayload（任务 13）：camelCase wire（chapterTitles）、
+    /// 缺省字段反序列化不报错
+    #[test]
+    fn outline_phase_payload_wire() {
+        let payload: OutlinePhasePayload =
+            serde_json::from_str(r#"{"name":"阶段一","chapterTitles":["线程池","虚拟线程"]}"#)
+                .expect("outline 载荷应可反序列化");
+        assert_eq!(payload.week_range, "", "缺 weekRange 应反序列化为空串");
+        assert_eq!(payload.chapter_titles.len(), 2);
+
+        let value = serde_json::to_value(OutlinePhasePayload {
+            name: "阶段一".into(),
+            week_range: "第 1-4 周".into(),
+            chapter_titles: vec!["甲".into()],
+        })
+        .unwrap();
+        assert_eq!(value["chapterTitles"], serde_json::json!(["甲"]));
+        assert_eq!(value["weekRange"], "第 1-4 周");
+    }
+
+    /// StreamEvent 行解析（任务 10 消费）：NDJSON 三种合法事件依次解析出正确变体与字段；
+    /// 旧 outline 载荷（无 phases/overview）不受影响，新载荷（任务 13）可解
     #[test]
     fn parse_ndjson_line_accepts_three_events() {
         let outline = parse_ndjson_line(r#"{"type":"outline","phaseCount":4,"title":"Rust 入门"}"#)
             .expect("outline 事件行应解析成功");
         assert!(matches!(
             outline,
-            StreamEvent::Outline { phase_count: 4, title } if title == "Rust 入门"
+            StreamEvent::Outline { phase_count: 4, title, ref phases, ref overview }
+                if title == "Rust 入门" && phases.is_none() && overview.is_none()
+        ));
+
+        // 新 outline 载荷：phases/overview 携带（任务 14 Python 侧产出后接通）
+        let rich = parse_ndjson_line(
+            r#"{"type":"outline","phaseCount":1,"title":"T","overview":"概览","phases":[{"name":"阶段一","weekRange":"第 1 周","chapterTitles":["甲章"]}]}"#,
+        )
+        .expect("带骨架的 outline 事件行应解析成功");
+        assert!(matches!(
+            rich,
+            StreamEvent::Outline { phases: Some(ps), overview: Some(ov), .. }
+                if ps.len() == 1 && ps[0].chapter_titles == vec!["甲章".to_string()] && ov == "概览"
         ));
 
         let phase = parse_ndjson_line(
@@ -494,22 +590,54 @@ mod tests {
         );
     }
 
-    /// 进度事件（任务 10 消费）：type 标签 + camelCase 字段
+    /// 进度事件（任务 10 消费）：type 标签 + camelCase 字段；
+    /// outline 骨架载荷（任务 13）走 camelCase（chapterTitles）且 None 时字段可为 null
     #[test]
     fn progress_event_uses_type_tag() {
         let outline = PlanProgressEvent::Outline {
             phase_count: 4,
             title: "计划标题".into(),
+            overview: Some("整体概述".into()),
+            phases: Some(vec![OutlinePhasePayload {
+                name: "阶段一".into(),
+                week_range: "第 1-2 周".into(),
+                chapter_titles: vec!["甲章".into()],
+            }]),
         };
+        let value = serde_json::to_value(&outline).unwrap();
         assert_eq!(
-            serde_json::to_value(&outline).unwrap(),
-            serde_json::json!({"type": "outline", "phaseCount": 4, "title": "计划标题"})
+            value,
+            serde_json::json!({"type": "outline", "phaseCount": 4, "title": "计划标题",
+                "overview": "整体概述",
+                "phases": [{"name": "阶段一", "weekRange": "第 1-2 周", "chapterTitles": ["甲章"]}]})
         );
-        let parsed: PlanProgressEvent =
-            serde_json::from_value(serde_json::to_value(&outline).unwrap()).unwrap();
+        let parsed: PlanProgressEvent = serde_json::from_value(value).unwrap();
         assert!(matches!(
             parsed,
-            PlanProgressEvent::Outline { phase_count: 4, .. }
+            PlanProgressEvent::Outline { phase_count: 4, phases: Some(ps), .. }
+                if ps.len() == 1 && ps[0].name == "阶段一"
+        ));
+
+        // 旧调用方（无骨架）：None 载荷照常序列化/反序列化
+        let bare = PlanProgressEvent::Outline {
+            phase_count: 2,
+            title: "旧调用".into(),
+            overview: None,
+            phases: None,
+        };
+        let parsed: PlanProgressEvent =
+            serde_json::from_value(serde_json::to_value(&bare).unwrap()).unwrap();
+        assert!(matches!(
+            bare,
+            PlanProgressEvent::Outline {
+                phases: None,
+                overview: None,
+                ..
+            }
+        ));
+        assert!(matches!(
+            parsed,
+            PlanProgressEvent::Outline { phase_count: 2, .. }
         ));
 
         let done = PlanProgressEvent::PhaseDone { index: 1, total: 4 };

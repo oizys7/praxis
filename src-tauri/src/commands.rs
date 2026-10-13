@@ -150,7 +150,7 @@ pub async fn generate_plan(
                         continue; // 坏行不中断流
                     };
                     match event {
-                        StreamEvent::Outline { phase_count: count, title } => {
+                        StreamEvent::Outline { phase_count: count, title, overview, phases } => {
                             phase_count = count;
                             if let Some(s) = &storage {
                                 // 预计总学时：大纲阶段数 × 每周学时（粗估，供云端列表页展示）
@@ -172,10 +172,25 @@ pub async fn generate_plan(
                                         },
                                     );
                                 }
+                                // 大纲骨架播种（幂等：已有阶段行则跳过；旧 Python 载荷
+                                // 无 phases 时为 None，静默不播种）。骨架播种失败不中断生成。
+                                if let Some(outline) = &phases {
+                                    if let Err(e) =
+                                        plan_store::seed_outline(&s.pool, s.plan_id, outline, &[]).await
+                                    {
+                                        warn!(%req_id, error = %e, "大纲骨架播种失败，不影响生成");
+                                        notify(
+                                            progress,
+                                            PlanProgressEvent::StorageIssue {
+                                                message: format!("大纲骨架未能自动保存：{e}"),
+                                            },
+                                        );
+                                    }
+                                }
                             }
                             notify(
                                 progress,
-                                PlanProgressEvent::Outline { phase_count: count, title },
+                                PlanProgressEvent::Outline { phase_count: count, title, overview, phases },
                             );
                         }
                         StreamEvent::Phase { index, phase } => {

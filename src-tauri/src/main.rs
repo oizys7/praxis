@@ -7,6 +7,7 @@ mod agent_client;
 mod commands;
 mod config;
 mod db;
+mod db_ddl;
 mod error;
 mod logging;
 mod plan_store;

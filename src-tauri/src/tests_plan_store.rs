@@ -10,9 +10,10 @@ use uuid::Uuid;
 
 use crate::db;
 use crate::plan_store;
+use crate::plan_store::{PlanOutlineRow, PlanRequestRow};
 use crate::protocol::{
     ChapterDef, ConceptDef, DeepDiveDef, KnowledgeDiagramDef, KnowledgePointDef, MainKnowledgeDef,
-    PhaseProject, PlanRequest, StudyPhase,
+    OutlinePhasePayload, PhaseProject, PlanRequest, StudyPhase, StudyResource,
 };
 
 // ---------------------------------------------------------------------------
@@ -56,6 +57,7 @@ fn sample_chapter(title: &str) -> ChapterDef {
             angle: "内存布局视角".into(),
             content: "Rust 借 RAII 在编译期保证资源释放。".into(),
         }],
+        status: None,
     }
 }
 
@@ -69,6 +71,7 @@ fn sample_phase(name: &str, chapter_titles: &[&str]) -> StudyPhase {
         theory: vec![],
         practice: vec!["实操甲".into()],
         assignments: vec!["作业甲".into()],
+        status: None,
         project: PhaseProject {
             name: format!("{name}·项目"),
             description: "综合运用本阶段所学".into(),
@@ -92,6 +95,65 @@ async fn new_generating_plan(pool: &PgPool) -> Uuid {
         .await
         .expect("create_generating_plan 失败");
     id
+}
+
+/// 大纲骨架 fixture：phase_names 每项一个阶段，章节数 = chapter_counts 对应项
+fn sample_outline(phase_names: &[&str], chapter_counts: &[usize]) -> Vec<OutlinePhasePayload> {
+    phase_names
+        .iter()
+        .zip(chapter_counts.iter())
+        .map(|(name, n)| OutlinePhasePayload {
+            name: (*name).into(),
+            week_range: "第 1-2 周".into(),
+            chapter_titles: (0..*n).map(|i| format!("{name}·章{i}")).collect(),
+        })
+        .collect()
+}
+
+/// 大纲骨架配套资源 fixture
+fn sample_resources() -> Vec<StudyResource> {
+    vec![
+        StudyResource {
+            title: "The Rust Book".into(),
+            kind: "docs".into(),
+            note: "官方教程".into(),
+        },
+        StudyResource {
+            title: "Rust by Example".into(),
+            kind: "docs".into(),
+            note: "示例驱动".into(),
+        },
+    ]
+}
+
+/// 阶段状态（按 idx 取，供断言）
+async fn phase_status(pool: &PgPool, plan_id: Uuid, idx: i32) -> Option<String> {
+    sqlx::query_scalar("SELECT status FROM phases WHERE plan_id = $1 AND idx = $2")
+        .bind(plan_id)
+        .bind(idx)
+        .fetch_one(pool)
+        .await
+        .ok()
+}
+
+/// 章节状态（按 (plan, phase_idx, chapter_idx) 取）
+async fn chapter_status(
+    pool: &PgPool,
+    plan_id: Uuid,
+    phase_idx: i32,
+    chapter_idx: i32,
+) -> Option<String> {
+    sqlx::query_scalar(
+        "SELECT c.status FROM chapters c
+         JOIN phases p ON c.phase_id = p.id
+         WHERE p.plan_id = $1 AND p.idx = $2 AND c.idx = $3",
+    )
+    .bind(plan_id)
+    .bind(phase_idx)
+    .bind(chapter_idx)
+    .fetch_one(pool)
+    .await
+    .ok()
 }
 
 /// 表行数（表名全部来自本文件字面量，无注入面）
@@ -363,4 +425,284 @@ async fn test_delete_plan_cascades(pool: PgPool) {
             "删除 plans 后 {table} 应级联清空"
         );
     }
+}
+
+// ---------------------------------------------------------------------------
+// 任务 13：两级状态机 + 大纲骨架 + 上下文读回
+// ---------------------------------------------------------------------------
+
+/// seed_outline：phases/chapters 建骨架行（status=pending），resources 入库，project 无行
+#[sqlx::test]
+#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+async fn test_seed_outline_creates_skeleton(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+
+    plan_store::seed_outline(
+        &pool,
+        plan_id,
+        &sample_outline(&["阶段甲", "阶段乙"], &[2, 1]),
+        &sample_resources(),
+    )
+    .await
+    .expect("seed_outline 失败");
+
+    assert_eq!(count(&pool, "phases").await, 2, "骨架应建立 2 个阶段行");
+    assert_eq!(count(&pool, "chapters").await, 3, "骨架应建立 2+1 个章节行");
+    assert_eq!(count(&pool, "resources").await, 2);
+    assert_eq!(count(&pool, "projects").await, 0, "大纲阶段不播种 project");
+    assert_eq!(
+        phase_status(&pool, plan_id, 0).await,
+        Some("pending".into())
+    );
+    assert_eq!(
+        phase_status(&pool, plan_id, 1).await,
+        Some("pending".into())
+    );
+    assert_eq!(
+        chapter_status(&pool, plan_id, 0, 0).await,
+        Some("pending".into())
+    );
+    // 章节标题携带大纲题目
+    let titles: Vec<String> = sqlx::query_scalar(
+        "SELECT c.title FROM chapters c JOIN phases p ON c.phase_id = p.id
+         WHERE p.plan_id = $1 AND p.idx = 0 ORDER BY c.idx",
+    )
+    .bind(plan_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        titles,
+        vec!["阶段甲·章0".to_string(), "阶段甲·章1".to_string()]
+    );
+    // 读回：StudyPhase.status / Chapter.status 装入（骨架 pending）
+    let record = db::get_plan_by_pool(&pool, &plan_id.to_string())
+        .await
+        .unwrap();
+    assert_eq!(record.plan.phases[0].status.as_deref(), Some("pending"));
+    assert_eq!(
+        record.plan.phases[0].chapters[0].status.as_deref(),
+        Some("pending")
+    );
+}
+
+/// seed_outline 幂等：二次调用不重复播种
+#[sqlx::test]
+#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+async fn test_seed_outline_idempotent(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+    let outline = sample_outline(&["阶段甲"], &[2]);
+
+    plan_store::seed_outline(&pool, plan_id, &outline, &sample_resources())
+        .await
+        .unwrap();
+    plan_store::seed_outline(&pool, plan_id, &outline, &sample_resources())
+        .await
+        .expect("二次 seed 应幂等成功");
+
+    assert_eq!(count(&pool, "phases").await, 1, "二次播种不得新增阶段");
+    assert_eq!(count(&pool, "chapters").await, 2, "二次播种不得新增章节");
+    assert_eq!(count(&pool, "resources").await, 2, "二次播种不得重复资源");
+}
+
+/// 状态机主链：seed → upsert idx=0 → complete；失败收尾后 idx=1（含章节）变 failed，
+/// idx=0（complete）不受影响——失败收尾只动 pending
+#[sqlx::test]
+#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+async fn test_upsert_marks_complete_and_failure_marks_pending_failed(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+
+    plan_store::seed_outline(
+        &pool,
+        plan_id,
+        &sample_outline(&["阶段甲", "阶段乙"], &[2, 1]),
+        &[],
+    )
+    .await
+    .unwrap();
+    plan_store::upsert_phase(
+        &pool,
+        plan_id,
+        0,
+        &sample_phase("阶段甲", &["甲章", "乙章"]),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(
+        phase_status(&pool, plan_id, 0).await,
+        Some("complete".into())
+    );
+    // upsert 整体替换：idx=0 的 2 个骨架章被替换为内容章且 status=complete
+    assert_eq!(
+        chapter_status(&pool, plan_id, 0, 0).await,
+        Some("complete".into())
+    );
+    assert_eq!(
+        chapter_status(&pool, plan_id, 0, 1).await,
+        Some("complete".into())
+    );
+    assert_eq!(
+        phase_status(&pool, plan_id, 1).await,
+        Some("pending".into())
+    );
+
+    plan_store::finalize_plan(&pool, plan_id, "failed", None, None)
+        .await
+        .expect("finalize_plan 失败");
+
+    assert_eq!(
+        phase_status(&pool, plan_id, 1).await,
+        Some("failed".into()),
+        "pending 阶段应收尾为 failed"
+    );
+    assert_eq!(
+        chapter_status(&pool, plan_id, 1, 0).await,
+        Some("failed".into())
+    );
+    assert_eq!(
+        phase_status(&pool, plan_id, 0).await,
+        Some("complete".into()),
+        "complete 不得被 failed 覆盖"
+    );
+    assert_eq!(
+        chapter_status(&pool, plan_id, 0, 0).await,
+        Some("complete".into())
+    );
+    let plans_status: String = sqlx::query_scalar("SELECT status FROM plans")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(plans_status, "failed");
+}
+
+/// 单章 upsert：骨架章填充后子表替换无残留；两章全部 complete 时阶段联动翻牌（同事务）
+#[sqlx::test]
+#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+async fn test_upsert_chapter_replaces_children_and_promotes_phase(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+
+    plan_store::seed_outline(&pool, plan_id, &sample_outline(&["阶段甲"], &[2]), &[])
+        .await
+        .unwrap();
+
+    // 章 A：骨架行填充为完整内容
+    plan_store::upsert_chapter(&pool, plan_id, 0, 0, &sample_chapter("章A"))
+        .await
+        .expect("upsert_chapter 章 A 失败");
+    assert_eq!(
+        chapter_status(&pool, plan_id, 0, 0).await,
+        Some("complete".into())
+    );
+    assert_eq!(
+        phase_status(&pool, plan_id, 0).await,
+        Some("pending".into()),
+        "还有章 B 未完成，阶段必须保持 pending"
+    );
+    assert_eq!(count(&pool, "concepts").await, 1, "章 A 内容应入库");
+
+    // 章 B：填充后阶段全部 complete → 联动翻牌
+    plan_store::upsert_chapter(&pool, plan_id, 0, 1, &sample_chapter("章B"))
+        .await
+        .expect("upsert_chapter 章 B 失败");
+    assert_eq!(
+        phase_status(&pool, plan_id, 0).await,
+        Some("complete".into()),
+        "两章全部 complete 后阶段应联动翻牌"
+    );
+    assert_eq!(count(&pool, "concepts").await, 2);
+    assert_eq!(
+        count(&pool, "projects").await,
+        0,
+        "单章 upsert 不动 project"
+    );
+
+    // 章节重生成（覆盖写）：章 A 子表整体替换，不残留旧子行
+    plan_store::upsert_chapter(&pool, plan_id, 0, 0, &sample_chapter("章A-v2"))
+        .await
+        .unwrap();
+    let concept_names: Vec<String> = sqlx::query_scalar("SELECT name FROM concepts ORDER BY name")
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        concept_names,
+        vec!["章A-v2·概念".to_string(), "章B·概念".to_string()],
+        "旧章 A 子行不得残留"
+    );
+    assert_eq!(
+        phase_status(&pool, plan_id, 0).await,
+        Some("complete".into())
+    );
+}
+
+/// 上下文读回：create_generating_plan 写入的七字段经 load_plan_request_meta 一致读回
+#[sqlx::test]
+#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+async fn test_plan_request_meta_roundtrip(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+
+    let row = plan_store::load_plan_request_meta(&pool, plan_id)
+        .await
+        .expect("查询失败")
+        .expect("generating 行应存在");
+    assert_eq!(
+        row,
+        PlanRequestRow {
+            goal: "掌握 Rust 系统编程".into(),
+            level: "beginner".into(),
+            weeks: 8,
+            weekly_hours: 10,
+            interests: vec!["cli".into()],
+            background: "有 C 基础".into(),
+        },
+        "七字段应与原请求逐字段一致"
+    );
+
+    // 不存在的 id：None
+    let missing = plan_store::load_plan_request_meta(&pool, Uuid::new_v4())
+        .await
+        .unwrap();
+    assert!(missing.is_none());
+}
+
+/// PlanOutline 骨架读回：phases 按 idx 升序 + chapterTitles 顺序与播种一致（任务 15 依赖）
+#[sqlx::test]
+#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+async fn test_plan_outline_roundtrip(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+
+    plan_store::seed_outline(
+        &pool,
+        plan_id,
+        &sample_outline(&["阶段甲", "阶段乙"], &[2, 1]),
+        &[],
+    )
+    .await
+    .unwrap();
+
+    let outline = plan_store::load_plan_outline(&pool, plan_id)
+        .await
+        .expect("查询失败")
+        .expect("generating 行应存在");
+    assert_eq!(
+        outline,
+        PlanOutlineRow {
+            title: "掌握 Rust 系统编程".into(), // title 暂为 goal 截断占位
+            overview: String::new(),
+            estimated_total_hours: 0,
+            phases: sample_outline(&["阶段甲", "阶段乙"], &[2, 1]),
+        }
+    );
+    // 不存在的 id：None
+    assert!(plan_store::load_plan_outline(&pool, Uuid::new_v4())
+        .await
+        .unwrap()
+        .is_none());
 }
