@@ -71,15 +71,38 @@ export interface DeepDive {
   content: string;
 }
 
-/** 阶段内的学习章节：主要知识 + 深入内容 */
+/**
+ * 两级状态机的状态位（阶段级与章节级共用）：
+ * - pending：目标行已置「生成中」（重生成刚发起）；
+ * - complete：生成收尾完成（成功入库）；
+ * - failed：生成失败终态。
+ * undefined = 旧 plan_json / 缺省流式载荷（无徽标语义，wire 只增不改）。
+ */
+export type PhaseStatus = "pending" | "complete" | "failed";
+
+/** 阶段内的学习章节：主要知识 + 深入内容（status 见 PhaseStatus） */
 export interface Chapter {
   title: string;
   summary: string;
   mainKnowledge: MainKnowledge;
   deepDives: DeepDive[];
+  status?: PhaseStatus;
 }
 
-/** 学习计划中的一个阶段：章节 / 实操 / 作业 / 项目 */
+/**
+ * 大纲阶段载荷（outline 事件的 phases 载荷 / RegenOutline.phases 共用）：
+ * 仅骨架级字段，与 src-tauri/src/protocol.rs::OutlinePhasePayload 逐字对齐；
+ * seed_outline 按此播种骨架行。
+ */
+export interface OutlinePhasePayload {
+  name: string;
+  weekRange: string;
+  chapterTitles: string[];
+  /** 项目简介仅 regenerate_chapter 的重建请求载荷携带；outline 事件恒缺省 */
+  projectBrief?: string;
+}
+
+/** 学习计划中的一个阶段：章节 / 实操 / 作业 / 项目（status 见 PhaseStatus） */
 export interface StudyPhase {
   name: string;
   weekRange: string;
@@ -91,15 +114,23 @@ export interface StudyPhase {
   practice: string[];
   assignments: string[];
   project: PhaseProject;
+  status?: PhaseStatus;
 }
 
 /**
  * Rust -> 前端的生成进度事件（tauri Channel 推送）。
  * 与 src-tauri/src/protocol.rs 的 PlanProgressEvent serde 序列化逐字对齐
- * （tag = "type" + camelCase 字段，见该文件 progress_event_uses_type_tag 测试）。
+ * （tag = "type" + camelCase 字段，见该文件 progress_event_uses_type_tag 测试）；
+ * outline 的 phases/overview 为大纲骨架载荷（渐进式骨架渲染，可缺省兼容旧载荷）。
  */
 export type PlanProgressEvent =
-  | { type: "outline"; phaseCount: number; title: string }
+  | {
+      type: "outline";
+      phaseCount: number;
+      title: string;
+      overview?: string;
+      phases?: OutlinePhasePayload[];
+    }
   | { type: "phaseDone"; index: number; total: number }
   | { type: "storageIssue"; message: string };
 

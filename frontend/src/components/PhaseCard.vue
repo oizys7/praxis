@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { computed } from "vue";
+import { computed, ref } from "vue";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Collapsible,
@@ -8,7 +9,13 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import ChapterSection from "@/components/ChapterSection.vue";
-import type { StudyPhase } from "@/types/agent";
+import {
+  normalizeError,
+  regenInFlight,
+  regeneratePhase,
+} from "@/composables/useAgent";
+import { fetchPlanRecord } from "@/composables/usePlanHistory";
+import type { StudyPhase, StudyPlan } from "@/types/agent";
 
 /**
  * PhaseCard：单个学习阶段的可折叠卡片。
@@ -16,6 +23,8 @@ import type { StudyPhase } from "@/types/agent";
  * - 新数据（chapters 非空）：章节列表（ChapterSection，含 Mermaid 图示与深入内容）；
  * - 旧云端数据（无 chapters）：保留原 theory 列表（只读兼容分支）；
  * 另有阶段目标 / 实操 / 作业 / 收尾项目（含背景、步骤、预计学时）。
+ * 头部按 phase.status 渲染两级状态徽标（undefined = 旧数据无徽标）；
+ * failed/pending 且 planId 可用时提供「重新生成此阶段」入口。
  */
 const props = defineProps<{
   /** 阶段序号（用于展示编号） */
@@ -23,7 +32,74 @@ const props = defineProps<{
   phase: StudyPhase;
   /** 是否默认展开（首个阶段默认展开） */
   defaultOpen?: boolean;
+  /** 历史计划 id：重生成入口依赖，缺省（新生成结果）不显示按钮 */
+  planId?: string;
 }>();
+
+/** 子组件（Section）重生成完成：刷新后的计划整体上抛供调用方替换 */
+const emit = defineEmits<{ refreshed: [plan: StudyPlan] }>();
+
+/** 阶段状态徽标（undefined = 旧数据/缺省流式载荷，不展示） */
+const statusBadge = computed<{
+  label: string;
+  variant: "success" | "secondary" | "destructive";
+} | null>(() => {
+  switch (props.phase.status) {
+    case "complete":
+      return { label: "✓ 已完成", variant: "success" };
+    case "failed":
+      return { label: "✗ 失败", variant: "destructive" };
+    case "pending":
+      return { label: "◌ 未生成", variant: "secondary" };
+    default:
+      return null;
+  }
+});
+
+/** 本阶段重生成按钮：仅历史详情（有 planId）且目标处于 failed/pending 态时可用 */
+const canRegenerate = computed(
+  () =>
+    !!props.planId &&
+    (props.phase.status === "failed" || props.phase.status === "pending"),
+);
+
+/** 本组件是否正在重生成（按钮 spinner 与禁用；全局在飞锁另有 regenInFlight） */
+const busy = ref(false);
+/** 重生成过程的反馈信息（入库提示 / 失败原因；null = 无） */
+const regenError = ref<string | null>(null);
+
+/** 重生成此阶段：成败都刷新详情（失败也可见最新 failed 态），刷新后整体上抛 */
+async function onRegenerate() {
+  if (!props.planId || busy.value || regenInFlight.value) return;
+  busy.value = true;
+  regenError.value = null;
+  try {
+    // 海量细节由后端编排；前端只透传进度事件中的入库/收尾异常（storageIssue）
+    const envelope = await regeneratePhase(
+      props.planId,
+      props.index,
+      (event) => {
+        if (event.type === "storageIssue") regenError.value = event.message;
+      },
+    );
+    const record = await fetchPlanRecord(props.planId);
+    emit("refreshed", record.plan);
+    if (envelope.status !== "plan" && envelope.error) {
+      regenError.value = envelope.error.message;
+    }
+  } catch (e) {
+    const err = normalizeError(e);
+    try {
+      // 传输错误同样刷新：Rust 收尾已把目标行翻 failed，详情可见最新状态
+      emit("refreshed", (await fetchPlanRecord(props.planId)).plan);
+    } catch {
+      // 详情读取失败时仅展示错误，不打断原有渲染
+    }
+    regenError.value = err.message;
+  } finally {
+    busy.value = false;
+  }
+}
 
 /** 理论 / 实操 / 作业 三个列表区块的元信息（theory 为旧数据兼容字段，可能缺失） */
 const sections = computed(() => [
@@ -51,42 +127,72 @@ const sections = computed(() => [
 <template>
   <Collapsible :default-open="props.defaultOpen">
     <Card class="overflow-hidden">
-      <!-- 折叠触发器：整行可点击 -->
-      <CollapsibleTrigger>
-        <button
-          type="button"
-          class="flex w-full items-center justify-between gap-3 p-4 text-left transition-colors hover:bg-accent/50"
-        >
-          <div class="flex items-center gap-3">
-            <span
-              class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-bold text-primary"
-            >
-              {{ index + 1 }}
-            </span>
-            <div>
-              <div class="font-semibold leading-tight">{{ phase.name }}</div>
-              <div
-                v-if="phase.weekRange"
-                class="mt-0.5 text-xs text-muted-foreground"
+      <!-- 头部：折叠触发器（标题/箭头，主体行可点击）+ 右侧状态徽标与重生成按钮 -->
+      <div class="flex items-center gap-2">
+        <CollapsibleTrigger class="min-w-0 flex-1">
+          <button
+            type="button"
+            class="flex w-full items-center justify-between gap-3 p-4 text-left transition-colors hover:bg-accent/50"
+          >
+            <div class="flex min-w-0 items-center gap-3">
+              <span
+                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-bold text-primary"
               >
-                {{ phase.weekRange }}
+                {{ index + 1 }}
+              </span>
+              <div class="min-w-0">
+                <div class="truncate font-semibold leading-tight">
+                  {{ phase.name }}
+                </div>
+                <div
+                  v-if="phase.weekRange"
+                  class="mt-0.5 text-xs text-muted-foreground"
+                >
+                  {{ phase.weekRange }}
+                </div>
               </div>
             </div>
-          </div>
-          <!-- 展开状态指示箭头：group-data-[state=open] 由 Collapsible 根元素驱动 -->
-          <svg
-            class="h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180"
-            viewBox="0 0 24 24"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="2"
-            stroke-linecap="round"
-            stroke-linejoin="round"
+            <!-- 展开状态指示箭头：group-data-[state=open] 由 Collapsible 根元素驱动 -->
+            <svg
+              class="h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <path d="m6 9 6 6 6-6" />
+            </svg>
+          </button>
+        </CollapsibleTrigger>
+        <!-- 状态徽标（旧数据无 status 时不展示）+ 重生成入口（独立于触发器，不套套） -->
+        <div
+          v-if="statusBadge || canRegenerate"
+          class="flex shrink-0 items-center gap-2 pr-4"
+        >
+          <Badge v-if="statusBadge" :variant="statusBadge.variant">
+            {{ statusBadge.label }}
+          </Badge>
+          <Button
+            v-if="canRegenerate"
+            variant="outline"
+            size="sm"
+            :disabled="busy || regenInFlight"
+            @click="onRegenerate"
           >
-            <path d="m6 9 6 6 6-6" />
-          </svg>
-        </button>
-      </CollapsibleTrigger>
+            <span
+              v-if="busy"
+              class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"
+            />
+            {{ busy ? "重新生成中…" : "重新生成此阶段" }}
+          </Button>
+        </div>
+      </div>
+      <!-- 重生成反馈：入库/收尾异常与失败原因，头部下方可见（不展开也能看到） -->
+      <p v-if="regenError" class="px-4 pb-2 text-xs text-destructive">
+        {{ regenError }}
+      </p>
 
       <CollapsibleContent>
         <CardContent class="space-y-4 border-t pt-4">
@@ -104,12 +210,16 @@ const sections = computed(() => [
             </ul>
           </div>
 
-          <!-- 章节化内容（新数据）：每章一个 ChapterSection -->
+          <!-- 章节化内容（新数据）：每章一个 ChapterSection（携带重生成入口参数） -->
           <div v-if="phase.chapters?.length" class="space-y-3">
             <ChapterSection
               v-for="(chapter, ci) in phase.chapters"
               :key="ci"
               :chapter="chapter"
+              :plan-id="planId"
+              :phase-index="index"
+              :chapter-index="ci"
+              @refreshed="(p) => emit('refreshed', p)"
             />
           </div>
 

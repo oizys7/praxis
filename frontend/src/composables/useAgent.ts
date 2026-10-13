@@ -23,12 +23,73 @@ export function normalizeError(e: unknown): CommandError {
 }
 
 /**
+ * 重生成请求在飞锁：模块级共享 ref（同一时间只允许一个重生成请求在飞），
+ * 同一计划的阶段级 / 章节级多个「重新生成」按钮据此互斥（按钮禁用 + 入口守卫）。
+ */
+export const regenInFlight = ref(false);
+
+/**
+ * 重生成单个阶段：invoke('regenerate_phase') + Channel 进度推送（对齐
+ * generate_plan 的 Channel 形态），返回 done 终态包络（调用方只判 status 成败）。
+ * 调用方负责详情刷新（fetchPlanRecord）：成功与失败都要刷新（失败也可见最新 failed 态）。
+ * invoke 抛出的原始错误不在此归一，由调用方经 normalizeError 处理。
+ */
+export async function regeneratePhase(
+  planId: string,
+  phaseIndex: number,
+  onProgress?: (event: PlanProgressEvent) => void,
+): Promise<PlanResponse> {
+  regenInFlight.value = true;
+  try {
+    const channel = new Channel<PlanProgressEvent>();
+    channel.onmessage = (event) => onProgress?.(event);
+    // 参数名对应 Rust 端 regenerate_phase(planId, phaseIndex, channel?)（camelCase）
+    return await invoke<PlanResponse>("regenerate_phase", {
+      planId,
+      phaseIndex,
+      channel,
+    });
+  } finally {
+    regenInFlight.value = false;
+  }
+}
+
+/**
+ * 重生成单个章节：invoke('regenerate_chapter')，形态同 [regeneratePhase]。
+ * 单章进度事件为 PhaseDone{index=章节索引, total=1}：调用方对 total=1 的展示
+ * 弱化为单行 spinner（不显示 1/1 计数）。
+ */
+export async function regenerateChapter(
+  planId: string,
+  phaseIndex: number,
+  chapterIndex: number,
+  onProgress?: (event: PlanProgressEvent) => void,
+): Promise<PlanResponse> {
+  regenInFlight.value = true;
+  try {
+    const channel = new Channel<PlanProgressEvent>();
+    channel.onmessage = (event) => onProgress?.(event);
+    // 参数名对应 Rust 端 regenerate_chapter(planId, phaseIndex, chapterIndex, channel?)
+    return await invoke<PlanResponse>("regenerate_chapter", {
+      planId,
+      phaseIndex,
+      chapterIndex,
+      channel,
+    });
+  } finally {
+    regenInFlight.value = false;
+  }
+}
+
+/**
  * useAgent：与 Tauri 后端（Rust -> Python Agent 服务）通信的复用逻辑。
  *
  * 封装：
  * - generatePlan：invoke('generate_plan')，管理 loading / error / result 状态；
  *   经 tauri Channel 接收流式生成进度（outline / phaseDone / storageIssue），
  *   进度聚合在 progress / storageIssue 两个响应式状态，也可经 onProgress 逐事件回调
+ * - regeneratePhase / regenerateChapter（模块级导出）：阶段/章节级重生成，
+ *   模块级 regenInFlight 锁保证同一时间只有一个请求在飞
  * - pingAgent：invoke('ping_agent')，探测 Python 服务是否在线
  * - normalizeError：把 invoke 抛出的错误统一归一化为 CommandError 对象
  */

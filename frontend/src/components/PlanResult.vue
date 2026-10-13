@@ -29,7 +29,15 @@ defineProps<{
   historyMode?: boolean;
   /** 云端自动入库异常提示（useAgent 的 storageIssue；null = 入库正常） */
   storageIssue?: string | null;
+  /**
+   * 历史计划 id：阶段/章节级重生成入口依赖。新生成结果（Rust 自动入库
+   * 的 id 未回传前端）不传，重生成按钮不渲染，失败部分引导走历史详情。
+   */
+  planId?: string;
 }>();
+
+/** 子组件（PhaseCard → ChapterSection）重生成完成：刷新后的计划整体上抛供调用方替换 */
+const emit = defineEmits<{ refreshed: [plan: StudyPlan] }>();
 
 /** 资源类型 -> 展示标签 */
 const resourceTypeLabels: Record<string, string> = {
@@ -80,7 +88,9 @@ const resourceTypeLabels: Record<string, string> = {
         :key="i"
         :phase="phase"
         :index="i"
+        :plan-id="planId"
         :default-open="i === 0"
+        @refreshed="(p) => emit('refreshed', p)"
       />
     </div>
 
