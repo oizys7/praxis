@@ -1,6 +1,11 @@
 import { ref, shallowRef } from "vue";
-import { invoke } from "@tauri-apps/api/core";
-import type { CommandError, PlanRequest, PlanResponse } from "@/types/agent";
+import { Channel, invoke } from "@tauri-apps/api/core";
+import type {
+  CommandError,
+  PlanProgressEvent,
+  PlanRequest,
+  PlanResponse,
+} from "@/types/agent";
 
 /**
  * Tauri command 的 Err / panic 会以任意形态抛到 JS 侧：
@@ -21,7 +26,9 @@ export function normalizeError(e: unknown): CommandError {
  * useAgent：与 Tauri 后端（Rust -> Python Agent 服务）通信的复用逻辑。
  *
  * 封装：
- * - generatePlan：invoke('generate_plan')，管理 loading / error / result 状态
+ * - generatePlan：invoke('generate_plan')，管理 loading / error / result 状态；
+ *   经 tauri Channel 接收流式生成进度（outline / phaseDone / storageIssue），
+ *   进度聚合在 progress / storageIssue 两个响应式状态，也可经 onProgress 逐事件回调
  * - pingAgent：invoke('ping_agent')，探测 Python 服务是否在线
  * - normalizeError：把 invoke 抛出的错误统一归一化为 CommandError 对象
  */
@@ -32,15 +39,43 @@ export function useAgent() {
   const error = shallowRef<CommandError | null>(null);
   /** 最近一次成功响应（统一包络） */
   const result = shallowRef<PlanResponse | null>(null);
+  /** 生成进度：outline 事件定总数，phaseDone 事件推进（done 为 0-based index + 1） */
+  const progress = shallowRef<{ done: number; total: number } | null>(null);
+  /** 云端自动入库异常提示（storageIssue 事件；null 表示入库正常或不涉及） */
+  const storageIssue = shallowRef<string | null>(null);
 
-  /** 请求 Agent 生成学习计划 */
-  async function generatePlan(request: PlanRequest) {
+  /**
+   * 请求 Agent 生成学习计划。
+   * @param onProgress 可选：每个进度事件的原样回调（进度聚合见返回的 progress / storageIssue）
+   */
+  async function generatePlan(
+    request: PlanRequest,
+    onProgress?: (event: PlanProgressEvent) => void,
+  ) {
     loading.value = true;
     error.value = null;
     result.value = null;
+    progress.value = null;
+    storageIssue.value = null;
+    // 进度通道：key "channel" 对应 Rust 端签名 generate_plan(channel: Option<JavaScriptChannelId>)
+    const channel = new Channel<PlanProgressEvent>();
+    channel.onmessage = (event) => {
+      if (event.type === "outline") {
+        progress.value = { done: 0, total: event.phaseCount };
+      } else if (event.type === "phaseDone") {
+        // index 为 0-based 阶段索引（Python 端 phase_drafts 的 dict key）
+        progress.value = { done: event.index + 1, total: event.total };
+      } else if (event.type === "storageIssue") {
+        storageIssue.value = event.message;
+      }
+      onProgress?.(event);
+    };
     try {
       // 第二个参数的 key "request" 对应 Rust 端命令签名：generate_plan(request: PlanRequest)
-      result.value = await invoke<PlanResponse>("generate_plan", { request });
+      result.value = await invoke<PlanResponse>("generate_plan", {
+        request,
+        channel,
+      });
     } catch (e) {
       error.value = normalizeError(e);
     } finally {
@@ -61,7 +96,18 @@ export function useAgent() {
   function reset() {
     error.value = null;
     result.value = null;
+    progress.value = null;
+    storageIssue.value = null;
   }
 
-  return { loading, error, result, generatePlan, pingAgent, reset };
+  return {
+    loading,
+    error,
+    result,
+    progress,
+    storageIssue,
+    generatePlan,
+    pingAgent,
+    reset,
+  };
 }

@@ -1,16 +1,21 @@
 <script setup lang="ts">
 import { computed } from "vue";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import ChapterSection from "@/components/ChapterSection.vue";
 import type { StudyPhase } from "@/types/agent";
 
 /**
  * PhaseCard：单个学习阶段的可折叠卡片。
- * 展开后显示本阶段的目标、理论 / 实操 / 作业三块内容，以及收尾项目与验收标准。
+ * 展开后按阶段内容分代渲染：
+ * - 新数据（chapters 非空）：章节列表（ChapterSection，含 Mermaid 图示与深入内容）；
+ * - 旧云端数据（无 chapters）：保留原 theory 列表（只读兼容分支）；
+ * 另有阶段目标 / 实操 / 作业 / 收尾项目（含背景、步骤、预计学时）。
  */
 const props = defineProps<{
   /** 阶段序号（用于展示编号） */
@@ -20,9 +25,14 @@ const props = defineProps<{
   defaultOpen?: boolean;
 }>();
 
-/** 理论 / 实操 / 作业 三个列表区块的元信息 */
+/** 理论 / 实操 / 作业 三个列表区块的元信息（theory 为旧数据兼容字段，可能缺失） */
 const sections = computed(() => [
-  { key: "theory", icon: "📚", title: "理论学习", items: props.phase.theory },
+  {
+    key: "theory",
+    icon: "📚",
+    title: "理论学习",
+    items: props.phase.theory ?? [],
+  },
   {
     key: "practice",
     icon: "🛠️",
@@ -94,7 +104,16 @@ const sections = computed(() => [
             </ul>
           </div>
 
-          <!-- 理论 / 实操 / 作业 -->
+          <!-- 章节化内容（新数据）：每章一个 ChapterSection -->
+          <div v-if="phase.chapters?.length" class="space-y-3">
+            <ChapterSection
+              v-for="(chapter, ci) in phase.chapters"
+              :key="ci"
+              :chapter="chapter"
+            />
+          </div>
+
+          <!-- 理论 / 实操 / 作业（旧数据含 theory 列表；新数据 theory 为空自动跳过） -->
           <div
             v-for="section in sections.filter((s) => s.items.length)"
             :key="section.key"
@@ -113,15 +132,47 @@ const sections = computed(() => [
             v-if="phase.project.name"
             class="rounded-lg border bg-primary/5 p-3"
           >
-            <div class="flex items-center gap-2">
+            <div class="flex flex-wrap items-center gap-2">
               <span>🚀</span>
               <span class="text-sm font-semibold"
                 >阶段项目：{{ phase.project.name }}</span
               >
+              <Badge
+                v-if="phase.project.estimatedHours"
+                variant="secondary"
+                class="ml-auto"
+              >
+                预计投入 ≈ {{ phase.project.estimatedHours }}h
+              </Badge>
             </div>
             <p class="mt-1.5 text-sm text-muted-foreground">
               {{ phase.project.description }}
             </p>
+            <!-- 项目背景与动机（旧数据无此字段） -->
+            <p
+              v-if="phase.project.background"
+              class="mt-1.5 text-sm text-muted-foreground"
+            >
+              <span class="font-medium text-foreground">背景：</span
+              >{{ phase.project.background }}
+            </p>
+            <!-- 建议实施步骤（有序，旧数据无此字段） -->
+            <div v-if="phase.project.steps?.length" class="mt-2">
+              <div class="text-xs font-semibold text-muted-foreground">
+                建议实施步骤
+              </div>
+              <ol class="mt-1 space-y-1 text-sm">
+                <li
+                  v-for="(step, si) in phase.project.steps"
+                  :key="si"
+                  class="flex gap-2 text-muted-foreground"
+                >
+                  <span class="shrink-0 font-medium text-primary"
+                    >{{ si + 1 }}.</span
+                  >{{ step }}
+                </li>
+              </ol>
+            </div>
             <div v-if="phase.project.acceptanceCriteria.length" class="mt-2">
               <div class="text-xs font-semibold text-muted-foreground">
                 验收标准

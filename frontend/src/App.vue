@@ -18,7 +18,15 @@ import type { PlanRecord, PlanRequest } from "@/types/agent";
  * 上：顶部栏（品牌 + Agent 在线徽标）；下：左侧菜单栏 + 右侧页面内容。
  * 启动时通过 ping_agent 探测 Python 服务状态并展示徽标。
  */
-const { loading, error, result, generatePlan, pingAgent } = useAgent();
+const {
+  loading,
+  error,
+  result,
+  progress,
+  storageIssue,
+  generatePlan,
+  pingAgent,
+} = useAgent();
 
 /** Agent 服务在线状态：null = 检测中 */
 const agentOnline = ref<boolean | null>(null);
@@ -159,7 +167,7 @@ function dismissError() {
             />
 
             <section class="min-w-0 space-y-4">
-              <!-- 加载中 -->
+              <!-- 加载中（含流式生成进度：outline 定总数，phaseDone 推进） -->
               <Card v-if="loading" class="animate-fade-in-up">
                 <CardContent
                   class="flex flex-col items-center gap-4 py-14 text-center"
@@ -172,6 +180,34 @@ function dismissError() {
                     <p class="mt-1 text-sm text-muted-foreground">
                       流程：澄清检查 → 规划生成 → 质量评审（约需 30~90 秒）
                     </p>
+                  </div>
+                  <!-- 生成进度：第 N/M 阶段完成 + 进度条 -->
+                  <div v-if="progress" class="w-full max-w-xs">
+                    <div
+                      class="mb-1.5 flex justify-between text-xs text-muted-foreground"
+                    >
+                      <span
+                        >第 {{ progress.done }}/{{
+                          progress.total
+                        }}
+                        阶段完成</span
+                      >
+                      <span
+                        >{{
+                          Math.round(
+                            (progress.done / Math.max(progress.total, 1)) * 100,
+                          )
+                        }}%</span
+                      >
+                    </div>
+                    <div class="h-1.5 overflow-hidden rounded-full bg-muted">
+                      <div
+                        class="h-full rounded-full bg-primary transition-all duration-500"
+                        :style="{
+                          width: `${(progress.done / Math.max(progress.total, 1)) * 100}%`,
+                        }"
+                      />
+                    </div>
                   </div>
                 </CardContent>
               </Card>
@@ -214,6 +250,7 @@ function dismissError() {
                 :level="lastRequest?.level"
                 :weeks="lastRequest?.weeks"
                 :history-mode="historyMode"
+                :storage-issue="storageIssue"
               />
 
               <!-- 空态 -->

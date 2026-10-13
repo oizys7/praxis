@@ -1,7 +1,5 @@
 <script setup lang="ts">
-import { ref } from "vue";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -10,25 +8,27 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import PhaseCard from "@/components/PhaseCard.vue";
-import { savePlan } from "@/composables/usePlanHistory";
-import type { CommandError, StudyPlan } from "@/types/agent";
+import type { StudyPlan } from "@/types/agent";
 
 /**
  * PlanResult：展示完整学习计划。
- * - 顶部：标题 / 概述 / 总学时 + 保存到云端
+ * - 顶部：标题 / 概述 / 总学时 + 云端自动保存状态徽标（生成成功即由 Rust 自动入库，
+ *   无手动保存；storageIssue 非空时降级提示）
  * - 中部：阶段列表（PhaseCard 可折叠，第一阶段默认展开）
  * - 底部：推荐资源 + Agent 评审备注
  */
-const props = defineProps<{
+defineProps<{
   plan: StudyPlan;
-  /** 生成时的学习目标（保存到云端的检索字段；历史查看时不传） */
+  /** 生成时的学习目标（历史列表检索字段；历史查看时不传） */
   goal?: string;
   /** 生成时的水平（列表展示用） */
   level?: string;
   /** 生成时的周数 */
   weeks?: number;
-  /** 历史查看模式：计划已入云，不显示保存按钮 */
+  /** 历史查看模式：计划已入云，不显示保存状态徽标 */
   historyMode?: boolean;
+  /** 云端自动入库异常提示（useAgent 的 storageIssue；null = 入库正常） */
+  storageIssue?: string | null;
 }>();
 
 /** 资源类型 -> 展示标签 */
@@ -39,31 +39,6 @@ const resourceTypeLabels: Record<string, string> = {
   video: "视频",
   other: "其他",
 };
-
-/** 保存到云端的状态 */
-const saving = ref(false);
-const savedAt = ref<string | null>(null);
-const saveError = ref<CommandError | null>(null);
-
-async function onSave() {
-  saving.value = true;
-  saveError.value = null;
-  try {
-    await savePlan({
-      title: props.plan.title || props.goal || "未命名计划",
-      goal: props.goal ?? "",
-      overview: props.plan.overview,
-      level: props.level ?? "",
-      weeks: props.weeks ?? 0,
-      plan: props.plan,
-    });
-    savedAt.value = new Date().toLocaleTimeString("zh-CN", { hour12: false });
-  } catch (e) {
-    saveError.value = e as CommandError; // usePlanHistory 已归一
-  } finally {
-    saving.value = false;
-  }
-}
 </script>
 
 <template>
@@ -80,33 +55,19 @@ async function onSave() {
         <CardDescription class="leading-relaxed">{{
           plan.overview
         }}</CardDescription>
-        <!-- 保存到云端（历史查看模式下隐藏：计划已入库） -->
+        <!-- 云端自动保存状态（历史查看模式下隐藏：计划本就已入库） -->
         <div
           v-if="!historyMode"
-          class="mt-3 flex flex-wrap items-center gap-3 border-t pt-3"
+          class="mt-3 flex flex-wrap items-center gap-2 border-t pt-3"
         >
-          <template v-if="!savedAt">
-            <Button
-              size="sm"
-              variant="outline"
-              :disabled="saving"
-              @click="onSave"
-            >
-              <span
-                v-if="saving"
-                class="mr-2 h-3 w-3 animate-spin rounded-full border-2 border-primary border-t-transparent"
-              />
-              💾 保存到云端
-            </Button>
-            <span v-if="saveError" class="text-xs text-destructive">
-              {{ saveError.message }}
-            </span>
+          <template v-if="storageIssue">
+            <Badge variant="destructive">⚠ 云端未保存</Badge>
+            <span class="text-xs text-muted-foreground">{{
+              storageIssue
+            }}</span>
           </template>
           <template v-else>
-            <Badge variant="success">✓ 已保存到云端（{{ savedAt }}）</Badge>
-            <Button size="sm" variant="ghost" @click="savedAt = null">
-              再存一份
-            </Button>
+            <Badge variant="success">✓ 已自动保存到云端</Badge>
           </template>
         </div>
       </CardHeader>

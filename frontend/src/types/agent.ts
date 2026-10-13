@@ -29,19 +29,79 @@ export interface PlanRequest {
 export interface PhaseProject {
   name: string;
   description: string;
+  /** 项目背景与动机（旧云端数据无此字段） */
+  background?: string;
+  /** 建议实施步骤（有序，旧云端数据无此字段） */
+  steps?: string[];
+  /** 预计投入学时（旧云端数据无此字段） */
+  estimatedHours?: number;
   acceptanceCriteria: string[];
 }
 
-/** 学习计划中的一个阶段：理论 / 实操 / 作业 / 项目 四位一体 */
+/** 章节核心概念定义 */
+export interface ConceptDef {
+  name: string;
+  definition: string;
+}
+
+/** 章节知识点 */
+export interface KnowledgePoint {
+  title: string;
+  detail: string;
+}
+
+/** 章节配图：Mermaid 源码由前端渲染 */
+export interface KnowledgeDiagram {
+  title: string;
+  mermaid: string;
+  caption: string;
+}
+
+/** 章节主要知识：概念 / 知识点 / 图示 */
+export interface MainKnowledge {
+  concepts: ConceptDef[];
+  knowledgePoints: KnowledgePoint[];
+  diagrams: KnowledgeDiagram[];
+}
+
+/** 章节深入内容：围绕主题的延伸长文 */
+export interface DeepDive {
+  topic: string;
+  angle: string;
+  content: string;
+}
+
+/** 阶段内的学习章节：主要知识 + 深入内容 */
+export interface Chapter {
+  title: string;
+  summary: string;
+  mainKnowledge: MainKnowledge;
+  deepDives: DeepDive[];
+}
+
+/** 学习计划中的一个阶段：章节 / 实操 / 作业 / 项目 */
 export interface StudyPhase {
   name: string;
   weekRange: string;
   objectives: string[];
-  theory: string[];
+  /** 章节列表（章节化新结构；旧云端 plan_json 无此字段） */
+  chapters?: Chapter[];
+  /** @deprecated 旧云端 plan_json 只读兼容保留，新数据不再产出 */
+  theory?: string[];
   practice: string[];
   assignments: string[];
   project: PhaseProject;
 }
+
+/**
+ * Rust -> 前端的生成进度事件（tauri Channel 推送）。
+ * 与 src-tauri/src/protocol.rs 的 PlanProgressEvent serde 序列化逐字对齐
+ * （tag = "type" + camelCase 字段，见该文件 progress_event_uses_type_tag 测试）。
+ */
+export type PlanProgressEvent =
+  | { type: "outline"; phaseCount: number; title: string }
+  | { type: "phaseDone"; index: number; total: number }
+  | { type: "storageIssue"; message: string };
 
 /** 推荐学习资源 */
 export interface StudyResource {
@@ -204,17 +264,7 @@ export function defaultAgentSettings(): AgentSettings {
 // 学习计划历史（云端持久化）：仅 Rust <-> 前端两端，不涉及 Python
 // ---------------------------------------------------------------------------
 
-/** 保存学习计划请求：id 与保存时间由 Rust 端生成 */
-export interface SavePlanInput {
-  title: string;
-  goal: string;
-  overview: string;
-  level: string;
-  weeks: number;
-  plan: StudyPlan;
-}
-
-/** 学习计划历史记录（完整行：元数据 + 整份计划） */
+/** 学习计划历史记录（完整行：元数据 + 整份计划）。生成成功即由 Rust 自动入库，前端不再手动保存 */
 export interface PlanRecord {
   id: string;
   title: string;
