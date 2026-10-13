@@ -165,8 +165,7 @@ pub async fn upsert_phase(
 /// 无法填充完整结构，project 留待 upsert_phase 整体写入）。
 /// 幂等守卫：仅当该计划 phases 表为空时才播种（防 regenerate 与竞态覆盖已有完成
 /// 数据）；regenerate 路径绝不触发 seed（守卫亦兜底）。
-/// 消费方：commands generate_plan outline 事件接线（任务 15）。
-#[allow(dead_code)]
+/// 消费方：commands generate_plan outline 事件接线。
 pub async fn seed_outline(
     pool: &PgPool,
     plan_id: Uuid,
