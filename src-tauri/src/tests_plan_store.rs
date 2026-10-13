@@ -108,6 +108,7 @@ async fn count(pool: &PgPool, table: &str) -> i64 {
 
 /// 同 (plan_id, idx) 两次 upsert：phases 行不翻倍，章节整体替换，阶段名更新
 #[sqlx::test]
+#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
 async fn test_upsert_phase_idempotent(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
@@ -146,6 +147,7 @@ async fn test_upsert_phase_idempotent(pool: PgPool) {
 
 /// 回炉重写：upsert 覆盖后旧章节行与子行（概念/知识点/图示/深入/项目）不残留
 #[sqlx::test]
+#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
 async fn test_rework_replaces_children(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
@@ -187,6 +189,7 @@ async fn test_rework_replaces_children(pool: PgPool) {
 /// 乱序扩展 idx 2,0,1：get_plan 多表重组后 phases 按 idx 升序、子数据完整；
 /// update_outline_meta / finalize_plan 的元信息覆写生效
 #[sqlx::test]
+#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
 async fn test_get_plan_reassembles_sorted(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
@@ -254,6 +257,7 @@ async fn test_get_plan_reassembles_sorted(pool: PgPool) {
 
 /// 旧行带 plan_json：get_plan 走旧反序列化路径，行为与规范化改造前一致
 #[sqlx::test]
+#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
 async fn test_legacy_plan_json_still_reads(pool: PgPool) {
     prepare_schema(&pool).await;
     let id = Uuid::new_v4();
@@ -310,6 +314,7 @@ async fn test_legacy_plan_json_still_reads(pool: PgPool) {
 
 /// 删 plans 行：九表（plans + 阶段/项目/章节/概念/知识点/图示/深入/资源）全级联清空
 #[sqlx::test]
+#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
 async fn test_delete_plan_cascades(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
