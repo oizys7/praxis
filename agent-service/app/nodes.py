@@ -32,8 +32,9 @@ from app import prompts, validators
 from app.config import settings
 from app.errors import AgentServiceError
 from app.llm import has_llm_config, invoke_structured
-from app.mock import build_mock_outline, build_mock_phase
+from app.mock import build_mock_chapter, build_mock_outline, build_mock_phase
 from app.schemas import (
+    Chapter,
     ClarificationOutput,
     PlanOutline,
     PlanRequest,
@@ -256,6 +257,85 @@ async def _expand_phase_draft(
             },
         )
     return phase.model_dump(mode="json", by_alias=True)
+
+
+# ---------------------------------------------------------------------------
+# 端点级重生成封装：POST /api/regenerate/stream 两条路径直接复用本节函数
+# （build_plan_context / Semaphore / 解析错误反馈重试与图内扩展完全同源）
+# ---------------------------------------------------------------------------
+
+
+def _phase_outline_at(outline: dict[str, Any], phase_index: int) -> dict[str, Any]:
+    """取指定阶段的大纲 dict（越界与空大纲由端点层先行校验，这里纯取值）。"""
+    return (outline.get("phases") or [])[phase_index]
+
+
+async def regenerate_phase(
+    request: dict[str, Any],
+    outline: dict[str, Any],
+    phase_index: int,
+) -> dict[str, Any]:
+    """全阶段重生成（regen 端点 chapterIndex 缺省路径）：返回 StudyPhase camelCase dict。
+
+    复用 _expand_phase_draft：同用 _EXPAND_SEMAPHORE 并发闸与解析重试；
+    评审意见注入占位文案（重生成无评审误会，phase.yaml 据此跳过意见落实）。
+    """
+    phase_outline = _phase_outline_at(outline, phase_index)
+    return await _expand_phase_draft(
+        request,
+        phase_outline,
+        phase_index,
+        plan_context=build_plan_context(outline, phase_index),
+        review_notes=_FIRST_EXPAND_REVIEW_NOTES,
+    )
+
+
+async def regenerate_chapter(
+    request: dict[str, Any],
+    outline: dict[str, Any],
+    phase_index: int,
+    chapter_index: int,
+) -> dict[str, Any]:
+    """单章重生成（regen 端点 chapterIndex 指定路径）：返回 Chapter camelCase dict。
+
+    上下文取自阶段大纲：兄弟章标题排除自身（参考而非必写，空列表合法传空）；
+    结构合法性由 Pydantic Chapter 模型兜底，不跑整计划 validators。
+    """
+    phase_outline = _phase_outline_at(outline, phase_index)
+    chapter_titles = phase_outline.get("chapterTitles") or []
+    chapter_title = chapter_titles[chapter_index]
+    siblings = [t for i, t in enumerate(chapter_titles) if i != chapter_index]
+
+    if settings.allow_mock_llm:
+        return build_mock_chapter(request, phase_outline, chapter_index)
+    if not has_llm_config():
+        raise AgentServiceError(_NO_KEY_HINT)
+
+    req = PlanRequest.model_validate(request)
+    async with _EXPAND_SEMAPHORE:
+        chapter = await invoke_structured(
+            Chapter,
+            "chapter",
+            {
+                "goal": req.goal,
+                "background": req.background or "未填写",
+                "interests": "、".join(req.interests) if req.interests else "未填写",
+                "weekly_hours": str(req.weekly_hours),
+                "weeks": str(req.weeks),
+                "phase_name": phase_outline.get("name", ""),
+                "phase_week_range": phase_outline.get("weekRange", ""),
+                "phase_objectives": (
+                    "\n".join(f"- {obj}" for obj in phase_outline.get("objectives") or [])
+                    or "（无）"
+                ),
+                "chapter_title": chapter_title,
+                "sibling_chapter_titles": "\n".join(
+                    f"- {t}" for t in siblings
+                ),
+                "project_brief": phase_outline.get("projectBrief", "") or "（无）",
+            },
+        )
+    return chapter.model_dump(mode="json", by_alias=True)
 
 
 # ---------------------------------------------------------------------------

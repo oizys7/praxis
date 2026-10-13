@@ -5,7 +5,8 @@
 
 两级生成（与 outline_node / expand_phase_node 节点一一对应）：
 - build_mock_outline：先产出 PlanOutline 骨架（阶段大纲，不含章节正文）；
-- build_mock_phase：再按阶段大纲逐个扩展为 StudyPhase（章节 + 深入内容 + 项目）。
+- build_mock_phase：再按阶段大纲逐个扩展为 StudyPhase（章节 + 深入内容 + 项目）；
+- build_mock_chapter：仅重生成单个章节（Chapter 形状），供 regen 端点单章路径。
 
 约定：camelCase dict 进出（与 schemas 模型 model_dump(by_alias=True) 形状
 一致），但本模块不 import schemas、纯字典构造；输出必须能通过
@@ -272,6 +273,22 @@ def build_mock_outline(request: dict[str, Any]) -> dict[str, Any]:
             },
         ],
     }
+
+
+def build_mock_chapter(
+    request: dict[str, Any], phase_outline: dict[str, Any], chapter_index: int
+) -> dict[str, Any]:
+    """按阶段大纲摘出单章标题，生成单个章节（Chapter 形状，camelCase dict）。
+
+    参数 request 是 PlanRequest.model_dump(by_alias=True) 的结果，
+    phase_outline 是 build_mock_outline 输出 phases 中的元素。
+    章节正交给 build_mock_phase 复用的同一 _chapter 构造器，保证
+    全阶段重生成与单章重生成产出的章节目内容一致。
+    """
+    goal: str = request.get("goal", "你的学习目标")
+    chapter_titles: list[str] = phase_outline.get("chapterTitles") or []
+    title = chapter_titles[chapter_index] if chapter_titles else "未命名章节"
+    return _chapter(title, goal)
 
 
 def build_mock_phase(

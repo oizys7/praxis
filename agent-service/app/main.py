@@ -4,6 +4,8 @@
 - POST /api/generate-plan：生成学习计划（分层拓扑：outline → 并行扩展 → 拼装 → 评审）
 - POST /api/generate-plan/stream：同上，NDJSON 流式推送（outline/phase/done 事件，
   供 Rust 侧逐阶段入库；done 必为最后一行）
+- POST /api/regenerate/stream：阶段/章节级重生成流式推送（phase/chapter/done 事件，
+  供 Rust 侧 upsert 已入库的失败阶段/章节）
 - GET  /api/config：返回当前生效配置（设置页读取）
 - POST /api/config：热更新配置（设置页保存后由 Rust 推送，无需重启）
 - GET  /health：健康检查（Tauri 端 ping_agent 探测在线状态）
@@ -26,6 +28,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
+from app import nodes
 from app.config import settings
 from app.errors import AgentServiceError, register_error_handlers
 from app.graph import agent_graph
@@ -37,6 +40,7 @@ from app.schemas import (
     HealthResponse,
     PlanRequest,
     PlanResponse,
+    RegenRequest,
     StudyPlan,
 )
 
@@ -144,7 +148,9 @@ async def generate_plan_stream(request: PlanRequest) -> StreamingResponse:
     """流式生成学习计划：NDJSON 逐行推送事件，每阶段完成即到达。
 
     事件序列（application/x-ndjson，每行一个 JSON 对象）：
-    - {"type": "outline", "phaseCount": N, "title": "…"}：骨架到达时推 1 条；
+    - {"type": "outline", "phaseCount": N, "title": "…", "overview"?: "…",
+   "phases"?: [{"name": "…", "weekRange": "…", "chapterTitles": ["…"]}]}：
+  骨架到达时推 1 条（phases 为向后兼容的可选载荷，供渐进式骨架渲染）
     - {"type": "phase", "index": i, "phase": {…}}：每阶段完成推 1 条，
       可能乱序，回炉重生成时同 index 再次推送（覆盖语义）；
     - {"type": "done", "response": {…统一包络…}}：终态，必为最后一行
@@ -195,6 +201,9 @@ async def _stream_plan_events(request: PlanRequest) -> AsyncIterator[str]:
                     if not isinstance(update, dict):
                         continue
                     # outline 节点增量到达：推 1 条 outline 事件
+                    # （phases 载荷供渐进式骨架渲染：阶段名 / 周区间 / 章节标题，
+                    # objectives 等不进事件保持轻量；outline dict 本就是
+                    # by_alias camelCase，字段名直接对齐）
                     if node == "outline" and "outline" in update:
                         outline = update["outline"]
                         yield _ndjson_line(
@@ -202,6 +211,15 @@ async def _stream_plan_events(request: PlanRequest) -> AsyncIterator[str]:
                                 "type": "outline",
                                 "phaseCount": len(outline.get("phases") or []),
                                 "title": outline.get("title", ""),
+                                "overview": outline.get("overview", ""),
+                                "phases": [
+                                    {
+                                        "name": phase.get("name", ""),
+                                        "weekRange": phase.get("weekRange", ""),
+                                        "chapterTitles": phase.get("chapterTitles") or [],
+                                    }
+                                    for phase in outline.get("phases") or []
+                                ],
                             }
                         )
                     # 并行扩展 / 定向回炉的增量到达：逐阶段推 phase 事件
@@ -230,6 +248,121 @@ async def _stream_plan_events(request: PlanRequest) -> AsyncIterator[str]:
     # 终态包络：mode="json" 先落成 JSON 安全标量（枚举 / UUID 安全），
     # plan / clarification / error 三种终态统一走 done 收尾
     yield _ndjson_line(
+        {"type": "done", "response": response.model_dump(mode="json", by_alias=True)}
+    )
+
+
+@app.post("/api/regenerate/stream")
+async def regenerate_stream(payload: RegenRequest) -> StreamingResponse:
+    """阶段/章节级重生成流式端点（NDJSON，done 必为最后一行）。
+
+    事件序列（application/x-ndjson，每行一个 JSON 对象）：
+    - chapterIndex 缺省（全阶段）：{"type": "phase", "index": i, "phase": {…}} 1 条，
+      phase 为 StudyPhase 的 camelCase dict（与 generate-plan 流的 phase 事件同构，
+      Rust 侧直接复用 upsert_phase）；
+    - chapterIndex 指定（单章）：{"type": "chapter", "index": c,
+      "phaseIndex": i, "chapter": {…}} 1 条，chapter 为 Chapter 的 camelCase dict
+      （by_alias，供 Rust 侧单章 upsert）；
+    - {"type": "done", "response": {…统一包络…}}：终态，必为最后一行；
+      成功时包络 status=plan（数据已由 phase/chapter 事件携带），失败时 status=error。
+
+    越界 phaseIndex / chapterIndex 属业务失败：不抛 4xx，走 done(error) 包络
+    （code=validation）；AgentServiceError 同样翻译为 error 终态，与
+    _stream_plan_events 的捕获模式一致；意外异常不在此捕获，仍由
+    Starlette 中断流。结构合法性由 Pydantic 模型兜底，不跑整计划 validators。
+    """
+    logger.info(
+        "收到重生成请求：phaseIndex=%s chapterIndex=%s",
+        payload.phase_index,
+        payload.chapter_index,
+    )
+    return StreamingResponse(
+        _stream_regen_events(payload), media_type="application/x-ndjson"
+    )
+
+
+async def _stream_regen_events(payload: RegenRequest) -> AsyncIterator[str]:
+    """把单条重生成结果翻译为 NDJSON 事件行（phase / chapter → done）。
+
+    生成完成后，终态包络统一在函数末尾推 done：成功 PlanResponse(status=plan)，
+    业务失败翻译为 status=error（错误内容来自异常文本或越界校验说明）。
+    """
+    request_dict = payload.request.model_dump(by_alias=True)
+    outline_dict = payload.outline.model_dump(by_alias=True)
+    phases = outline_dict.get("phases") or []
+    phase_index = payload.phase_index
+    phase_outline = phases[phase_index] if 0 <= phase_index < len(phases) else None
+
+    if phase_outline is None:
+        yield _error_done(
+            f"重生成目标阶段越界：phaseIndex={phase_index}，大纲共 {len(phases)} 个阶段"
+        )
+        return
+
+    try:
+        if payload.chapter_index is None:  # 全阶段重生成
+            phase = await nodes.regenerate_phase(
+                request_dict, outline_dict, phase_index
+            )
+            yield _ndjson_line(
+                {"type": "phase", "index": phase_index, "phase": phase}
+            )
+            done = _plan_done()
+        else:  # 单章重生成
+            chapter_index = payload.chapter_index
+            chapter_titles = phase_outline.get("chapterTitles") or []
+            if not 0 <= chapter_index < len(chapter_titles):
+                done = _error_response(
+                    f"重生成目标章节越界：phaseIndex={phase_index} 的 chapterIndex="
+                    f"{chapter_index}，该阶段共 {len(chapter_titles)} 个章节"
+                )
+            else:
+                chapter = await nodes.regenerate_chapter(
+                    request_dict, outline_dict, phase_index, chapter_index
+                )
+                yield _ndjson_line(
+                    {
+                        "type": "chapter",
+                        "index": chapter_index,
+                        "phaseIndex": phase_index,
+                        "chapter": chapter,
+                    }
+                )
+                done = _plan_done()
+    except AgentServiceError as exc:
+        # 业务失败（无 Key / 超时 / 解析失败等）不中断流：翻译为 error 终态，
+        # 与 _stream_plan_events 同构（app/errors.py：code=service）
+        logger.warning("重生成业务失败：%s", exc)
+        done = PlanResponse(
+            status="error",
+            error=ErrorDetail(code="service", message=str(exc)),
+        )
+
+    # 终态包络：mode="json" 先落成 JSON 安全标量；数据已由 phase / chapter
+    # 事件携带，done 只报告成败（plan / error 两种终态统一走 done 收尾）
+    yield _ndjson_line(
+        {"type": "done", "response": done.model_dump(mode="json", by_alias=True)}
+    )
+
+
+def _plan_done() -> PlanResponse:
+    """成功终态包络：status=plan，数据已由 phase / chapter 事件先行携带。"""
+    return PlanResponse(status="plan")
+
+
+def _error_response(message: str) -> PlanResponse:
+    """参数层面失败（越界等）的 error 包络（code=validation）。"""
+    return PlanResponse(
+        status="error", error=ErrorDetail(code="validation", message=message)
+    )
+
+
+def _error_done(message: str) -> str:
+    """构造一行 error 终态的 done 事件（code=validation，参数层面失败）。"""
+    response = PlanResponse(
+        status="error", error=ErrorDetail(code="validation", message=message)
+    )
+    return _ndjson_line(
         {"type": "done", "response": response.model_dump(mode="json", by_alias=True)}
     )
 

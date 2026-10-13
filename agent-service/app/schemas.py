@@ -52,6 +52,22 @@ class PlanRequest(CamelModel):
     background: str = Field(default="", description="已有基础描述")
 
 
+class RegenRequest(CamelModel):
+    """阶段/章节级重生成请求（Rust -> Python，流式端点 /api/regenerate/stream）。
+
+    chapterIndex 为 None 时重生成整个阶段（返回 StudyPhase），
+    指定时只重生成单个章节（返回 Chapter）；上下文由调用方从入库的
+    plans 七字段 + 大纲骨架重建（生成条件可完整复现，见任务 15）。
+    """
+
+    request: PlanRequest = Field(..., description="原始计划生成请求（重建回填）")
+    outline: PlanOutline = Field(..., description="计划大纲骨架（同一次生成的产出）")
+    phase_index: int = Field(..., ge=0, description="目标阶段索引（0-based）")
+    chapter_index: int | None = Field(
+        default=None, ge=0, description="目标章节索引（0-based）；None 表示全阶段"
+    )
+
+
 # ---------------------------------------------------------------------------
 # 响应中的计划结构
 # ---------------------------------------------------------------------------
