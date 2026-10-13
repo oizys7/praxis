@@ -36,6 +36,7 @@ from app.mock import build_mock_chapter, build_mock_outline, build_mock_phase
 from app.schemas import (
     Chapter,
     ClarificationOutput,
+    Level,
     PlanOutline,
     PlanRequest,
     ReviewOutput,
@@ -91,6 +92,20 @@ def _request_of(state: AgentState) -> PlanRequest:
     total=False TypedDict 的静态检查。
     """
     return PlanRequest.model_validate(state.get("request") or {})
+
+
+# level 枚举值 -> 提示词受众描述（受众注入在 nodes 组装层完成映射，
+# 提示词内不做 level 分支比较；枚举语义以 schemas.Level 为准）
+_LEVEL_AUDIENCES: dict[Level, str] = {
+    Level.beginner: "从零开始的初学者（没有任何相关经验）",
+    Level.intermediate: "有基础的中级学习者（了解其本领域基本概念）",
+    Level.advanced: "进阶学习者（已能完成常见任务，追求体系化与实战）",
+}
+
+
+def _level_audience(req: PlanRequest) -> str:
+    """把请求的 level 枚举映射为中文受众描述（未知值回退初学者口径）。"""
+    return _LEVEL_AUDIENCES.get(req.level, _LEVEL_AUDIENCES[Level.beginner])
 
 
 def _detect_issues(req: PlanRequest) -> list[tuple[str, str]]:
@@ -191,7 +206,7 @@ async def outline_node(state: AgentState) -> dict[str, Any]:
         "outline",
         {
             "goal": req.goal,
-            "level": req.level.value,
+            "level": _level_audience(req),
             "weekly_hours": str(req.weekly_hours),
             "weeks": str(req.weeks),
             "interests": "、".join(req.interests) if req.interests else "未填写",
@@ -246,6 +261,9 @@ async def _expand_phase_draft(
     if not has_llm_config():
         raise AgentServiceError(_NO_KEY_HINT)
 
+    # 受众与学时注入：level 映射为受众描述，weekly_hours/weeks 供
+    # estimatedHours 相称性表述使用（request 为 camelCase dict）
+    req = PlanRequest.model_validate(request)
     async with _EXPAND_SEMAPHORE:
         phase = await invoke_structured(
             StudyPhase,
@@ -254,6 +272,9 @@ async def _expand_phase_draft(
                 "plan_context": plan_context,
                 "phase_outline": json.dumps(phase_outline, ensure_ascii=False),
                 "review_notes": review_notes,
+                "level": _level_audience(req),
+                "weekly_hours": str(req.weekly_hours),
+                "weeks": str(req.weeks),
             },
         )
     return phase.model_dump(mode="json", by_alias=True)
@@ -318,6 +339,7 @@ async def regenerate_chapter(
             "chapter",
             {
                 "goal": req.goal,
+                "level": _level_audience(req),
                 "background": req.background or "未填写",
                 "interests": "、".join(req.interests) if req.interests else "未填写",
                 "weekly_hours": str(req.weekly_hours),
