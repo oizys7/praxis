@@ -58,10 +58,16 @@ def test_story_prompt_fully_rendered(name):
 
 @pytest.mark.parametrize("name", ("phase", "chapter"))
 def test_mermaid_whitelist_matches_validators(name):
-    """正文规格里的图类型白名单与 validators.MERMAID_DIAGRAM_TYPES 逐字一致。"""
+    """正文规格里的图类型白名单与 validators.MERMAID_DIAGRAM_TYPES 词级逐字一致。
+
+    子串式断言（diagram_type in system_text）拦不住未来混入的超集词
+    （如 sequenceDiagramX），故用词边界匹配。
+    """
     system_text = prompts.load_prompt(name)["system"]
     for diagram_type in validators.MERMAID_DIAGRAM_TYPES:
-        assert diagram_type in system_text, f"{name} 缺少白名单图类型 {diagram_type}"
+        assert re.search(rf"(?<![\w]){re.escape(diagram_type)}(?![\w])", system_text), (
+            f"{name} 缺少白名单图类型 {diagram_type}"
+        )
     # 大小写敏感抽查：错误大小写变体不得出现在提示词里
     for wrong in ("sequencediagram", "classdiagram", "Flowchart"):
         assert wrong not in system_text, f"{name} 含错误大小写的 {wrong}"
