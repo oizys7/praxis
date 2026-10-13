@@ -139,7 +139,10 @@ async def test_regen_service_error_yields_error_done(monkeypatch):
     async def _boom(*args, **kwargs):
         raise AgentServiceError("模型响应超时或网络异常，请稍后重试")
 
-    # nodes 经模块级导入调用 invoke_structured，patch 模块命名空间即生效
+    # nodes 经模块级导入调用 invoke_structured，patch 模块命名空间即生效；
+    # 同时钉死 has_llm_config 为 True，避免无 Key 机器上在 invoke 之前就被
+    # _NO_KEY_HINT 短路——保证断言目标始终是被 patched 的 invoke 失败翻译
+    monkeypatch.setattr(nodes, "has_llm_config", lambda: True)
     monkeypatch.setattr(nodes, "invoke_structured", _boom)
 
     events = await _post_stream(
