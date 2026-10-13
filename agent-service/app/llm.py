@@ -171,6 +171,22 @@ def _build_chat_model() -> BaseChatModel:
 TModel = TypeVar("TModel", bound=BaseModel)
 
 
+def _validation_summary(exc: ValidationError, limit: int = 5) -> str:
+    """把 Pydantic 校验错误压缩为可日志/可反馈给模型的短摘要。
+
+    每条格式「字段路径: 错误消息」，最多取 limit 条并注明总数，
+    避免大 schema 多字段报错时日志/重试提示过长。
+    """
+    errors = exc.errors()
+    parts = []
+    for err in errors[:limit]:
+        loc = ".".join(str(part) for part in err.get("loc", ())) or "<根节点>"
+        parts.append(f"- {loc}: {err.get('msg', err.get('type', '未知错误'))}")
+    if len(errors) > limit:
+        parts.append(f"- …共 {len(errors)} 条校验错误")
+    return "\n".join(parts)
+
+
 async def invoke_structured(
     model_cls: type[TModel],
     prompt_key: str,
@@ -178,8 +194,9 @@ async def invoke_structured(
 ) -> TModel:
     """加载提示词 → 渲染变量 → 结构化输出 → 解析为 model_cls 实例。
 
-    - 解析失败自动重试（上限 _PARSE_ATTEMPTS）：思考模型偶发的工具参数
-      错乱大多一次重试即可恢复；
+    - 解析失败自动重试（上限 _PARSE_ATTEMPTS）：重试时把上一次的校验错误
+      反馈给模型（针对性修正），而非原样重发——大 schema 下模型偶发的
+      字段缺失/类型错乱靠盲重发大概率复发；
     - 传输层异常（超时 / 网络错误）统一翻译为 AgentServiceError，图节点
       与 HTTP 端点无需感知 httpx / openai SDK 的异常类型。
 
@@ -195,19 +212,35 @@ async def invoke_structured(
     )
 
     last_parse_error: ValidationError | None = None
+    # 重试消息：初始为原始 messages；一旦失败，追加校验错误反馈后重发
+    attempt_messages = messages
     try:
         for attempt in range(1, _PARSE_ATTEMPTS + 1):
             try:
                 # ainvoke 静态签名宽泛（dict | BaseModel），运行时必为 model_cls
-                return cast(TModel, await structured.ainvoke(messages))
+                return cast(TModel, await structured.ainvoke(attempt_messages))
             except ValidationError as exc:
                 last_parse_error = exc
+                summary = _validation_summary(exc)
                 logger.warning(
-                    "结构化输出解析失败（第 %d/%d 次，model=%s）",
+                    "结构化输出解析失败（第 %d/%d 次，model=%s）：%s",
                     attempt,
                     _PARSE_ATTEMPTS,
                     model_cls.__name__,
+                    summary,
                 )
+                # 带错误反馈重试：明确告知哪些字段不合规，请模型针对性修正
+                attempt_messages = [
+                    *messages,
+                    HumanMessage(
+                        content=(
+                            "你上一次的工具调用参数未通过数据校验，具体错误：\n"
+                            f"{summary}\n"
+                            "请重新生成并严格满足全部字段的类型与必填约束；"
+                            "其余要求保持不变。"
+                        )
+                    ),
+                ]
     except (httpx.TimeoutException, TimeoutError, openai.APIConnectionError) as exc:
         # openai / anthropic SDK 会把底层 httpx 异常包装为自有类型再抛出
         logger.warning("LLM 调用失败（provider=%s）：%s", settings.llm_provider, exc)
