@@ -1,8 +1,8 @@
 """计划程序化校验器：assemble 拼装后、LLM 评审前的结构把关。
 
 纯标准库实现：输入 camelCase dict（图内 StudyPlan 以 dict 形态流转，键如
-``phases`` / ``chapters`` / ``mainKnowledge`` / ``deepDives`` /
-``estimatedTotalHours``），不 import schemas、不 import LangChain。
+``phases`` / ``chapters`` / ``contentMd`` / ``estimatedTotalHours``），
+不 import schemas、不 import LangChain。
 
 裁决约定：
 - 缺失键按「不满足该规则」处理（全程 ``.get()`` 防御，不抛 KeyError）；
@@ -23,8 +23,8 @@ MAX_PHASES = 6
 # 每阶段章节数范围
 MIN_CHAPTERS_PER_PHASE = 1
 MAX_CHAPTERS_PER_PHASE = 5
-# 每篇深入内容正文最少字数（strip 后）
-MIN_DEEP_DIVE_CHARS = 500
+# 每章 markdown 正文最少字数（strip 后；contentMd 空直接 failed 可重生成）
+MIN_CHAPTER_CONTENT_CHARS = 1000
 # 阶段项目最少步骤 / 验收标准条数
 MIN_PROJECT_STEPS = 2
 MIN_PROJECT_ACCEPTANCE = 2
@@ -92,44 +92,52 @@ def _check_phase(phase: dict, index: int, issues: list[str], failed: set[int]) -
 def _check_chapter(
     chapter: dict, label: str, issues: list[str], failed: set[int], index: int
 ) -> None:
-    """单章校验：deepDives 字数、concepts / knowledgePoints 非空、mermaid 首词。"""
+    """单章校验：markdown 正文非空、≥ 1000 字、```mermaid 码块首词白名单。"""
     title = chapter.get("title", "")
     label = f"{label}「{title}」"
 
-    dives = chapter.get("deepDives") or []
-    if not dives:
-        issues.append(f"{label}缺少深入内容（deepDives 为空）")
+    content = (chapter.get("contentMd") or "").strip()
+    if not content:
+        issues.append(f"{label}缺少 markdown 正文（contentMd 为空，可重新生成）")
         failed.add(index)
-    for dive_index, dive in enumerate(dives):
-        content = (dive.get("content") or "").strip()
-        if len(content) < MIN_DEEP_DIVE_CHARS:
-            issues.append(
-                f"{label}第 {dive_index + 1} 篇深入内容仅 {len(content)} 字，"
-                f"要求不少于 {MIN_DEEP_DIVE_CHARS} 字"
-            )
-            failed.add(index)
-
-    knowledge = chapter.get("mainKnowledge") or {}
-    if not (knowledge.get("concepts") or []):
-        issues.append(f"{label}缺少核心概念（mainKnowledge.concepts 为空）")
-        failed.add(index)
-    if not (knowledge.get("knowledgePoints") or []):
-        issues.append(f"{label}缺少知识点（mainKnowledge.knowledgePoints 为空）")
+        return
+    if len(content) < MIN_CHAPTER_CONTENT_CHARS:
+        issues.append(
+            f"{label}正文仅 {len(content)} 字，要求不少于 {MIN_CHAPTER_CONTENT_CHARS} 字"
+        )
         failed.add(index)
 
-    for diagram in knowledge.get("diagrams") or []:
-        mermaid = diagram.get("mermaid") or ""
-        if not mermaid.strip():
-            issues.append(f"{label}存在空 Mermaid 图源码")
-            failed.add(index)
-            continue
-        first_word = _mermaid_first_word(mermaid)
+    for block in _mermaid_code_blocks(content):
+        first_word = _mermaid_first_word(block)
         if first_word not in MERMAID_DIAGRAM_TYPES:
             issues.append(
-                f"{label}Mermaid 图首词「{first_word}」不在支持类型内"
+                f"{label}Mermaid 码块首词「{first_word or '（空）'}」不在支持类型内"
                 f"（{sorted(MERMAID_DIAGRAM_TYPES)}）"
             )
             failed.add(index)
+
+
+def _mermaid_code_blocks(content: str) -> list[str]:
+    """扫描 markdown 正文中的 ```mermaid 码块，返回围栏内源码列表。"""
+    blocks: list[str] = []
+    in_block = False
+    chunk: list[str] = []
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not in_block:
+            if stripped.startswith("```mermaid"):
+                in_block = True
+            continue
+        if stripped.startswith("```"):
+            blocks.append("\n".join(chunk))
+            chunk = []
+            in_block = False
+            continue
+        chunk.append(line)
+    # 未闭合的码块：把已收集内容当作源码交给首词检查（提示 LLM 修复）
+    if in_block and any(chunk):
+        blocks.append("\n".join(chunk))
+    return blocks
 
 
 def _check_project(

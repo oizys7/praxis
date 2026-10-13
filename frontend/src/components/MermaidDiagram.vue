@@ -23,7 +23,7 @@ let renderSeq = 0;
 import { onMounted, ref, watch } from "vue";
 
 /**
- * MermaidDiagram：渲染章节配图（KnowledgeDiagram 的 Mermaid 源码）。
+ * MermaidDiagram：渲染 markdown 正文内联 ```mermaid 码块（MarkdownContent 切段后传入）。
  * 渲染失败（语法错误 / 动态加载失败）不阻断页面，降级为 <pre> 显示源码。
  */
 const props = defineProps<{

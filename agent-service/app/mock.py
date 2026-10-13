@@ -5,12 +5,13 @@
 
 两级生成（与 outline_node / expand_phase_node 节点一一对应）：
 - build_mock_outline：先产出 PlanOutline 骨架（阶段大纲，不含章节正文）；
-- build_mock_phase：再按阶段大纲逐个扩展为 StudyPhase（章节 + 深入内容 + 项目）；
+- build_mock_phase：再按阶段大纲逐个扩展为 StudyPhase（markdown 章节 + 项目）；
 - build_mock_chapter：仅重生成单个章节（Chapter 形状），供 regen 端点单章路径。
 
 约定：camelCase dict 进出（与 schemas 模型 model_dump(by_alias=True) 形状
-一致），但本模块不 import schemas、纯字典构造；输出必须能通过
-validators.validate_plan 零 pending（校验阈值见 validators.py 顶部常量）。
+一致），但本模块不 import schemas、纯字典构造；每章产出单个 contentMd
+markdown 正文（与 validators 的章节规则对齐随任务 19 重写后恢复「零 pending」
+契约，本模块不再保留任何结构化形状）。
 """
 
 from __future__ import annotations
@@ -19,11 +20,8 @@ from typing import Any
 
 # 每阶段章节数（与 PhaseOutline.chapterTitles / StudyPhase.chapters 对齐）
 CHAPTERS_PER_PHASE = 2
-# 每章核心概念 / 知识点条数（校验器只要求非空，mock 取充足余量）
-CONCEPTS_PER_CHAPTER = 3
-KNOWLEDGE_POINTS_PER_CHAPTER = 4
-# 每篇深入内容正文目标字数（校验器下限 500，mock 留余量）
-DEEP_DIVE_TARGET_CHARS = 600
+# 每章 markdown 正文目标字数（「深入剖析」节单独托底，整体正文恒达标）
+CONTENT_TARGET_CHARS = 1000
 
 
 def _to_int(value: Any, default: int) -> int:
@@ -131,13 +129,19 @@ _PROJECT_TEMPLATES: tuple[dict[str, Any], ...] = (
     },
 )
 
-# 深入内容确定性填充句：同输入必得同输出（无随机、无时间依赖）
+# 深入剖析节确定性填充句：同输入必得同输出（无随机、无时间依赖）
 _DEEP_DIVE_FILLER = (
     "按同样的三段式（场景—动手—误区）推进每个小节："
     "先描述一个具体使用场景，再做一次最小实验验证，"
     "最后列出一条典型误区与纠正方法。"
     "每轮结束后用自己的话复述要点，再对照原文查漏补缺，"
     "把短期能看懂的内容转化为长期可调用的经验。"
+)
+# 知识点主线句确定性填充句（与深入剖析填充句同源、无随机依赖）
+_POINT_FILLER = (
+    "为这个知识点设计一个可复述的口念总结，"
+    "并在下一次回顾时先复述再翻书校正；"
+    "能在不看资料的情况下讲清楚，才算真正掌握。"
 )
 
 
@@ -152,7 +156,10 @@ def _week_ranges(weeks: int) -> list[str]:
 
 
 def _deep_dive_content(topic: str, goal: str) -> str:
-    """确定性长文：固定模板段落 + 填充句循环展开到 ≥600 字（strip 后仍达标）。"""
+    """确定性长文：固定模板段落 + 填充句循环展开到 ≥1000 字（strip 后仍达标）。
+
+    供「深入剖析」节单独托底：正文总字数与该节字数都恒达标，
+    极限输入（极短标题 / goal）下也一样，不依赖输入长度。"""
     paragraphs = (
         f"「{topic}」是「{goal}」学习路径中承上启下的一环。",
         (
@@ -170,56 +177,72 @@ def _deep_dive_content(topic: str, goal: str) -> str:
         ),
     )
     content = "\n\n".join(paragraphs)
-    while len(content) < DEEP_DIVE_TARGET_CHARS:
+    while len(content) < CONTENT_TARGET_CHARS:
         content += "\n\n" + _DEEP_DIVE_FILLER
     return content
 
 
+def _knowledge_section(title: str, goal: str) -> str:
+    """章节主线：每个知识点的段落式讲解（确定性，同输入同输出）。"""
+    points = (
+        (
+            f"它是什么——结合「{goal}」的具体场景给出定义与反例。"
+            "先用一句话说清它的边界，再举一个贴近真实项目场景的例子；"
+            "读完后尝试不看原文复述这句定义。"
+        ),
+        (
+            "适用场景——什么样的问题值得用它，什么样的场景不用。"
+            "列出至少一个典型的适用情形和一个明显不适用的情况，"
+            "两者对比着记录在笔记里。"
+        ),
+        (
+            "常见误区——初学者最容易在哪里踩坑、错误的直觉从何而来。"
+            "写下一个常见的错误认识，再给出纠错的对照实验；"
+            "把错误直觉的来源也一并记下来。"
+        ),
+        (
+            "动手验证——写一个最小可运行示例，逐步加入变化观察输出差异。"
+            f"示例连同结果一起记进笔记，回到「{goal}」的目标场景再作一次自查。"
+        ),
+    )
+    body = "\n\n".join(f"### {title}·{i + 1}\n\n{p}" for i, p in enumerate(points))
+    while len(body) < CONTENT_TARGET_CHARS:
+        body += "\n\n" + _POINT_FILLER
+    return body
+
+
+# mock 章节配图的确定性 mermaid 源码（flowchart TD，供前端渲染的码块）
+_CHAPTER_MERMAID = (
+    "```mermaid\n"
+    "flowchart TD\n"
+    "    A[输入: 概念与场景] --> B{能独立复述吗}\n"
+    "    B -- 否 --> C[回看概念定义]\n"
+    "    C --> B\n"
+    "    B -- 是 --> D[完成配套动手练习]\n"
+    "    D --> E[记入个人笔记]\n"
+    "```"
+)
+
+
 def _chapter(title: str, goal: str) -> dict[str, Any]:
-    """按章节标题构造 StudyPhase.chapters 元素（StudyChapter 形状，camelCase）。"""
+    """按章节标题构造 StudyPhase.chapters 元素（Chapter 形状，camelCase）。
+
+    唯一形状：{title, summary, contentMd}——contentMd 为确定性模板 markdown
+    （标题 + 知识点段落 + 图示码块 + 深入剖析），同输入必得同输出，
+    无任何结构化字段残留。"""
+    content_md = "\n\n".join(
+        (
+            f"## {title}\n\n本章围绕「{title}」展开，结合「{goal}」的目标场景梳理主线内容。",
+            "### 什么是它 / 为什么需要它\n\n"
+            + _knowledge_section(title, goal),
+            _CHAPTER_MERMAID,
+            f"## 深入剖析\n\n{_deep_dive_content(title, goal)}",
+        )
+    )
     return {
         "title": title,
         "summary": f"本章围绕「{title}」展开，结合「{goal}」的目标场景梳理主线内容。",
-        "mainKnowledge": {
-            "concepts": [
-                {
-                    "name": f"{title}·{role}",
-                    "definition": f"用一句话定义「{title}」中{role}的内涵，"
-                    f"并说明它在「{goal}」里的位置。",
-                }
-                for role in ("它是什么", "为什么需要它", "怎么使用它")
-            ],
-            "knowledgePoints": [
-                {
-                    "title": f"{title}要点{i + 1}：{label}",
-                    "detail": f"{label}——结合「{goal}」的具体场景给出示例与反例。",
-                }
-                for i, label in enumerate(
-                    ("核心定义", "适用场景", "常见误区", "动手验证")
-                )
-            ],
-            "diagrams": [
-                {
-                    "title": f"{title} 学习路径图",
-                    "mermaid": (
-                        "flowchart TD\n"
-                        "    A[输入: 概念与场景] --> B{能独立复述吗}\n"
-                        "    B -- 否 --> C[回看概念定义]\n"
-                        "    C --> B\n"
-                        "    B -- 是 --> D[完成配套动手练习]\n"
-                        "    D --> E[记入个人笔记]"
-                    ),
-                    "caption": f"「{title}」从理解到动手的循环路径",
-                }
-            ],
-        },
-        "deepDives": [
-            {
-                "topic": f"{title}的三层理解",
-                "angle": "从原理到实操，再回到常见误区",
-                "content": _deep_dive_content(title, goal),
-            }
-        ],
+        "contentMd": content_md,
     }
 
 

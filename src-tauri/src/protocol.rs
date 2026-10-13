@@ -77,65 +77,10 @@ pub struct PlanRequest {
     pub background: String,
 }
 
-/// 章节核心概念定义
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct ConceptDef {
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub definition: String,
-}
-
-/// 章节知识点
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct KnowledgePointDef {
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub detail: String,
-}
-
-/// 章节配图（Mermaid 源码由前端渲染）
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct KnowledgeDiagramDef {
-    #[serde(default)]
-    pub title: String,
-    #[serde(default)]
-    pub mermaid: String,
-    #[serde(default)]
-    pub caption: String,
-}
-
-/// 章节主要知识：概念 / 知识点 / 图示
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct MainKnowledgeDef {
-    #[serde(default)]
-    pub concepts: Vec<ConceptDef>,
-    #[serde(default)]
-    pub knowledge_points: Vec<KnowledgePointDef>,
-    #[serde(default)]
-    pub diagrams: Vec<KnowledgeDiagramDef>,
-}
-
-/// 章节深入内容：围绕主题的延伸长文
-#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
-#[serde(rename_all = "camelCase")]
-pub struct DeepDiveDef {
-    #[serde(default)]
-    pub topic: String,
-    #[serde(default)]
-    pub angle: String,
-    #[serde(default)]
-    pub content: String,
-}
-
-/// 阶段内的学习章节：主要知识 + 深入内容
-/// status 为两级状态机章节位（pending | complete | failed）：旧数据/流式载荷缺省为
-/// None（无徽标语义），wire 只增不改
+/// 阶段内的学习章节：完整 markdown 正文（图示内联 ```mermaid 码块）。
+/// status 为两级状态机章节位（pending | complete | failed）：流式载荷缺省为
+/// None（无徽标语义），由 Rust 存储层按 content_md 定价；
+/// content_md 缺省空串（旧流式载荷未携带时不阻塞解析，终态由 status 列承载）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ChapterDef {
@@ -144,9 +89,7 @@ pub struct ChapterDef {
     #[serde(default)]
     pub summary: String,
     #[serde(default)]
-    pub main_knowledge: MainKnowledgeDef,
-    #[serde(default)]
-    pub deep_dives: Vec<DeepDiveDef>,
+    pub content_md: String,
     #[serde(default)]
     pub status: Option<String>,
 }
@@ -466,26 +409,7 @@ mod tests {
                 chapters: vec![ChapterDef {
                     title: "所有权与借用".into(),
                     summary: "深入 Rust 内存模型".into(),
-                    main_knowledge: MainKnowledgeDef {
-                        concepts: vec![ConceptDef {
-                            name: "所有权".into(),
-                            definition: "值在同一时刻只有唯一所有者".into(),
-                        }],
-                        knowledge_points: vec![KnowledgePointDef {
-                            title: "移动语义".into(),
-                            detail: "赋值默认转移所有权".into(),
-                        }],
-                        diagrams: vec![KnowledgeDiagramDef {
-                            title: "所有权转移".into(),
-                            mermaid: "flowchart LR\n  a[变量a] -->|move| b[变量b]".into(),
-                            caption: "move 后原变量失效".into(),
-                        }],
-                    },
-                    deep_dives: vec![DeepDiveDef {
-                        topic: "Drop 与 RAII".into(),
-                        angle: "资源管理视角".into(),
-                        content: "Rust 借 RAII 在编译期保证资源释放".into(),
-                    }],
+                    content_md: "## 所有权与借用\n\n```mermaid\nflowchart LR\n```".into(),
                     status: Some("complete".into()),
                 }],
                 project: PhaseProject {
@@ -511,12 +435,10 @@ mod tests {
         let phase = &value["phases"][0];
         let chapter = &phase["chapters"][0];
         assert_eq!(chapter["title"], "所有权与借用");
-        assert_eq!(chapter["mainKnowledge"]["concepts"][0]["name"], "所有权");
         assert_eq!(
-            chapter["mainKnowledge"]["knowledgePoints"][0]["title"],
-            "移动语义"
+            chapter["contentMd"],
+            "## 所有权与借用\n\n```mermaid\nflowchart LR\n```"
         );
-        assert_eq!(chapter["deepDives"][0]["topic"], "Drop 与 RAII");
         assert_eq!(phase["project"]["estimatedHours"], 12);
         // 两级状态机：status 走 camelCase，序列化不丢
         assert_eq!(phase["status"], "complete");
@@ -608,11 +530,11 @@ mod tests {
     }
 
     /// 单章重生成事件（任务 14 端点 chapterIndex 指定路径）：
-    /// phaseIndex 字段走 camelCase，chapter 为 camelCase ChapterDef
+    /// phaseIndex / contentMd 字段走 camelCase，chapter 为 markdown ChapterDef
     #[test]
     fn parse_ndjson_line_accepts_chapter_event() {
         let event = parse_ndjson_line(
-            r#"{"type":"chapter","index":1,"phaseIndex":0,"chapter":{"title":"所有权与借用","summary":"深入 Rust 内存模型","mainKnowledge":{"concepts":[{"name":"所有权","definition":"值在同一时刻只有唯一所有者"}]},"deepDives":[{"topic":"Drop","angle":"RAII","content":"长文"}]}}"#,
+            r###"{"type":"chapter","index":1,"phaseIndex":0,"chapter":{"title":"所有权与借用","summary":"深入 Rust 内存模型","contentMd":"## 所有权与借用\n\n```mermaid\nflowchart TD\n```"}}"###,
         )
         .expect("chapter 事件行应解析成功");
         match event {
@@ -624,8 +546,8 @@ mod tests {
                 assert_eq!(index, 1);
                 assert_eq!(phase_index, 0);
                 assert_eq!(chapter.title, "所有权与借用");
-                assert_eq!(chapter.main_knowledge.concepts[0].name, "所有权");
-                assert_eq!(chapter.deep_dives[0].topic, "Drop");
+                assert!(chapter.content_md.starts_with("## 所有权与借用"));
+                assert!(chapter.content_md.contains("```mermaid"));
             }
             other => panic!("应为 Chapter 事件，实际：{other:?}"),
         }

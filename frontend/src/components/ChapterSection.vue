@@ -1,11 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import MermaidDiagram from "@/components/MermaidDiagram.vue";
+import MarkdownContent from "@/components/MarkdownContent.vue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -18,7 +13,8 @@ import type { Chapter, StudyPlan } from "@/types/agent";
 
 /**
  * ChapterSection：渲染单个学习章节（Chapter）。
- * 三区：标题 / 摘要 → 主要知识（概念定义 / 知识点 / Mermaid 图示）→ 深入内容（默认收起）。
+ * 整章标题行折叠（默认展开，chevron 切换正文 v-show）→
+ * 正文走 MarkdownContent（marked + DOMPurify，mermaid 码块内联渲染）。
  * 头部按 chapter.status 渲染章节级徽标（undefined = 旧数据无徽标）；
  * failed/pending 且 planId 可用时提供「重新生成此章」入口。
  */
@@ -104,28 +100,42 @@ async function onRegenerate() {
   }
 }
 
-/** 是否有可展示的主要知识（三者皆空则整块隐藏） */
-const hasMainKnowledge = computed(
-  () =>
-    props.chapter.mainKnowledge.concepts.length > 0 ||
-    props.chapter.mainKnowledge.knowledgePoints.length > 0 ||
-    props.chapter.mainKnowledge.diagrams.length > 0,
-);
+/** 整章折叠态：默认展开（重生成入口在标题行，折叠不影响操作） */
+const collapsed = ref(false);
 </script>
 
 <template>
   <section class="rounded-lg border bg-card p-4">
-    <!-- 章节标题 + 摘要；右侧章节级徽标与重生成入口（failed/pending 时可见） -->
+    <!-- 整章标题行：chevron 切换正文显示；右侧章节级徽标与重生成入口 -->
     <header class="flex items-start justify-between gap-2">
-      <div class="min-w-0">
-        <h4 class="text-sm font-semibold">{{ props.chapter.title }}</h4>
-        <p
-          v-if="props.chapter.summary"
-          class="mt-1 text-sm leading-relaxed text-muted-foreground"
+      <button
+        type="button"
+        class="flex min-w-0 flex-1 items-start gap-2 text-left"
+        :aria-expanded="!collapsed"
+        @click="collapsed = !collapsed"
+      >
+        <svg
+          class="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200"
+          :class="collapsed ? '' : 'rotate-180'"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
         >
-          {{ props.chapter.summary }}
-        </p>
-      </div>
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+        <div class="min-w-0">
+          <h4 class="text-sm font-semibold">{{ props.chapter.title }}</h4>
+          <p
+            v-if="props.chapter.summary"
+            class="mt-1 text-sm leading-relaxed text-muted-foreground"
+          >
+            {{ props.chapter.summary }}
+          </p>
+        </div>
+      </button>
       <div
         v-if="statusBadge || canRegenerate"
         class="flex shrink-0 items-center gap-2"
@@ -148,99 +158,14 @@ const hasMainKnowledge = computed(
         </Button>
       </div>
     </header>
-    <!-- 重生成反馈：入库/收尾异常与失败原因 -->
+    <!-- 重生成反馈：入库/收尾异常与失败原因（折叠态亦可见） -->
     <p v-if="regenError" class="mt-2 text-xs text-destructive">
       {{ regenError }}
     </p>
 
-    <!-- 主要知识：概念 / 知识点 / 图示 -->
-    <div v-if="hasMainKnowledge" class="mt-3 space-y-3">
-      <div
-        v-if="props.chapter.mainKnowledge.concepts.length"
-        class="grid grid-cols-[88px,1fr] gap-x-3 gap-y-1.5 text-sm"
-      >
-        <span class="font-medium">📖 核心概念</span>
-        <dl class="space-y-1.5">
-          <div
-            v-for="(c, i) in props.chapter.mainKnowledge.concepts"
-            :key="i"
-            class="flex gap-2"
-          >
-            <dt class="shrink-0 font-medium text-primary">{{ c.name }}</dt>
-            <dd class="text-muted-foreground">{{ c.definition }}</dd>
-          </div>
-        </dl>
-      </div>
-
-      <div
-        v-if="props.chapter.mainKnowledge.knowledgePoints.length"
-        class="grid grid-cols-[88px,1fr] gap-x-3 gap-y-1 text-sm"
-      >
-        <span class="font-medium">💡 知识点</span>
-        <ul class="space-y-1 text-muted-foreground">
-          <li
-            v-for="(k, i) in props.chapter.mainKnowledge.knowledgePoints"
-            :key="i"
-          >
-            <span class="font-medium text-foreground">{{ k.title }}</span>
-            <span v-if="k.detail">—— {{ k.detail }}</span>
-          </li>
-        </ul>
-      </div>
-
-      <div v-if="props.chapter.mainKnowledge.diagrams.length" class="space-y-3">
-        <div v-for="(d, i) in props.chapter.mainKnowledge.diagrams" :key="i">
-          <div
-            v-if="d.title"
-            class="mb-1 text-xs font-semibold text-muted-foreground"
-          >
-            📊 {{ d.title }}
-          </div>
-          <MermaidDiagram :code="d.mermaid" :caption="d.caption" />
-        </div>
-      </div>
-    </div>
-
-    <!-- 深入内容：每篇折叠面板，默认收起，标题 = topic + angle -->
-    <div v-if="props.chapter.deepDives.length" class="mt-3 space-y-2">
-      <div class="text-xs font-semibold text-muted-foreground">🔍 深入内容</div>
-      <Collapsible
-        v-for="(dd, i) in props.chapter.deepDives"
-        :key="i"
-        class="rounded-lg border"
-      >
-        <CollapsibleTrigger>
-          <button
-            type="button"
-            class="flex w-full items-center justify-between gap-2 px-3 py-2 text-left transition-colors hover:bg-accent/50"
-          >
-            <span class="text-sm">
-              <span class="font-medium">{{ dd.topic }}</span>
-              <span v-if="dd.angle" class="text-muted-foreground">
-                · {{ dd.angle }}</span
-              >
-            </span>
-            <svg
-              class="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              stroke-width="2"
-              stroke-linecap="round"
-              stroke-linejoin="round"
-            >
-              <path d="m6 9 6 6 6-6" />
-            </svg>
-          </button>
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <p
-            class="whitespace-pre-line border-t px-3 py-2.5 text-sm leading-relaxed text-muted-foreground"
-          >
-            {{ dd.content }}
-          </p>
-        </CollapsibleContent>
-      </Collapsible>
+    <!-- 正文：markdown 渲染（整章标题行折叠，默认展开） -->
+    <div v-show="!collapsed" class="mt-3">
+      <MarkdownContent :content-md="props.chapter.contentMd" />
     </div>
   </section>
 </template>

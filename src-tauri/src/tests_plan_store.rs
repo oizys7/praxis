@@ -4,6 +4,9 @@
 //! 运行方式（需本机可连的 PostgreSQL，连接用户需有建库权限；用例已标 #[ignore]，
 //!   DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres cargo test -- --ignored
 //! 临时库不承载业务数据，与设置页配置的云端库互不相干。
+//!
+//! 任务 18 markdown 化：chapters 只剩 {title, summary, content_md, status}，
+//! status 由 content_md 定价（空正文 → failed 可重生成）；四张内容子表已 DROP。
 
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -12,8 +15,7 @@ use crate::db;
 use crate::plan_store;
 use crate::plan_store::{PlanOutlineRow, PlanRequestRow};
 use crate::protocol::{
-    ChapterDef, ConceptDef, DeepDiveDef, KnowledgeDiagramDef, KnowledgePointDef, MainKnowledgeDef,
-    OutlinePhasePayload, PhaseProject, PlanRequest, StudyPhase, StudyResource,
+    ChapterDef, OutlinePhasePayload, PhaseProject, PlanRequest, StudyPhase, StudyResource,
 };
 
 // ---------------------------------------------------------------------------
@@ -32,31 +34,15 @@ fn sample_request() -> PlanRequest {
     }
 }
 
-/// 章节 fixture：概念 / 知识点 / 图示 / 深入内容各一条，标题均携带入参可追溯
+/// 章节 fixture：markdown 形态（title / summary / contentMd），status 由存储层
+/// 按 content_md 定价；正文带章节标题可追溯，保证轮回断言可区分新旧数据。
 fn sample_chapter(title: &str) -> ChapterDef {
     ChapterDef {
         title: title.into(),
         summary: format!("{title}·摘要"),
-        main_knowledge: MainKnowledgeDef {
-            concepts: vec![ConceptDef {
-                name: format!("{title}·概念"),
-                definition: "值在同一时刻只有唯一所有者".into(),
-            }],
-            knowledge_points: vec![KnowledgePointDef {
-                title: format!("{title}·知识点"),
-                detail: "赋值默认转移所有权".into(),
-            }],
-            diagrams: vec![KnowledgeDiagramDef {
-                title: format!("{title}·图示"),
-                mermaid: "flowchart LR\n  a --> b".into(),
-                caption: "所有权转移示意".into(),
-            }],
-        },
-        deep_dives: vec![DeepDiveDef {
-            topic: format!("{title}·深入"),
-            angle: "内存布局视角".into(),
-            content: "Rust 借 RAII 在编译期保证资源释放。".into(),
-        }],
+        content_md: format!(
+            "## {title}\n\n本章围绕「{title}」展开。\n\n```mermaid\nflowchart TD\n    A --> B\n```\n"
+        ),
         status: None,
     }
 }
@@ -71,7 +57,6 @@ fn sample_phase(name: &str, chapter_titles: &[&str]) -> StudyPhase {
         theory: vec![],
         practice: vec!["实操甲".into()],
         assignments: vec!["作业甲".into()],
-        status: None,
         project: PhaseProject {
             name: format!("{name}·项目"),
             description: "综合运用本阶段所学".into(),
@@ -80,6 +65,7 @@ fn sample_phase(name: &str, chapter_titles: &[&str]) -> StudyPhase {
             estimated_hours: 6,
             acceptance_criteria: vec!["验收甲".into()],
         },
+        status: None,
     }
 }
 
@@ -157,6 +143,26 @@ async fn chapter_status(
     .ok()
 }
 
+/// 章节正文（按 (plan, phase_idx, chapter_idx) 取，roundtrip 断言用）
+async fn chapter_content_md(
+    pool: &PgPool,
+    plan_id: Uuid,
+    phase_idx: i32,
+    chapter_idx: i32,
+) -> Option<String> {
+    sqlx::query_scalar(
+        "SELECT c.content_md FROM chapters c
+         JOIN phases p ON c.phase_id = p.id
+         WHERE p.plan_id = $1 AND p.idx = $2 AND c.idx = $3",
+    )
+    .bind(plan_id)
+    .bind(phase_idx)
+    .bind(chapter_idx)
+    .fetch_one(pool)
+    .await
+    .ok()
+}
+
 /// 表行数（表名全部来自本文件字面量，无注入面）
 async fn count(pool: &PgPool, table: &str) -> i64 {
     sqlx::query_scalar::<_, i64>(&format!("SELECT COUNT(*) FROM {table}"))
@@ -169,7 +175,8 @@ async fn count(pool: &PgPool, table: &str) -> i64 {
 // 用例
 // ---------------------------------------------------------------------------
 
-/// 同 (plan_id, idx) 两次 upsert：phases 行不翻倍，章节整体替换，阶段名更新
+/// 同 (plan_id, idx) 两次 upsert：phases 行不翻倍，章节整体替换，阶段名更新，
+/// markdown 正文跟随最新一次写入
 #[sqlx::test]
 #[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
 async fn test_upsert_phase_idempotent(pool: PgPool) {
@@ -199,7 +206,11 @@ async fn test_upsert_phase_idempotent(pool: PgPool) {
         1,
         "二次 upsert 后章节应整体替换为最新一批"
     );
-    assert_eq!(count(&pool, "concepts").await, 1, "子表不得残留旧章节数据");
+    assert_eq!(
+        count(&pool, "resources").await,
+        0,
+        "upsert 不写 resources（大纲播种专属）"
+    );
     let (name, plan_fk): (String, Uuid) = sqlx::query_as("SELECT name, plan_id FROM phases")
         .fetch_one(&pool)
         .await
@@ -208,7 +219,7 @@ async fn test_upsert_phase_idempotent(pool: PgPool) {
     assert_eq!(plan_fk, plan_id);
 }
 
-/// 回炉重写：upsert 覆盖后旧章节行与子行（概念/知识点/图示/深入/项目）不残留
+/// 回炉重写：upsert 覆盖后旧章节行与 project 不残留
 #[sqlx::test]
 #[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
 async fn test_rework_replaces_children(pool: PgPool) {
@@ -236,11 +247,11 @@ async fn test_rework_replaces_children(pool: PgPool) {
         vec!["新章节甲".to_string()],
         "旧章节行必须被删除，不得残留"
     );
-    // 每章各 1 条子数据：全库只剩新章节的份额，旧章节子行已被级联清空
-    assert_eq!(count(&pool, "concepts").await, 1);
-    assert_eq!(count(&pool, "knowledge_points").await, 1);
-    assert_eq!(count(&pool, "diagrams").await, 1);
-    assert_eq!(count(&pool, "deep_dives").await, 1);
+    // 正文不残留：唯一章节的正文来自新章节
+    assert!(chapter_content_md(&pool, plan_id, 1, 0)
+        .await
+        .unwrap()
+        .contains("新章节甲"));
     // 项目行被替换（projects.phase_id UNIQUE，至多一行）
     let project: String = sqlx::query_scalar("SELECT name FROM projects")
         .fetch_one(&pool)
@@ -249,8 +260,8 @@ async fn test_rework_replaces_children(pool: PgPool) {
     assert_eq!(project, "新阶段·项目");
 }
 
-/// 乱序扩展 idx 2,0,1：get_plan 多表重组后 phases 按 idx 升序、子数据完整；
-/// update_outline_meta / finalize_plan 的元信息覆写生效
+/// 乱序扩展 idx 2,0,1：get_plan 多表重组后 phases 按 idx 升序、markdown 正文
+/// 等值读回；update_outline_meta / finalize_plan 的元信息覆写生效
 #[sqlx::test]
 #[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
 async fn test_get_plan_reassembles_sorted(pool: PgPool) {
@@ -282,17 +293,17 @@ async fn test_get_plan_reassembles_sorted(pool: PgPool) {
     );
     assert_eq!(record.title, "重组后的标题", "大纲元信息应已覆写标题");
     assert_eq!(record.plan.estimated_total_hours, 66);
-    // deep_dives / diagrams（以及概念）逐阶段完整
+    // markdown 正文等值读回（含 mermaid 码块，逐阶段完整）
     for phase in &record.plan.phases {
         assert_eq!(phase.chapters.len(), 1);
         let chapter = &phase.chapters[0];
-        assert_eq!(chapter.deep_dives.len(), 1, "deep_dives 缺失");
         assert_eq!(
-            chapter.deep_dives[0].topic,
-            format!("{}·深入", chapter.title)
+            chapter.content_md,
+            sample_chapter(&chapter.title).content_md,
+            "read 回的 contentMd 必须等值于写入内容"
         );
-        assert_eq!(chapter.main_knowledge.diagrams.len(), 1, "diagrams 缺失");
-        assert_eq!(chapter.main_knowledge.concepts.len(), 1);
+        assert!(chapter.content_md.contains("```mermaid"));
+        assert_eq!(chapter.status.as_deref(), Some("complete"));
     }
     // 项目重组回 PhaseProject
     assert_eq!(record.plan.phases[0].project.name, "阶段甲·项目");
@@ -319,6 +330,7 @@ async fn test_get_plan_reassembles_sorted(pool: PgPool) {
 }
 
 /// 旧行带 plan_json：get_plan 走旧反序列化路径，行为与规范化改造前一致
+/// （plan_json legacy 读路径属上一代兼容层，任务 18 表结构直改不触及）
 #[sqlx::test]
 #[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
 async fn test_legacy_plan_json_still_reads(pool: PgPool) {
@@ -375,7 +387,8 @@ async fn test_legacy_plan_json_still_reads(pool: PgPool) {
     assert_eq!(record.plan.phases[0].project.name, "命令行待办");
 }
 
-/// 删 plans 行：九表（plans + 阶段/项目/章节/概念/知识点/图示/深入/资源）全级联清空
+/// 删 plans 行：五表（plans + 阶段/项目/章节/资源）全级联清空；
+/// 四张内容子表已在 markdown 化中 DROP（表不存在即断言终态）
 #[sqlx::test]
 #[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
 async fn test_delete_plan_cascades(pool: PgPool) {
@@ -409,17 +422,7 @@ async fn test_delete_plan_cascades(pool: PgPool) {
         .await
         .expect("删除失败");
 
-    for table in [
-        "plans",
-        "phases",
-        "projects",
-        "chapters",
-        "concepts",
-        "knowledge_points",
-        "diagrams",
-        "deep_dives",
-        "resources",
-    ] {
+    for table in ["plans", "phases", "projects", "chapters", "resources"] {
         assert_eq!(
             count(&pool, table).await,
             0,
@@ -432,7 +435,8 @@ async fn test_delete_plan_cascades(pool: PgPool) {
 // 任务 13：两级状态机 + 大纲骨架 + 上下文读回
 // ---------------------------------------------------------------------------
 
-/// seed_outline：phases/chapters 建骨架行（status=pending），resources 入库，project 无行
+/// seed_outline：phases/chapters 建骨架行（status=pending，content_md=''），
+/// resources 入库，project 无行
 #[sqlx::test]
 #[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
 async fn test_seed_outline_creates_skeleton(pool: PgPool) {
@@ -464,6 +468,11 @@ async fn test_seed_outline_creates_skeleton(pool: PgPool) {
         chapter_status(&pool, plan_id, 0, 0).await,
         Some("pending".into())
     );
+    // 骨架章 content_md 列默认空串（DEFAULT '' 是有意义的空正文）
+    assert_eq!(
+        chapter_content_md(&pool, plan_id, 0, 0).await,
+        Some(String::new())
+    );
     // 章节标题携带大纲题目
     let titles: Vec<String> = sqlx::query_scalar(
         "SELECT c.title FROM chapters c JOIN phases p ON c.phase_id = p.id
@@ -477,7 +486,7 @@ async fn test_seed_outline_creates_skeleton(pool: PgPool) {
         titles,
         vec!["阶段甲·章0".to_string(), "阶段甲·章1".to_string()]
     );
-    // 读回：StudyPhase.status / Chapter.status 装入（骨架 pending）
+    // 读回：StudyPhase.status / Chapter.status 装入（骨架 pending），正文空串有效
     let record = db::get_plan_by_pool(&pool, &plan_id.to_string())
         .await
         .unwrap();
@@ -486,6 +495,7 @@ async fn test_seed_outline_creates_skeleton(pool: PgPool) {
         record.plan.phases[0].chapters[0].status.as_deref(),
         Some("pending")
     );
+    assert_eq!(record.plan.phases[0].chapters[0].content_md, "");
 }
 
 /// seed_outline 幂等：二次调用不重复播种
@@ -580,10 +590,11 @@ async fn test_upsert_marks_complete_and_failure_marks_pending_failed(pool: PgPoo
     assert_eq!(plans_status, "failed");
 }
 
-/// 单章 upsert：骨架章填充后子表替换无残留；两章全部 complete 时阶段联动翻牌（同事务）
+/// 空正文定价（任务 18 裁定）：upsert_chapter 写入空 contentMd → 章节行 failed、
+/// 阶段不置 complete；补写正文后 complete + 阶段联动翻牌
 #[sqlx::test]
 #[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
-async fn test_upsert_chapter_replaces_children_and_promotes_phase(pool: PgPool) {
+async fn test_upsert_chapter_empty_content_failed_then_complete(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
 
@@ -591,57 +602,96 @@ async fn test_upsert_chapter_replaces_children_and_promotes_phase(pool: PgPool) 
         .await
         .unwrap();
 
-    // 章 A：骨架行填充为完整内容
+    // 章 A：空正文入库 → failed（可重生成），阶段不推进
+    let mut empty = sample_chapter("章A");
+    empty.content_md = "   ".to_string();
+    plan_store::upsert_chapter(&pool, plan_id, 0, 0, &empty)
+        .await
+        .expect("upsert_chapter 空正文失败");
+    assert_eq!(
+        chapter_status(&pool, plan_id, 0, 0).await,
+        Some("failed".into()),
+        "strip 后空正文必须翻 failed"
+    );
+    assert_eq!(
+        phase_status(&pool, plan_id, 0).await,
+        Some("pending".into()),
+        "存在 failed 章节，阶段不得置 complete"
+    );
+
+    // 章 B：正文完整 → complete，但章 A 仍 failed，阶段保持 pending
+    plan_store::upsert_chapter(&pool, plan_id, 0, 1, &sample_chapter("章B"))
+        .await
+        .expect("upsert_chapter 章 B 失败");
+    assert_eq!(
+        chapter_status(&pool, plan_id, 0, 1).await,
+        Some("complete".into())
+    );
+    assert_eq!(
+        phase_status(&pool, plan_id, 0).await,
+        Some("pending".into()),
+        "failed 章节未收口前阶段不得翻牌"
+    );
+
+    // 重新生成章 A：正文补齐 → complete，两章全 complete，阶段联动翻牌
     plan_store::upsert_chapter(&pool, plan_id, 0, 0, &sample_chapter("章A"))
         .await
-        .expect("upsert_chapter 章 A 失败");
+        .expect("upsert_chapter 章 A 重写失败");
     assert_eq!(
         chapter_status(&pool, plan_id, 0, 0).await,
         Some("complete".into())
     );
     assert_eq!(
         phase_status(&pool, plan_id, 0).await,
-        Some("pending".into()),
-        "还有章 B 未完成，阶段必须保持 pending"
-    );
-    assert_eq!(count(&pool, "concepts").await, 1, "章 A 内容应入库");
-
-    // 章 B：填充后阶段全部 complete → 联动翻牌
-    plan_store::upsert_chapter(&pool, plan_id, 0, 1, &sample_chapter("章B"))
-        .await
-        .expect("upsert_chapter 章 B 失败");
-    assert_eq!(
-        phase_status(&pool, plan_id, 0).await,
         Some("complete".into()),
-        "两章全部 complete 后阶段应联动翻牌"
-    );
-    assert_eq!(count(&pool, "concepts").await, 2);
-    assert_eq!(
-        count(&pool, "projects").await,
-        0,
-        "单章 upsert 不动 project"
-    );
-
-    // 章节重生成（覆盖写）：章 A 子表整体替换，不残留旧子行
-    plan_store::upsert_chapter(&pool, plan_id, 0, 0, &sample_chapter("章A-v2"))
-        .await
-        .unwrap();
-    let concept_names: Vec<String> = sqlx::query_scalar("SELECT name FROM concepts ORDER BY name")
-        .fetch_all(&pool)
-        .await
-        .unwrap();
-    assert_eq!(
-        concept_names,
-        vec!["章A-v2·概念".to_string(), "章B·概念".to_string()],
-        "旧章 A 子行不得残留"
-    );
-    assert_eq!(
-        phase_status(&pool, plan_id, 0).await,
-        Some("complete".into())
+        "全部章节 complete 后阶段应联动翻牌"
     );
 }
 
-/// 上下文读回：create_generating_plan 写入的七字段经 load_plan_request_meta 一致读回
+/// 单章回炉：覆盖写后旧章内容不残留；complete 章不被失败收尾覆盖
+#[sqlx::test]
+#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+async fn test_upsert_chapter_replaces_content_without_residue(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+
+    plan_store::seed_outline(&pool, plan_id, &sample_outline(&["阶段甲"], &[1]), &[])
+        .await
+        .unwrap();
+    plan_store::upsert_chapter(&pool, plan_id, 0, 0, &sample_chapter("章A"))
+        .await
+        .expect("upsert_chapter 失败");
+
+    // 同位回炉：旧正文整体被新正文替换（唯一章节，contentMd 等值）
+    plan_store::upsert_chapter(&pool, plan_id, 0, 0, &sample_chapter("章A-v2"))
+        .await
+        .unwrap();
+    assert_eq!(
+        count(&pool, "chapters").await,
+        1,
+        "同 (phase_id, idx) 回炉不得新增章节行"
+    );
+    let content = chapter_content_md(&pool, plan_id, 0, 0).await.unwrap();
+    assert!(content.contains("章A-v2"), "正文应更新为回炉后的版本");
+    assert!(!content.contains("## 章A\n"), "旧章开头条目不残留");
+    assert_eq!(
+        chapter_status(&pool, plan_id, 0, 0).await,
+        Some("complete".into())
+    );
+
+    // status 机不变量：覆盖回炉后再 seed 不会重复播种（幂等守卫）
+    let outline = sample_outline(&["阶段甲"], &[1]);
+    plan_store::seed_outline(&pool, plan_id, &outline, &[])
+        .await
+        .unwrap();
+    assert_eq!(
+        count(&pool, "chapters").await,
+        1,
+        "幂等守卫下骨架 seed 不得覆盖已回炉的章节数据"
+    );
+}
+
+/// 重生成上下文读回：create_generating_plan 写入的七字段经 load_plan_request_meta 一致读回
 #[sqlx::test]
 #[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
 async fn test_plan_request_meta_roundtrip(pool: PgPool) {
@@ -708,83 +758,52 @@ async fn test_plan_outline_roundtrip(pool: PgPool) {
         .is_none());
 }
 
-/// 升级路径回归（审查 P1）：ADD COLUMN status DEFAULT 'pending' 会把升级前
-/// 已有数据的行误标 pending——ensure_schema 的两条兜底 UPDATE 必须把它们修正。
-/// 真实遗留形态（骨架 seed 建制之前）：旧行全部为 upsert 写入——阶段必有章节行，
-/// 章节一般有子数据，但子表全空的章节理论可能（LLM 返回空 mainKnowledge）。
-/// 兜底语义：阶段有章节行→complete；章节有子数据→complete；子表全空的章节保持
-/// pending（新骨架生成的 pending 空行同样不被兜底误翻）。
+/// 协议安全（审查重点 2）：ensure_schema 在「历史建过四子表的 DB」与「全新 DB」
+/// 两形态下都收敛到同一终态——四张退役子表不存在，chapters 保留且新增 content_md 列
 #[sqlx::test]
 #[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
-async fn test_legacy_rows_backfilled_to_complete_on_upgrade(pool: PgPool) {
+async fn test_ensure_schema_converges_child_tables_dropped(pool: PgPool) {
     prepare_schema(&pool).await;
+
+    // 造历史形态：手动重建四张退役子表（含外键，模拟升级前遗留库）
+    for ddl in [
+        "CREATE TABLE concepts (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), chapter_id UUID NOT NULL REFERENCES chapters(id) ON DELETE CASCADE, idx INT NOT NULL, name TEXT NOT NULL, definition TEXT NOT NULL DEFAULT '')",
+        "CREATE TABLE knowledge_points (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), chapter_id UUID NOT NULL REFERENCES chapters(id) ON DELETE CASCADE, idx INT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT '')",
+        "CREATE TABLE diagrams (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), chapter_id UUID NOT NULL REFERENCES chapters(id) ON DELETE CASCADE, idx INT NOT NULL, title TEXT NOT NULL DEFAULT '', mermaid TEXT NOT NULL DEFAULT '', caption TEXT NOT NULL DEFAULT '')",
+        "CREATE TABLE deep_dives (id UUID PRIMARY KEY DEFAULT gen_random_uuid(), chapter_id UUID NOT NULL REFERENCES chapters(id) ON DELETE CASCADE, idx INT NOT NULL, topic TEXT NOT NULL, angle TEXT NOT NULL DEFAULT '', content TEXT NOT NULL)",
+    ] {
+        sqlx::query(ddl).execute(&pool).await.unwrap();
+    }
+    assert_eq!(count(&pool, "concepts").await, 0);
+
+    // 重跑首连 DDL：与全新库一样收敛——四张子表 DROP，chapters 附上了 content_md
+    prepare_schema(&pool).await;
+    for table in ["concepts", "knowledge_points", "diagrams", "deep_dives"] {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = $1)",
+        )
+        .bind(table)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert!(!exists, "退役子表 {table} 必须被 DROP 收敛");
+    }
+    // chapters.content_md 列在位且 NOT NULL DEFAULT ''（全新/历史两形态共用）
+    let md_col: (bool, bool, bool) = sqlx::query_as(
+        "SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name='chapters' AND column_name='content_md'), \
+         (SELECT is_nullable = 'NO' FROM information_schema.columns WHERE table_name='chapters' AND column_name='content_md'), \
+         EXISTS(SELECT 1 FROM chapters)",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(md_col.0, "chapters.content_md 列必须在位");
+    assert!(md_col.1, "content_md 必须 NOT NULL");
+    assert!(!md_col.2, "空库无章节行");
+    // chapters 的 UNIQUE(phase_id, idx) / FK(cascade) 不变：写入仍受约束
     let plan_id = new_generating_plan(&pool).await;
-
-    // 直接 upsert 两阶段（升级前语义：无骨架行）：阶段甲两章有数据；阶段乙一章子表全空
-    let phase_a = sample_phase("阶段甲", &["章甲内", "章乙内"]);
-    plan_store::upsert_phase(&pool, plan_id, 0, &phase_a)
+    plan_store::seed_outline(&pool, plan_id, &sample_outline(&["阶段甲"], &[1]), &[])
         .await
-        .expect("upsert_phase 失败");
-    let mut empty_chapter = sample_chapter("章空架子");
-    empty_chapter.main_knowledge.concepts.clear();
-    empty_chapter.main_knowledge.knowledge_points.clear();
-    empty_chapter.main_knowledge.diagrams.clear();
-    empty_chapter.deep_dives.clear();
-    let phase_b = StudyPhase {
-        name: "阶段乙".into(),
-        week_range: "第 1-2 周".into(),
-        objectives: vec![],
-        chapters: vec![empty_chapter],
-        theory: vec![],
-        practice: vec![],
-        assignments: vec![],
-        status: None,
-        project: PhaseProject {
-            name: "阶段乙·项目".into(),
-            description: String::new(),
-            background: String::new(),
-            steps: vec![],
-            estimated_hours: 0,
-            acceptance_criteria: vec![],
-        },
-    };
-    plan_store::upsert_phase(&pool, plan_id, 1, &phase_b)
-        .await
-        .expect("upsert_phase 失败");
-
-    // 造升级前旧形态：抹掉 status 列
-    sqlx::query("ALTER TABLE phases DROP COLUMN status")
-        .execute(&pool)
-        .await
-        .expect("DROP phases.status 失败");
-    sqlx::query("ALTER TABLE chapters DROP COLUMN status")
-        .execute(&pool)
-        .await
-        .expect("DROP chapters.status 失败");
-
-    // 重跑首连 DDL：ADD COLUMN（默认 pending）+ 兜底 UPDATE
-    prepare_schema(&pool).await;
-
-    // 两阶段均有章节行 → 兜底回 complete
-    assert_eq!(
-        phase_status(&pool, plan_id, 0).await.as_deref(),
-        Some("complete"),
-        "升级前已有内容的阶段应被兜底修正为 complete"
-    );
-    assert_eq!(
-        phase_status(&pool, plan_id, 1).await.as_deref(),
-        Some("complete"),
-        "有章节行的遗留阶段应被兜底修正为 complete"
-    );
-    // 有子数据的章节 → complete；子表全空的章节 → 保持 pending
-    assert_eq!(
-        chapter_status(&pool, plan_id, 0, 0).await.as_deref(),
-        Some("complete"),
-        "有子表数据的章节应被兜底修正为 complete"
-    );
-    assert_eq!(
-        chapter_status(&pool, plan_id, 1, 0).await.as_deref(),
-        Some("pending"),
-        "子表全空的章节不应被兜底误翻 complete"
-    );
+        .unwrap();
+    assert_eq!(count(&pool, "chapters").await, 1);
 }

@@ -117,12 +117,11 @@ async def test_regen_chapter_stream(monkeypatch):
     except ValidationError as exc:  # pragma: no cover - 断言失败路径
         pytest.fail(f"chapter 载荷不满足 Chapter 模型：{exc}")
     chapter = chapter_event["chapter"]
-    assert chapter["mainKnowledge"], "chapter 载荷必须携带 mainKnowledge"
-    assert chapter["mainKnowledge"]["concepts"], "核心概念列表必须非空"
-    assert chapter["deepDives"], "深入内容列表必须非空"
-    assert len(chapter["deepDives"][0]["content"].strip()) >= 500, (
-        "深入内容正文不得少于 500 字"
-    )
+    assert set(chapter) == {"title", "summary", "contentMd"}, "Chapter 唯一形状"
+    content = chapter["contentMd"]
+    assert len(content.strip()) >= 1000, "章节 markdown 正文不得少于 1000 字"
+    assert "```mermaid" in content, "正文必须内联 mermaid 码块"
+    assert "深入剖析" in content, "正文必须有一节深入剖析"
     done = events[-1]
     assert done["response"]["status"] == "plan"
 

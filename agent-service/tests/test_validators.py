@@ -11,24 +11,16 @@ from app.validators import validate_plan
 # 合法基准：3 个阶段 × 2 章，总学时 120 = weekly_hours(10) × weeks(12)
 
 
-def _make_chapter(title: str = "章节", deep_dive_chars: int = 600) -> dict:
+def _make_chapter(title: str = "章节", content_chars: int = 1000) -> dict:
+    """章节正文：确定性 markdown，含知识点段落与一个 flowchart 码块。"""
     return {
         "title": title,
         "summary": "章节概述",
-        "mainKnowledge": {
-            "concepts": [{"name": "核心概念", "definition": "一句话定义"}],
-            "knowledgePoints": [{"title": "知识点", "detail": "要点说明"}],
-            "diagrams": [
-                {
-                    "title": "流程图",
-                    "mermaid": "flowchart TD\n    A --> B",
-                    "caption": "图注说明",
-                }
-            ],
-        },
-        "deepDives": [
-            {"topic": "深入主题", "angle": "切入角度", "content": "深" * deep_dive_chars}
-        ],
+        "contentMd": (
+            f"## {title}\n\n"
+            f"### 概念入门\n\n" + "深" * content_chars
+            + "\n\n```mermaid\nflowchart TD\n    A --> B\n```\n"
+        ),
     }
 
 
@@ -96,7 +88,7 @@ def test_chapter_count_out_of_range_rejected():
 
 
 # ---------------------------------------------------------------------------
-# 规则 3：deepDives 非空且每篇 ≥ 500 字
+# 规则 3：contentMd 非空且 ≥ 1000 字
 # ---------------------------------------------------------------------------
 
 
@@ -108,51 +100,34 @@ def test_valid_plan_passes():
     assert pending == []
 
 
-def test_shallow_deep_dive_rejected():
+def test_shallow_content_rejected():
     plan = _make_plan(3)
-    plan["phases"][1]["chapters"][0]["deepDives"][0]["content"] = "浅" * 499
+    for chapter in plan["phases"][1]["chapters"]:
+        chapter["contentMd"] = "浅" * 999
     issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
-    assert issues, "499 字深入内容应被拒绝"
-    assert any("500" in issue for issue in issues), "浅内容 issue 需含数字 500"
+    assert issues, "999 字正文应被拒绝"
+    assert any("1000" in issue for issue in issues), "浅内容 issue 需含阈值 1000"
     assert 1 in pending, "不合格阶段索引应进 pending"
     assert 0 not in pending and 2 not in pending
 
 
-def test_empty_deep_dives_rejected():
+def test_empty_content_md_failed_for_regen():
+    """空正文 → failed_indexes：可重生成的失败形态（浅轮裁定）。"""
     plan = _make_plan(2)
-    del plan["phases"][0]["chapters"][1]["deepDives"]
+    plan["phases"][0]["chapters"][1]["contentMd"] = "   "
     issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
-    assert issues, "缺失 deepDives 键应按不满足规则处理而非抛错"
+    assert issues, "空白 contentMd 应按缺少正文处理而非抛错"
     assert 0 in pending and 1 not in pending
 
     plan = _make_plan(2)
-    plan["phases"][1]["chapters"][0]["deepDives"] = []
+    del plan["phases"][1]["chapters"][0]["contentMd"]
     issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
-    assert issues, "deepDives 空列表应被拒绝"
+    assert issues, "缺失 contentMd 键应按不满足规则处理而非抛错"
     assert 1 in pending and 0 not in pending
 
 
 # ---------------------------------------------------------------------------
-# 规则 4：concepts / knowledgePoints 非空
-# ---------------------------------------------------------------------------
-
-
-def test_missing_main_knowledge_rejected():
-    plan = _make_plan(3)
-    plan["phases"][0]["chapters"][0]["mainKnowledge"]["concepts"] = []
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
-    assert issues
-    assert 0 in pending
-
-    plan = _make_plan(3)
-    del plan["phases"][2]["chapters"][0]["mainKnowledge"]["knowledgePoints"]
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
-    assert issues, "缺失 knowledgePoints 键应按不满足规则处理而非抛错"
-    assert 2 in pending and 0 not in pending
-
-
-# ---------------------------------------------------------------------------
-# 规则 5：diagrams[].mermaid 非空且首词在白名单（容忍 ``` 围栏）
+# 规则 5：markdown 内联 ```mermaid 码块首词在白名单
 # ---------------------------------------------------------------------------
 
 
@@ -169,37 +144,42 @@ def test_missing_main_knowledge_rejected():
         "mindmap",
     ],
 )
-def test_mermaid_fenced_source_tolerated(diagram_type):
+def test_mermaid_block_whitelisted_prefix(diagram_type):
+    """正文内联码块首词在白名单内的 8 类图应全部通过。"""
     plan = _make_plan(1)
-    plan["phases"][0]["chapters"][0]["mainKnowledge"]["diagrams"][0]["mermaid"] = (
-        f"```mermaid\n  {diagram_type} 示例\n    A --> B\n```\n"
+    chapters = plan["phases"][0]["chapters"]
+    blocks = (
+        f"\n\n```mermaid\n  {diagram_type} 示例\n    A --> B\n```\n",
+        f"\n\n```mermaid\n{diagram_type} Td\n    A --> B\n```\n",
     )
+    for chapter, block in zip(chapters, blocks, strict=False):
+        chapter["contentMd"] = chapter["contentMd"].rstrip() + block
     issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
-    assert issues == [], f"围栏包裹的 {diagram_type} 应被容忍"
+    assert issues == [], f"码块首词 {diagram_type} 应被容忍"
     assert pending == []
 
 
-def test_bad_mermaid_prefix_rejected():
+def test_bad_mermaid_block_prefix_rejected():
     plan = _make_plan(3)
-    plan["phases"][2]["chapters"][0]["mainKnowledge"]["diagrams"][0]["mermaid"] = (
-        "pie title 占比\n    A : 50\n    B : 50"
-    )
+    for chapter in plan["phases"][2]["chapters"]:
+        chapter["contentMd"] = (
+            chapter["contentMd"].rstrip()
+            + "\n\n```mermaid\npie title 占比\n    A : 50\n    B : 50\n```\n"
+        )
     issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues, "白名单外的首词 pie 应被拒绝"
     assert 2 in pending and 0 not in pending and 1 not in pending
 
 
-def test_empty_mermaid_rejected():
+def test_unclosed_mermaid_block_checked_by_prefix():
+    """未闭合码块同样按首词检查（提示 LLM 修复围栏）。"""
     plan = _make_plan(2)
-    plan["phases"][0]["chapters"][0]["mainKnowledge"]["diagrams"][0]["mermaid"] = ""
+    for chapter in plan["phases"][1]["chapters"]:
+        chapter["contentMd"] = (
+            chapter["contentMd"].rstrip() + "\n\n```mermaid\npie xp\n"
+        )
     issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
-    assert issues, "空 Mermaid 源码应被拒绝"
-    assert 0 in pending
-
-    plan = _make_plan(2)
-    del plan["phases"][1]["chapters"][0]["mainKnowledge"]["diagrams"][0]["mermaid"]
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
-    assert issues, "缺失 mermaid 键应按不满足规则处理而非抛错"
+    assert issues, "未闭合码块首词 pie 应被拒绝"
     assert 1 in pending and 0 not in pending
 
 

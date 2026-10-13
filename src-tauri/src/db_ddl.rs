@@ -1,11 +1,14 @@
 //! 数据库 DDL（建表 + 幂等演进）：与逻辑代码分离的统一管理入口。
 //!
 //! - 建表 DDL 对照 plan/2026-10-04_plan-persistence-pg.md；
-//! - 章节化存储演化 DDL 对照任务 9 简报（九表逐字定义，与 plan_store.rs 读写对齐）；
+//! - 章节化存储演化 DDL 对照任务 9 简报（子表时代的结构化拆解，已随任务 18 退役）；
+//! - markdown 化演化 DDL 对照任务 18 简报：chapters 内容并入 content_md 列，
+//!   四张内容子表（concepts/knowledge_points/diagrams/deep_dives）直接 DROP
+//!   （用户裁定放弃旧数据兼容，不保留 legacy 兑底路径）；
 //! - 两级状态机 + 大纲骨架演化 DDL 对照任务 13 简报（phases/chapters status 列 +
-//!   plans 上下文三列 + 旧数据兜底 UPDATE，幂等重放安全）。
+//!   plans 上下文三列）。
 //!
-//! 全部语句只用 CREATE/ADD COLUMN IF NOT EXISTS / 幂等 UPDATE，首连重放安全；
+//! 全部语句只用 CREATE/ADD COLUMN IF NOT EXISTS / DROP TABLE IF EXISTS，首连重放安全；
 //! 子表均经外键 ON DELETE CASCADE 随 plans 行级联清理。
 
 use sqlx::PgPool;
@@ -72,20 +75,22 @@ pub(crate) const DDL_PLANS_INTERESTS_COL: &str =
 pub(crate) const DDL_PLANS_BACKGROUND_COL: &str =
     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS background TEXT NOT NULL DEFAULT ''";
 
-// ---- 旧数据兜底（控制者裁定，逐字）----
-// ADD COLUMN DEFAULT 'pending' 会把升级前（无 status 列时代）已有数据的行误标，
-// 靠「子表有数据 → complete」的兜底修正。幂等：只动 status='pending' 的行，
-// 已 complete 的行不受影响，每次首连重放安全。
+// ---- markdown 化演进（任务 18，幂等）----
 
-/// 有章节（即有数据）的升级前旧阶段行批量修正为 complete
-pub(crate) const DDL_LEGACY_PHASES_BACKFILL: &str = "UPDATE phases p SET status='complete' WHERE status='pending' AND EXISTS(SELECT 1 FROM chapters c WHERE c.phase_id=p.id)";
+/// 章节正文列：完整 markdown 全文（NOT NULL DEFAULT ''：行存在即含此列，
+/// 空串是有意义的空正文，status 语义由该列 strip 后承载）
+pub(crate) const DDL_CHAPTERS_CONTENT_MD_COL: &str =
+    "ALTER TABLE chapters ADD COLUMN IF NOT EXISTS content_md TEXT NOT NULL DEFAULT ''";
 
-/// 四张内容子表任一有数据的升级前旧章节行批量修正为 complete
-pub(crate) const DDL_LEGACY_CHAPTERS_BACKFILL: &str = "UPDATE chapters ch SET status='complete' WHERE status='pending' AND (
-       EXISTS(SELECT 1 FROM concepts x WHERE x.chapter_id=ch.id) OR EXISTS(SELECT 1 FROM knowledge_points x WHERE x.chapter_id=ch.id)
-       OR EXISTS(SELECT 1 FROM diagrams x WHERE x.chapter_id=ch.id) OR EXISTS(SELECT 1 FROM deep_dives x WHERE x.chapter_id=ch.id))";
+/// 退役子表 DROP（IF EXISTS 幂等）：外键存在于子表指向 chapters，删子表
+/// 不破坏 chapters 自身及其余级联链；历史建过子表的 DB 与全新 DB 都收敛到
+/// 同一终态。统一排在序列最后执行（先前建后删与只删等价，一样幂等）。
+pub(crate) const DDL_DROP_CONCEPTS_TABLE: &str = "DROP TABLE IF EXISTS concepts";
+pub(crate) const DDL_DROP_KNOWLEDGE_POINTS_TABLE: &str = "DROP TABLE IF EXISTS knowledge_points";
+pub(crate) const DDL_DROP_DIAGRAMS_TABLE: &str = "DROP TABLE IF EXISTS diagrams";
+pub(crate) const DDL_DROP_DEEP_DIVES_TABLE: &str = "DROP TABLE IF EXISTS deep_dives";
 
-// ---- 八张子表：全部经外键 ON DELETE CASCADE 随 plans 行级联清理 ----
+// ---- 五张子表：全部经外键 ON DELETE CASCADE 随 plans 行级联清理 ----
 
 /// 阶段表
 pub(crate) const DDL_PHASES_TABLE: &str = "CREATE TABLE IF NOT EXISTS phases (
@@ -106,40 +111,12 @@ pub(crate) const DDL_PROJECTS_TABLE: &str = "CREATE TABLE IF NOT EXISTS projects
           estimated_hours INT NOT NULL DEFAULT 0
         )";
 
-/// 章节表
+/// 章节表（content_md 由演进段追加，避免新表 DDL 与演进语句双份漂移）
 pub(crate) const DDL_CHAPTERS_TABLE: &str = "CREATE TABLE IF NOT EXISTS chapters (
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           phase_id UUID NOT NULL REFERENCES phases(id) ON DELETE CASCADE,
           idx INT NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '',
           UNIQUE (phase_id, idx)
-        )";
-
-/// 章节概念表
-pub(crate) const DDL_CONCEPTS_TABLE: &str = "CREATE TABLE IF NOT EXISTS concepts (
-          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          chapter_id UUID NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
-          idx INT NOT NULL, name TEXT NOT NULL, definition TEXT NOT NULL DEFAULT ''
-        )";
-
-/// 章节知识点表
-pub(crate) const DDL_KNOWLEDGE_POINTS_TABLE: &str = "CREATE TABLE IF NOT EXISTS knowledge_points (
-          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          chapter_id UUID NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
-          idx INT NOT NULL, title TEXT NOT NULL, detail TEXT NOT NULL DEFAULT ''
-        )";
-
-/// 章节图示表
-pub(crate) const DDL_DIAGRAMS_TABLE: &str = "CREATE TABLE IF NOT EXISTS diagrams (
-          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          chapter_id UUID NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
-          idx INT NOT NULL, title TEXT NOT NULL DEFAULT '', mermaid TEXT NOT NULL DEFAULT '', caption TEXT NOT NULL DEFAULT ''
-        )";
-
-/// 章节深入内容表
-pub(crate) const DDL_DEEP_DIVES_TABLE: &str = "CREATE TABLE IF NOT EXISTS deep_dives (
-          id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-          chapter_id UUID NOT NULL REFERENCES chapters(id) ON DELETE CASCADE,
-          idx INT NOT NULL, topic TEXT NOT NULL, angle TEXT NOT NULL DEFAULT '', content TEXT NOT NULL
         )";
 
 /// 推荐学习资源表
@@ -163,14 +140,10 @@ pub(crate) const DDL_STATEMENTS: &[&str] = &[
     DDL_PLAN_JSON_NULLABLE,
     DDL_PLANS_STATUS_COL,
     DDL_PLANS_ESTIMATED_HOURS_COL,
-    // 3. 八张子表（phases/chapters 先于 status 列，兜底 UPDATE 才有对象）
+    // 3. 五张子表（phases/chapters 建表先于 status/content_md 演进列）
     DDL_PHASES_TABLE,
     DDL_PROJECTS_TABLE,
     DDL_CHAPTERS_TABLE,
-    DDL_CONCEPTS_TABLE,
-    DDL_KNOWLEDGE_POINTS_TABLE,
-    DDL_DIAGRAMS_TABLE,
-    DDL_DEEP_DIVES_TABLE,
     DDL_RESOURCES_TABLE,
     // 4. 任务 13 演进：两级状态机 + 生成上下文列
     DDL_PHASES_STATUS_COL,
@@ -178,9 +151,13 @@ pub(crate) const DDL_STATEMENTS: &[&str] = &[
     DDL_PLANS_WEEKLY_HOURS_COL,
     DDL_PLANS_INTERESTS_COL,
     DDL_PLANS_BACKGROUND_COL,
-    // 5. 旧数据兜底（控制者裁定）：子表有数据的行回标 complete，幂等重放安全
-    DDL_LEGACY_PHASES_BACKFILL,
-    DDL_LEGACY_CHAPTERS_BACKFILL,
+    // 5. 任务 18 演进：chapters 正文列 + 退役子表 DROP（统一收尾，
+    //    历史建过子表的 DB 与全新 DB 都收敛到同一终态）
+    DDL_CHAPTERS_CONTENT_MD_COL,
+    DDL_DROP_CONCEPTS_TABLE,
+    DDL_DROP_KNOWLEDGE_POINTS_TABLE,
+    DDL_DROP_DIAGRAMS_TABLE,
+    DDL_DROP_DEEP_DIVES_TABLE,
 ];
 
 /// 执行全部 DDL（逐条跑，任一失败即整体失败并归一为 Db 错误）。
@@ -200,22 +177,22 @@ mod tests {
     use super::*;
 
     /// 数组完整性：关键语句必须全部在执行序列内且顺序正确
-    /// （phases/chapters status 列在子表建表之后、兜底 UPDATE 在最后）
+    /// （content_md 演进列在 chapters 建表之后；四条退役子表 DROP 在序列末段；
+    /// markdown 化后不再保留任何兜底 UPDATE 与子表 CREATE）
     #[test]
     fn ddl_statements_covers_all_and_keeps_order() {
         let find = |needle: &str| -> usize {
             DDL_STATEMENTS
                 .iter()
                 .position(|s| s.contains(needle))
-                .unwrap_or_else(|| panic!("DDL 数组缺少含「{needle}」的语句"))
+                .unwrap_or_else(|| panic!("DDL 数组缺少语句: {needle}"))
         };
-        // 建表在前
-        assert!(find("CREATE TABLE IF NOT EXISTS plans") < find("gen_random_uuid"));
-        // status 列在对应表建立之后（表 DDL 里含列名，判别用表演进字样）
-        let phases_table = find("phases");
-        let chapters_table = find("chapters");
+        let phases_table = find("CREATE TABLE IF NOT EXISTS phases");
+        let chapters_table = find("CREATE TABLE IF NOT EXISTS chapters");
+        // status / content_md 列在对应表建立之后
         let phases_status = find("ALTER TABLE phases ADD COLUMN IF NOT EXISTS status");
         let chapters_status = find("ALTER TABLE chapters ADD COLUMN IF NOT EXISTS status");
+        let chapters_md = find("ALTER TABLE chapters ADD COLUMN IF NOT EXISTS content_md");
         assert!(
             phases_table < phases_status,
             "phases 建表必须先于其 status 列"
@@ -224,22 +201,46 @@ mod tests {
             chapters_table < chapters_status,
             "chapters 建表必须先于其 status 列"
         );
+        assert!(
+            chapters_table < chapters_md,
+            "chapters 建表必须先于其 content_md 演进列"
+        );
         // 上下文三列
         find("weekly_hours");
         find("interests");
         find("background");
-        // 兜底 UPDATE 在最后且恰好两条
+        // 四张退役子表 DROP 恰好各一条且都在 content_md 演进列之后
+        for (needle, label) in [
+            ("DROP TABLE IF EXISTS concepts", "concepts"),
+            ("DROP TABLE IF EXISTS knowledge_points", "knowledge_points"),
+            ("DROP TABLE IF EXISTS diagrams", "diagrams"),
+            ("DROP TABLE IF EXISTS deep_dives", "deep_dives"),
+        ] {
+            let pos = find(needle);
+            assert!(pos > chapters_md, "退役子表 DROP 应在演进列之后: {label}");
+        }
+        // 序列末四条恰为四条 DROP（历史 DB 与全新 DB 都收敛到这一终态）
+        for (pos, needle) in [
+            (DDL_STATEMENTS.len() - 4, "concepts"),
+            (DDL_STATEMENTS.len() - 3, "knowledge_points"),
+            (DDL_STATEMENTS.len() - 2, "diagrams"),
+            (DDL_STATEMENTS.len() - 1, "deep_dives"),
+        ] {
+            assert!(
+                DDL_STATEMENTS[pos].contains(needle),
+                "序列第 {pos} 条应为 {needle} 的 DROP"
+            );
+        }
         assert!(
-            find("SET status='complete' WHERE status='pending' AND EXISTS(SELECT 1 FROM chapters")
-                == DDL_STATEMENTS.len() - 2,
-            "第一条兜底 UPDATE 应在倒数第二条"
+            !DDL_STATEMENTS.iter().any(|s| s.contains("UPDATE ")),
+            "markdown 化后不再保留任何兜底 UPDATE 语句"
         );
-        assert_eq!(
-            find("OR EXISTS(SELECT 1 FROM deep_dives"),
-            DDL_STATEMENTS.len() - 1
+        assert!(
+            !DDL_STATEMENTS
+                .iter()
+                .any(|s| s.contains("CREATE TABLE IF NOT EXISTS concepts")),
+            "退役子表不得再出现在建表序列"
         );
-        // 兜底UPDATE之后不能还有其他语句
-        assert_eq!(DDL_STATEMENTS.last().unwrap().contains("UPDATE"), true);
     }
 
     /// 逐条语句的方可执行性由集成测试在真库验证；本模块只校验无空白 SQL 混入

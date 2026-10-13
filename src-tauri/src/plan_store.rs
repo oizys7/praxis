@@ -1,4 +1,4 @@
-//! 计划数据规范化多表存储：阶段级 upsert（每阶段完成即落库，子表级联替换）与多表重组读取。
+//! 计划数据规范化多表存储：阶段级 upsert（每阶段完成即落库，章节整体替换）与多表重组读取。
 //!
 //! 与 db.rs 的分工：
 //! - db.rs：连接池管理、首连建表（ensure_schema -> db_ddl）、旧整串 plan_json 链路（save_plan 等保留）
@@ -8,7 +8,8 @@
 //!   delete_plan_full，以及 get_plan 新路径的多表重组读取（load_study_plan +
 //!   纯函数 reassemble_plan）与重生成上下文读取（load_plan_request_meta / load_plan_outline）
 //!
-//! 九表 DDL 与两级状态机/上下文列演进 DDL 逐字定义在 db_ddl，首连幂等执行。
+//! 六表 DDL（plans/phases/projects/chapters/resources）与两个演进列
+//! （status、chapters.content_md）逐字定义在 db_ddl，首连幂等执行。
 
 use sqlx::{PgPool, Row, Transaction};
 use tracing::{info, warn};
@@ -17,8 +18,8 @@ use uuid::Uuid;
 use crate::db::{db_err, fail};
 use crate::error::AgentError;
 use crate::protocol::{
-    ChapterDef, ConceptDef, DeepDiveDef, KnowledgeDiagramDef, KnowledgePointDef, MainKnowledgeDef,
-    OutlinePhasePayload, PhaseProject, PlanRequest, StudyPhase, StudyPlan, StudyResource,
+    ChapterDef, OutlinePhasePayload, PhaseProject, PlanRequest, StudyPhase, StudyPlan,
+    StudyResource,
 };
 
 // ---------------------------------------------------------------------------
@@ -77,10 +78,10 @@ pub async fn update_outline_meta(
 }
 
 /// 阶段级 upsert（单事务）：写入/更新 (plan_id, idx) 的 phases 行后，整体替换其
-/// chapters（concepts/knowledge_points/diagrams/deep_dives 随外键级联清空）与 project。
+/// chapters（DELETE 后重插，旧章节行不残留）与 project。
 /// 同一阶段回炉重写时旧数据不残留；事务保证半途失败不留脏数据。
-/// 阶段与其全部章节均为完整产出：入库即置 status='complete'（骨架 pending 行
-/// 一并翻牌；章节行新建时直接携带 complete，不再依赖列默认值）。
+/// 阶段行入库即置 status='complete'（骨架 pending 行一并翻牌）；章节行 status
+/// 由内容定价（见 chapter_row_status）：正文空仍落 failed，前端可重生成。
 /// 消费方：commands::generate_plan（phase 事件到达时）/ regenerate_phase（任务 15）。
 pub async fn upsert_phase(
     pool: &PgPool,
@@ -130,10 +131,10 @@ pub async fn upsert_phase(
         .await
         .map_err(|e| fail("清理旧章节", e))?;
 
-    // 3. 重插 chapters 与子表（idx 即数组下标，读取按 idx 升序还原顺序；
-    //    整阶段产出即完整，章节行直接携带 status='complete'）
+    // 3. 重插 chapters（idx 即数组下标，读取按 idx 升序还原顺序；纯单行写入，
+    //    status 由 content_md 定价——正文为空仍可入库翻 failed，前端可重生成）
     for (i, chapter) in phase.chapters.iter().enumerate() {
-        insert_chapter_with_children(&mut tx, phase_id, i as i64, chapter).await?;
+        insert_chapter_row(&mut tx, phase_id, i as i64, chapter).await?;
     }
 
     // 项目（若存在）：StudyPhase.project 非 Option（协议兼容旧 JSON），
@@ -236,10 +237,11 @@ pub async fn seed_outline(
 
 /// 单章 upsert（单事务）：骨架行的内容填充 / 章节重生成入库。
 /// - phases 行必须已存在（seed_outline 或既有数据），否则报错（单章不凭空建阶段）；
-/// - chapters ON CONFLICT (phase_id, idx) 更新 title/summary 并置 status='complete'；
-/// - 四张内容子表先删后插（按新的章节数据，不残留旧子行）；
+/// - chapters ON CONFLICT (phase_id, idx) 更新 title/summary/content_md，status
+///   由 content_md 定价（正文空 → failed，不推进阶段）；
 /// - 尾部阶段联动：该阶段不再存在 status<>'complete' 的章节时，同事务内把阶段
-///   置 complete（状态机推进与数据写入原子）。
+///   置 complete（状态机推进与数据写入原子）——正文为空的章节翻 failed 行，
+///   阶段因此保持不置 complete，留给重新生成收口。
 ///
 /// 消费方：regenerate_chapter（任务 15）。
 pub async fn upsert_chapter(
@@ -267,8 +269,8 @@ pub async fn upsert_chapter(
                 ))
             })?;
 
-    // 单章写入（章节行冲突即更新 + 四子表先删后插，均在共享函数内完成）
-    insert_chapter_with_children(&mut tx, phase_id, chapter_index as i64, chapter).await?;
+    // 单章写入（章节行冲突即更新，status 由 content_md 定价）
+    insert_chapter_row(&mut tx, phase_id, chapter_index as i64, chapter).await?;
 
     // 阶段联动（同一事务原子）：全部章节 complete 时把阶段推到 complete
     sqlx::query(
@@ -556,106 +558,48 @@ pub async fn load_phase_project_brief(
 }
 
 // ---------------------------------------------------------------------------
-// 共享写入：章节 + 四子表（upsert_phase / upsert_chapter 复用，防双份漂移）
+// 共享写入：章节单行（upsert_phase / upsert_chapter 复用，防双份漂移）
 // ---------------------------------------------------------------------------
 
-/// 写入单个章节行（status='complete'，冲突即更新）及其四张内容子表（先删后插）。
+/// 章节行 status 由内容定价：正文 strip 后非空 → complete，空 → failed。
+/// 空内容翻 failed（而非 complete）是重生成入口的判定链发出点：前端按
+/// failed/pending 态露出「重新生成此章」按钮。INSERT / DO UPDATE 双路共用。
+fn chapter_row_status(content_md: &str) -> &'static str {
+    if content_md.trim().is_empty() {
+        "failed"
+    } else {
+        "complete"
+    }
+}
+
+/// 写入单个章节行（冲突即更新 title/summary/content_md/status）。
 /// 调用方须在事务内执行；返传物理章节行 id。upsert_phase（整阶段替换重插）与
 /// upsert_chapter（单章骨架填充/重生成）共用同一套写入语义，避免两份实现漂移。
-async fn insert_chapter_with_children(
+async fn insert_chapter_row(
     tx: &mut Transaction<'static, sqlx::Postgres>,
     phase_id: Uuid,
     idx: i64,
     chapter: &ChapterDef,
 ) -> Result<Uuid, AgentError> {
     let chapter_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO chapters (phase_id, idx, title, summary, status)
-         VALUES ($1, $2, $3, $4, 'complete')
+        "INSERT INTO chapters (phase_id, idx, title, summary, content_md, status)
+         VALUES ($1, $2, $3, $4, $5, $6)
          ON CONFLICT (phase_id, idx) DO UPDATE SET
              title = EXCLUDED.title,
              summary = EXCLUDED.summary,
-             status = 'complete'
+             content_md = EXCLUDED.content_md,
+             status = EXCLUDED.status
          RETURNING id",
     )
     .bind(phase_id)
     .bind(i32::try_from(idx).unwrap_or(0))
     .bind(&chapter.title)
     .bind(&chapter.summary)
+    .bind(&chapter.content_md)
+    .bind(chapter_row_status(&chapter.content_md))
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| fail("写入章节", e))?;
-
-    // 四张内容子表：按章节数据整体替换（先删后插，不残留旧子行）
-    for (sql, label) in [
-        ("DELETE FROM concepts WHERE chapter_id = $1", "清理旧概念"),
-        (
-            "DELETE FROM knowledge_points WHERE chapter_id = $1",
-            "清理旧知识点",
-        ),
-        ("DELETE FROM diagrams WHERE chapter_id = $1", "清理旧图示"),
-        (
-            "DELETE FROM deep_dives WHERE chapter_id = $1",
-            "清理旧深入内容",
-        ),
-    ] {
-        sqlx::query(sql)
-            .bind(chapter_id)
-            .execute(&mut **tx)
-            .await
-            .map_err(|e| fail(label, e))?;
-    }
-    for (j, concept) in chapter.main_knowledge.concepts.iter().enumerate() {
-        sqlx::query(
-            "INSERT INTO concepts (chapter_id, idx, name, definition) VALUES ($1, $2, $3, $4)",
-        )
-        .bind(chapter_id)
-        .bind(i32::try_from(j).unwrap_or(0))
-        .bind(&concept.name)
-        .bind(&concept.definition)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| fail("写入概念", e))?;
-    }
-    for (j, point) in chapter.main_knowledge.knowledge_points.iter().enumerate() {
-        sqlx::query(
-            "INSERT INTO knowledge_points (chapter_id, idx, title, detail) VALUES ($1, $2, $3, $4)",
-        )
-        .bind(chapter_id)
-        .bind(i32::try_from(j).unwrap_or(0))
-        .bind(&point.title)
-        .bind(&point.detail)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| fail("写入知识点", e))?;
-    }
-    for (j, diagram) in chapter.main_knowledge.diagrams.iter().enumerate() {
-        sqlx::query(
-            "INSERT INTO diagrams (chapter_id, idx, title, mermaid, caption)
-             VALUES ($1, $2, $3, $4, $5)",
-        )
-        .bind(chapter_id)
-        .bind(i32::try_from(j).unwrap_or(0))
-        .bind(&diagram.title)
-        .bind(&diagram.mermaid)
-        .bind(&diagram.caption)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| fail("写入图示", e))?;
-    }
-    for (j, dive) in chapter.deep_dives.iter().enumerate() {
-        sqlx::query(
-            "INSERT INTO deep_dives (chapter_id, idx, topic, angle, content)
-             VALUES ($1, $2, $3, $4, $5)",
-        )
-        .bind(chapter_id)
-        .bind(i32::try_from(j).unwrap_or(0))
-        .bind(&dive.topic)
-        .bind(&dive.angle)
-        .bind(&dive.content)
-        .execute(&mut **tx)
-        .await
-        .map_err(|e| fail("写入深入内容", e))?;
-    }
     Ok(chapter_id)
 }
 
@@ -688,10 +632,8 @@ struct ChapterRows {
     title: String,
     summary: String,
     status: Option<String>,
-    concepts: Vec<ConceptDef>,
-    knowledge_points: Vec<KnowledgePointDef>,
-    diagrams: Vec<KnowledgeDiagramDef>,
-    deep_dives: Vec<DeepDiveDef>,
+    /// markdown 正文全文：NOT NULL DEFAULT ''，空串也是有效返回值（恒 Some）
+    content_md: String,
 }
 
 struct ProjectRow {
@@ -732,7 +674,7 @@ pub async fn load_study_plan(
             row.try_get("assignments").map_err(db_err)?;
 
         let chapter_rows = sqlx::query(
-            "SELECT id, title, summary, status FROM chapters WHERE phase_id = $1 ORDER BY idx ASC",
+            "SELECT title, summary, status, content_md FROM chapters WHERE phase_id = $1 ORDER BY idx ASC",
         )
         .bind(phase_id)
         .fetch_all(pool)
@@ -741,15 +683,11 @@ pub async fn load_study_plan(
 
         let mut chapters = Vec::with_capacity(chapter_rows.len());
         for crow in chapter_rows {
-            let chapter_id: Uuid = crow.try_get("id").map_err(db_err)?;
             chapters.push(ChapterRows {
                 title: crow.try_get("title").map_err(db_err)?,
                 summary: crow.try_get("summary").map_err(db_err)?,
                 status: crow.try_get("status").map_err(db_err)?,
-                concepts: fetch_concepts(pool, chapter_id).await?,
-                knowledge_points: fetch_knowledge_points(pool, chapter_id).await?,
-                diagrams: fetch_diagrams(pool, chapter_id).await?,
-                deep_dives: fetch_deep_dives(pool, chapter_id).await?,
+                content_md: crow.try_get("content_md").map_err(db_err)?,
             });
         }
 
@@ -816,85 +754,6 @@ pub async fn load_study_plan(
     }))
 }
 
-async fn fetch_concepts(pool: &PgPool, chapter_id: Uuid) -> Result<Vec<ConceptDef>, AgentError> {
-    let mut out = Vec::new();
-    for r in
-        sqlx::query("SELECT name, definition FROM concepts WHERE chapter_id = $1 ORDER BY idx ASC")
-            .bind(chapter_id)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| fail("查询概念列表", e))?
-    {
-        out.push(ConceptDef {
-            name: r.try_get("name").map_err(db_err)?,
-            definition: r.try_get("definition").map_err(db_err)?,
-        });
-    }
-    Ok(out)
-}
-
-async fn fetch_knowledge_points(
-    pool: &PgPool,
-    chapter_id: Uuid,
-) -> Result<Vec<KnowledgePointDef>, AgentError> {
-    let mut out = Vec::new();
-    for r in sqlx::query(
-        "SELECT title, detail FROM knowledge_points WHERE chapter_id = $1 ORDER BY idx ASC",
-    )
-    .bind(chapter_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| fail("查询知识点列表", e))?
-    {
-        out.push(KnowledgePointDef {
-            title: r.try_get("title").map_err(db_err)?,
-            detail: r.try_get("detail").map_err(db_err)?,
-        });
-    }
-    Ok(out)
-}
-
-async fn fetch_diagrams(
-    pool: &PgPool,
-    chapter_id: Uuid,
-) -> Result<Vec<KnowledgeDiagramDef>, AgentError> {
-    let mut out = Vec::new();
-    for r in sqlx::query(
-        "SELECT title, mermaid, caption FROM diagrams WHERE chapter_id = $1 ORDER BY idx ASC",
-    )
-    .bind(chapter_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| fail("查询图示列表", e))?
-    {
-        out.push(KnowledgeDiagramDef {
-            title: r.try_get("title").map_err(db_err)?,
-            mermaid: r.try_get("mermaid").map_err(db_err)?,
-            caption: r.try_get("caption").map_err(db_err)?,
-        });
-    }
-    Ok(out)
-}
-
-async fn fetch_deep_dives(pool: &PgPool, chapter_id: Uuid) -> Result<Vec<DeepDiveDef>, AgentError> {
-    let mut out = Vec::new();
-    for r in sqlx::query(
-        "SELECT topic, angle, content FROM deep_dives WHERE chapter_id = $1 ORDER BY idx ASC",
-    )
-    .bind(chapter_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| fail("查询深入内容列表", e))?
-    {
-        out.push(DeepDiveDef {
-            topic: r.try_get("topic").map_err(db_err)?,
-            angle: r.try_get("angle").map_err(db_err)?,
-            content: r.try_get("content").map_err(db_err)?,
-        });
-    }
-    Ok(out)
-}
-
 // ---------------------------------------------------------------------------
 // 纯函数组装（无 IO，便于单元测试）
 // ---------------------------------------------------------------------------
@@ -930,12 +789,7 @@ fn reassemble_chapter(row: ChapterRows) -> ChapterDef {
     ChapterDef {
         title: row.title,
         summary: row.summary,
-        main_knowledge: MainKnowledgeDef {
-            concepts: row.concepts,
-            knowledge_points: row.knowledge_points,
-            diagrams: row.diagrams,
-        },
-        deep_dives: row.deep_dives,
+        content_md: row.content_md,
         status: row.status,
     }
 }
@@ -963,24 +817,7 @@ mod tests {
             title: title.into(),
             summary: format!("{title}摘要"),
             status: Some("complete".into()),
-            concepts: vec![ConceptDef {
-                name: "所有权".into(),
-                definition: "唯一所有者".into(),
-            }],
-            knowledge_points: vec![KnowledgePointDef {
-                title: "移动语义".into(),
-                detail: "赋值转移所有权".into(),
-            }],
-            diagrams: vec![KnowledgeDiagramDef {
-                title: "转移图".into(),
-                mermaid: "flowchart LR".into(),
-                caption: "示意".into(),
-            }],
-            deep_dives: vec![DeepDiveDef {
-                topic: "Drop".into(),
-                angle: "RAII".into(),
-                content: "长文".into(),
-            }],
+            content_md: format!("## {title}\n\n```mermaid\nflowchart LR\n```"),
         };
         let rows = PlanRows {
             title: "测试计划".into(),
@@ -1042,8 +879,38 @@ mod tests {
             Some("complete"),
             "status 装入协议位"
         );
-        assert_eq!(first.chapters[0].main_knowledge.concepts[0].name, "所有权");
-        assert_eq!(first.chapters[0].deep_dives[0].topic, "Drop");
+        assert_eq!(
+            first.chapters[0].content_md,
+            format!("## 甲章\n\n```mermaid\nflowchart LR\n```"),
+            "content_md 等值读回"
+        );
+        // 空 content_md 也是有效组装（DEFAULT '' 行恒回正文）
+        let empty_phases = [PhaseRows {
+            name: "阶段丙".into(),
+            week_range: "".into(),
+            status: Some("pending".into()),
+            objectives: vec![],
+            practice: vec![],
+            assignments: vec![],
+            project: None,
+            chapters: vec![ChapterRows {
+                title: "骨架章".into(),
+                summary: String::new(),
+                status: Some("pending".into()),
+                content_md: String::new(),
+            }],
+        }];
+        let empty_plan = reassemble_plan(PlanRows {
+            title: "空".into(),
+            overview: String::new(),
+            estimated_total_hours: 0,
+            resources: vec![],
+            phases: empty_phases.into_iter().collect(),
+        });
+        assert_eq!(
+            empty_plan.phases[0].chapters[0].content_md, "",
+            "DEFAULT '' 空正文恒回 Some 语义"
+        );
         assert_eq!(first.project.name, "项目甲");
         assert_eq!(first.project.estimated_hours, 6);
         // 无项目行 -> 协议默认值（name 空串）

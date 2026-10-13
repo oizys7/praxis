@@ -86,59 +86,12 @@ class PhaseProject(CamelModel):
     )
 
 
-class ConceptDef(CamelModel):
-    """章节核心概念定义。"""
-
-    name: str = Field(..., description="概念名称")
-    definition: str = Field(default="", description="一句话定义")
-
-
-class KnowledgePoint(CamelModel):
-    """章节知识点。"""
-
-    title: str = Field(..., description="知识点标题")
-    detail: str = Field(default="", description="要点说明")
-
-
-class KnowledgeDiagram(CamelModel):
-    """章节配图：Mermaid 源码由前端渲染。"""
-
-    title: str = Field(default="", description="图标题")
-    mermaid: str = Field(default="", description="Mermaid 源码")
-    caption: str = Field(default="", description="图注说明")
-
-
-class MainKnowledge(CamelModel):
-    """章节主要知识：概念 / 知识点 / 图示。"""
-
-    concepts: list[ConceptDef] = Field(default_factory=list, description="核心概念定义")
-    knowledge_points: list[KnowledgePoint] = Field(
-        default_factory=list, description="知识点列表"
-    )
-    diagrams: list[KnowledgeDiagram] = Field(
-        default_factory=list, description="Mermaid 图示"
-    )
-
-
-class DeepDive(CamelModel):
-    """章节深入内容：围绕主题的延伸长文。"""
-
-    topic: str = Field(..., description="深入主题")
-    angle: str = Field(default="", description="切入角度")
-    content: str = Field(default="", description="正文长文")
-
-
 class Chapter(CamelModel):
-    """阶段内的学习章节：主要知识 + 深入内容。"""
+    """阶段内的学习章节：完整 markdown 正文（图示内联 ```mermaid 码块）。"""
 
     title: str = Field(..., description="章节标题")
     summary: str = Field(default="", description="章节概述")
-    main_knowledge: MainKnowledge = Field(
-        default_factory=MainKnowledge, description="本章主要知识"
-    )
-    deep_dives: list[DeepDive] = Field(
-        default_factory=list, description="深入内容列表"
-    )
+    content_md: str = Field(default="", description="章节 markdown 正文全文")
 
 
 class StudyPhase(CamelModel):

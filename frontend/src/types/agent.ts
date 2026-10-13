@@ -38,54 +38,21 @@ export interface PhaseProject {
   acceptanceCriteria: string[];
 }
 
-/** 章节核心概念定义 */
-export interface ConceptDef {
-  name: string;
-  definition: string;
-}
-
-/** 章节知识点 */
-export interface KnowledgePoint {
-  title: string;
-  detail: string;
-}
-
-/** 章节配图：Mermaid 源码由前端渲染 */
-export interface KnowledgeDiagram {
-  title: string;
-  mermaid: string;
-  caption: string;
-}
-
-/** 章节主要知识：概念 / 知识点 / 图示 */
-export interface MainKnowledge {
-  concepts: ConceptDef[];
-  knowledgePoints: KnowledgePoint[];
-  diagrams: KnowledgeDiagram[];
-}
-
-/** 章节深入内容：围绕主题的延伸长文 */
-export interface DeepDive {
-  topic: string;
-  angle: string;
-  content: string;
-}
-
 /**
  * 两级状态机的状态位（阶段级与章节级共用）：
- * - pending：目标行已置「生成中」（重生成刚发起）；
- * - complete：生成收尾完成（成功入库）；
+ * - pending：目标行已置「生成中」（重生成刚发起——骨架章或重生成中）；
+ * - complete：生成收尾完成（成功入库，写入侧由 contentMd 定价）；
  * - failed：生成失败终态。
- * undefined = 旧 plan_json / 缺省流式载荷（无徽标语义，wire 只增不改）。
+ * undefined = 旧 plan_json / 缺省流式载荷（无徽标语义）。
  */
 export type PhaseStatus = "pending" | "complete" | "failed";
 
-/** 阶段内的学习章节：主要知识 + 深入内容（status 见 PhaseStatus） */
+/** 阶段内的学习章节：完整 markdown 正文（status 见 PhaseStatus；图示内联 ```mermaid 码块） */
 export interface Chapter {
   title: string;
   summary: string;
-  mainKnowledge: MainKnowledge;
-  deepDives: DeepDive[];
+  /** 章节 markdown 正文全文；空串表示有意义的空正文（骨架章 / 生成中） */
+  contentMd: string;
   status?: PhaseStatus;
 }
 

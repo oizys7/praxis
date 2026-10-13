@@ -1,12 +1,13 @@
-"""mock.py 两级确定性生成测试：outline 骨架 + 单阶段扩展。
+"""mock.py 两级确定性生成测试：outline 骨架 + markdown 章节。
 
 build_mock_outline / build_mock_phase 均为 camelCase dict 进出（与 schemas
-模型 model_dump(by_alias=True) 形状一致，但 mock 不 import schemas），
-拼出的整计划必须能通过 validate_plan 零 pending（裁决 2）。
+模型 model_dump(by_alias=True) 形状一致，但 mock 不 import schemas）；
+每章唯一形状 {title, summary, contentMd}，contentMd 为确定性 markdown
+（章节与「深入剖析」节均 ≥1000 字、内联 mermaid 码块，同输入同输出）。
+章节校验规则的「零 pending」契约随 validators 重写（任务 19）同步对齐。
 """
 
-from app.mock import build_mock_outline, build_mock_phase
-from app.validators import validate_plan
+from app.mock import build_mock_chapter, build_mock_outline, build_mock_phase
 
 # camelCase 请求，形状等同 PlanRequest.model_dump(by_alias=True)
 REQUEST = {
@@ -18,25 +19,7 @@ REQUEST = {
     "background": "写过一些脚本",
 }
 
-
-def _assemble_plan(request: dict) -> dict:
-    """按两级接口拼装完整 StudyPlan dict（与 mock shim 同构，供校验器消费）。"""
-    outline = build_mock_outline(request)
-    return {
-        "title": outline["title"],
-        "overview": outline["overview"],
-        "estimatedTotalHours": outline["estimatedTotalHours"],
-        "phases": [
-            build_mock_phase(request, phase_outline, index)
-            for index, phase_outline in enumerate(outline["phases"])
-        ],
-        "resources": outline["resources"],
-    }
-
-
-# ---------------------------------------------------------------------------
-# 步骤 1 用例：test_mock_outline_shape
-# ---------------------------------------------------------------------------
+_MIN_CHARS = 1000
 
 
 def test_mock_outline_shape():
@@ -52,7 +35,7 @@ def test_mock_outline_shape():
         assert {"name", "weekRange", "objectives", "chapterTitles", "projectBrief"} <= (
             set(phase)
         )
-        assert len(phase["chapterTitles"]) == 2, "每阶段章节标题恰好 2 条"
+        assert len(phase["chapterTitles"]) == 2, "每阶段章节标题恻好 2 条"
         assert phase["objectives"], "阶段目标非空"
         assert phase["projectBrief"].strip(), "项目一句话简介非空"
 
@@ -66,67 +49,59 @@ def test_mock_outline_shape():
         assert {"title", "type", "note"} <= set(resource)
 
 
-# ---------------------------------------------------------------------------
-# 步骤 1 用例：test_mock_phase_passes_validator
-# ---------------------------------------------------------------------------
+def _assert_markdown_chapter(chapter: dict, phase_outline: dict) -> None:
+    """单章 markdown 形状断言：唯一三字段 + 字数 + 码块 + 深入剖析节。"""
+    assert set(chapter) == {"title", "summary", "contentMd"}, (
+        f"Chapter 唯一形状 {{title, summary, contentMd}}，实际：{set(chapter)}"
+    )
+    assert chapter["title"] in phase_outline["chapterTitles"]
+    assert chapter["summary"].strip()
+
+    content = chapter["contentMd"]
+    assert len(content.strip()) >= _MIN_CHARS, (
+        f"章节正文应 ≥{_MIN_CHARS} 字，实际 {len(content.strip())} 字"
+    )
+    # 标题节 + 知识点段落（### 段落式讲解）
+    assert content.lstrip().startswith("## "), "正文应以章节标题开头"
+    assert "### " in content, "知识点必须段落式讲解（### 小节）"
+    # 图示：恰好一个 mermaid 码块，非空正文且 flowchart 起头
+    blocks = [seg for seg in content.split("```") if seg.startswith("mermaid")]
+    assert len(blocks) == 1, "正文应恰好内联一个 mermaid 码块"
+    source = blocks[0][len("mermaid") :].strip()
+    assert source.startswith("flowchart "), "码块应为 flowchart 起头"
+    # 深入剖析节：单独托底 ≥1000 字（极限输入下也达标）
+    dive = content.split("深入剖析")[-1]
+    assert len(dive.strip()) >= _MIN_CHARS, (
+        f"深入剖析节应 ≥{_MIN_CHARS} 字，实际 {len(dive.strip())} 字"
+    )
 
 
-def test_mock_phase_passes_validator():
+def test_mock_phase_chapters_markdown_shape():
     outline = build_mock_outline(REQUEST)
-    weekly_hours = REQUEST["weeklyHours"]
-    weeks = REQUEST["weeks"]
     for index, phase_outline in enumerate(outline["phases"]):
         phase = build_mock_phase(REQUEST, phase_outline, index)
 
-        # 章节内容契约：deepDives ≥600 字、concepts ≥3、knowledgePoints ≥4、
-        # diagrams 含一段 flowchart TD 起头的 mermaid
         assert len(phase["chapters"]) == 2, "每阶段 2 个章节"
         for chapter in phase["chapters"]:
-            assert chapter["title"] in phase_outline["chapterTitles"]
-            assert chapter["deepDives"], "每章至少 1 篇深入内容"
-            for dive in chapter["deepDives"]:
-                assert len(dive["content"].strip()) >= 600, (
-                    f"深入内容应 ≥600 字，实际 {len(dive['content'].strip())} 字"
-                )
-            knowledge = chapter["mainKnowledge"]
-            assert len(knowledge["concepts"]) >= 3
-            assert len(knowledge["knowledgePoints"]) >= 4
-            mermaid_sources = [d["mermaid"] for d in knowledge["diagrams"]]
-            assert any(
-                source.lstrip().startswith("flowchart TD")
-                for source in mermaid_sources
-            ), "至少一段 flowchart TD 起头的 mermaid"
-
-        # 单阶段放入最小计划容器，必须过校验器零 pending
-        plan = {
-            "title": outline["title"],
-            "overview": outline["overview"],
-            "estimatedTotalHours": weekly_hours * weeks,
-            "phases": [phase],
-            "resources": outline["resources"],
-        }
-        issues, pending = validate_plan(plan, weekly_hours, weeks)
-        assert issues == [], f"index={index} 单阶段应零 issue，实际：{issues}"
-        assert pending == [], f"index={index} 单阶段应零 pending，实际：{pending}"
+            _assert_markdown_chapter(chapter, phase_outline)
 
 
-# ---------------------------------------------------------------------------
-# 补充用例：整计划零 pending（裁决 2 核心断言）
-# ---------------------------------------------------------------------------
+def test_mock_chapter_single_chapter_markdown_shape():
+    """单章重生成路径：与全阶段产出的同章内容一致（复用同一构造器）。"""
+    outline = build_mock_outline(REQUEST)
+    phase_outline = outline["phases"][2]
+    whole = build_mock_phase(REQUEST, phase_outline, 2)["chapters"][1]
+    single = build_mock_chapter(REQUEST, phase_outline, 1)
+    assert single == whole, "单章重生成与整阶段展开产出必须一致"
 
 
-def test_full_plan_zero_pending():
-    plan = _assemble_plan(REQUEST)
-    issues, pending = validate_plan(
-        plan, REQUEST["weeklyHours"], REQUEST["weeks"]
-    )
-    assert issues == [], f"整计划应零 issue，实际：{issues}"
-    assert pending == []
-
-
-# ---------------------------------------------------------------------------
-# 补充用例：三套项目模板字段完整性（含 index ≥3 循环取模板的防御）
-# ---------------------------------------------------------------------------
+def test_mock_markdown_extreme_inputs_still_long():
+    """极限输入（极短 goal / 无兴趣无基础 / 极少周数）字数仍达标。"""
+    extreme = {"goal": "abc", "weeklyHours": 1, "weeks": 1}
+    outline = build_mock_outline(extreme)
+    phase = build_mock_phase(extreme, outline["phases"][0], 0)
+    for chapter in phase["chapters"]:
+        assert len(chapter["contentMd"].strip()) >= _MIN_CHARS
 
 
 def test_project_templates_complete():
@@ -158,6 +133,17 @@ def test_project_templates_complete():
 
 
 def test_mock_generation_deterministic():
-    """同输入两次生成结果完全一致（确定性契约）。"""
+    """同输入两次生成结果完全一致（确定性契约，含 markdown 正文）。"""
     assert build_mock_outline(REQUEST) == build_mock_outline(REQUEST)
-    assert _assemble_plan(REQUEST) == _assemble_plan(REQUEST)
+    outline = build_mock_outline(REQUEST)
+    phases = [
+        build_mock_phase(REQUEST, phase_outline, index)
+        for index, phase_outline in enumerate(outline["phases"])
+    ]
+    assert phases == [
+        build_mock_phase(REQUEST, phase_outline, index)
+        for index, phase_outline in enumerate(outline["phases"])
+    ]
+    assert build_mock_chapter(REQUEST, outline["phases"][0], 0) == build_mock_chapter(
+        REQUEST, outline["phases"][0], 0
+    )
