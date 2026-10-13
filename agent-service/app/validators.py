@@ -67,7 +67,7 @@ def validate_plan(
 
 
 def _check_phase(phase: dict, index: int, issues: list[str], failed: set[int]) -> None:
-    """单阶段校验：章节 / 深入内容 / 主要知识 / 项目 / 目标（规则 2-7）。"""
+    """单阶段校验：章节正文 / 项目 / 目标（markdown 化后的规则 2-6）。"""
     label = f"第 {index + 1} 阶段「{phase.get('name', '')}」"
 
     chapters = phase.get("chapters") or []

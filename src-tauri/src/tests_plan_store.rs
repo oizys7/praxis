@@ -69,6 +69,60 @@ fn sample_phase(name: &str, chapter_titles: &[&str]) -> StudyPhase {
     }
 }
 
+/// 阶段级定价（审查 P2 修复）：upsert_phase 含空正文章节 → 阶段 status 保持
+/// pending（重生成入口不丢失）；整阶段正文齐备 → 阶段 complete 联动翻牌
+#[sqlx::test]
+#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+async fn test_upsert_phase_status_derived_from_chapter_content(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+
+    plan_store::seed_outline(&pool, plan_id, &sample_outline(&["阶段甲"], &[2]), &[])
+        .await
+        .unwrap();
+
+    // 阶段含一个空正文章 → 阶段保持 pending（不得误翻牌 complete）
+    let mut mixed = sample_phase("阶段甲", &["章A", "章B"]);
+    mixed.chapters[1].content_md = "   ".to_string();
+    plan_store::upsert_phase(&pool, plan_id, 0, &mixed)
+        .await
+        .expect("upsert_phase 混内容阶段失败");
+    assert_eq!(
+        phase_status(&pool, plan_id, 0).await,
+        Some("pending".into()),
+        "存在空正文章节，阶段不得置 complete"
+    );
+    assert_eq!(
+        chapter_status(&pool, plan_id, 0, 1).await,
+        Some("failed".into())
+    );
+
+    // 阶段级重生成（回炉）后全部正文齐备 → 阶段联动翻牌 complete
+    plan_store::upsert_phase(&pool, plan_id, 0, &sample_phase("阶段甲", &["章A", "章B"]))
+        .await
+        .expect("upsert_phase 回炉失败");
+    assert_eq!(
+        phase_status(&pool, plan_id, 0).await,
+        Some("complete".into()),
+        "全章节正文齐备后阶段应翻牌 complete"
+    );
+
+    // 边界：无章节的阶段不得置 complete（全(...) 对空集误真）
+    plan_store::seed_outline(&pool, plan_id, &sample_outline(&["阶段乙"], &[2]), &[])
+        .await
+        .unwrap();
+    let mut bare = sample_phase("阶段乙", &[]);
+    bare.chapters.clear();
+    plan_store::upsert_phase(&pool, plan_id, 1, &bare)
+        .await
+        .expect("upsert_phase 无章节阶段失败");
+    assert_eq!(
+        phase_status(&pool, plan_id, 1).await,
+        Some("pending".into()),
+        "无章节阶段不得翻牌 complete"
+    );
+}
+
 /// 建表（与生产首连同一套幂等 DDL）
 async fn prepare_schema(pool: &PgPool) {
     db::ensure_schema(pool).await.expect("ensure_schema 失败");

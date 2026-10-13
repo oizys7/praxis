@@ -8,7 +8,7 @@
 //!   delete_plan_full，以及 get_plan 新路径的多表重组读取（load_study_plan +
 //!   纯函数 reassemble_plan）与重生成上下文读取（load_plan_request_meta / load_plan_outline）
 //!
-//! 六表 DDL（plans/phases/projects/chapters/resources）与两个演进列
+//! 五表 DDL（plans/phases/projects/chapters/resources）与两个演进列
 //! （status、chapters.content_md）逐字定义在 db_ddl，首连幂等执行。
 
 use sqlx::{PgPool, Row, Transaction};
@@ -80,8 +80,10 @@ pub async fn update_outline_meta(
 /// 阶段级 upsert（单事务）：写入/更新 (plan_id, idx) 的 phases 行后，整体替换其
 /// chapters（DELETE 后重插，旧章节行不残留）与 project。
 /// 同一阶段回炉重写时旧数据不残留；事务保证半途失败不留脏数据。
-/// 阶段行入库即置 status='complete'（骨架 pending 行一并翻牌）；章节行 status
-/// 由内容定价（见 chapter_row_status）：正文空仍落 failed，前端可重生成。
+/// 阶段行 status 与章节定价联动（与 upsert_chapter 的 NOT EXISTS 翻牌语义对称）：
+/// 仅当存在章节且每章正文非空时置 'complete'，否则保持/回落 'pending'
+/// （正文空的阶段保持可重生成入口）；章节行 status 由内容定价（见
+/// chapter_row_status）：正文空仍落 failed，前端可重生成。
 /// 消费方：commands::generate_plan（phase 事件到达时）/ regenerate_phase（任务 15）。
 pub async fn upsert_phase(
     pool: &PgPool,
@@ -94,18 +96,30 @@ pub async fn upsert_phase(
         .await
         .map_err(|e| fail("开启阶段写入事务", e))?;
 
+    // 0. 阶段状态由本章正文定价派生：有章节且每章正文非空才 complete
+    let phase_status = if !phase.chapters.is_empty()
+        && phase
+            .chapters
+            .iter()
+            .all(|c| !c.content_md.trim().is_empty())
+    {
+        "complete"
+    } else {
+        "pending"
+    };
+
     // 1. phases 行：冲突即更新（UNIQUE (plan_id, idx)），RETURNING 拿物理行 id；
-    //    status='complete' 在 INSERT 与 DO UPDATE 双路都带上（骨架 pending 行在此翻牌）
+    //    status 用绑定参数透传（INSERT 与 DO UPDATE 双路同值，骨架 pending 行在此翻牌）
     let phase_id: Uuid = sqlx::query_scalar(
         "INSERT INTO phases (plan_id, idx, name, week_range, objectives, practice, assignments, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'complete')
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT (plan_id, idx) DO UPDATE SET
              name = EXCLUDED.name,
              week_range = EXCLUDED.week_range,
              objectives = EXCLUDED.objectives,
              practice = EXCLUDED.practice,
              assignments = EXCLUDED.assignments,
-             status = 'complete'
+             status = EXCLUDED.status
          RETURNING id",
     )
     .bind(plan_id)
@@ -115,11 +129,12 @@ pub async fn upsert_phase(
     .bind(sqlx::types::Json(&phase.objectives))
     .bind(sqlx::types::Json(&phase.practice))
     .bind(sqlx::types::Json(&phase.assignments))
+    .bind(phase_status)
     .fetch_one(&mut *tx)
     .await
     .map_err(|e| fail("写入阶段", e))?;
 
-    // 2. 整体替换子数据：先清 project 与 chapters（chapters 的四张子表靠外键级联清空）
+    // 2. 整体替换子数据：先清 project 与 chapters（旧章节行一并不残留）
     sqlx::query("DELETE FROM projects WHERE phase_id = $1")
         .bind(phase_id)
         .execute(&mut *tx)
