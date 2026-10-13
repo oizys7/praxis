@@ -1,8 +1,8 @@
 //! plan_store 集成测试：#[sqlx::test] 在 DATABASE_URL 指向的 PostgreSQL 实例上
 //! 为每个用例创建独立临时库（用例结束自动删除），验证规范化多表存储的真实行为。
 //!
-//! 运行方式（需本机可连的 PostgreSQL，连接用户需有建库权限）：
-//!   DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres cargo test
+//! 运行方式（需本机可连的 PostgreSQL，连接用户需有建库权限；用例已标 #[ignore]，
+//!   DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres cargo test -- --ignored
 //! 临时库不承载业务数据，与设置页配置的云端库互不相干。
 
 use sqlx::PgPool;
