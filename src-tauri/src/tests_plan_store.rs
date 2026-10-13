@@ -106,6 +106,7 @@ fn sample_outline(phase_names: &[&str], chapter_counts: &[usize]) -> Vec<Outline
             name: (*name).into(),
             week_range: "第 1-2 周".into(),
             chapter_titles: (0..*n).map(|i| format!("{name}·章{i}")).collect(),
+            project_brief: None,
         })
         .collect()
 }

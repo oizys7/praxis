@@ -24,9 +24,12 @@ fn main() {
     tauri::Builder::default()
         // 注册前端可 invoke 的命令：
         // - generate_plan：转发学习计划生成请求到 Python Agent 服务
+        // - regenerate_phase / regenerate_chapter：阶段/章节级重生成（任务 15）
         // - ping_agent：健康检查，用于前端展示服务在线状态
         .invoke_handler(tauri::generate_handler![
             commands::generate_plan,
+            commands::regenerate_phase,
+            commands::regenerate_chapter,
             commands::ping_agent,
             commands::get_settings,
             commands::save_settings,

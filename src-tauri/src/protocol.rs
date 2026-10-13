@@ -7,7 +7,10 @@
 use serde::{Deserialize, Serialize};
 
 /// 大纲阶段载荷（outline 事件携带）：仅骨架级三字段（计划 §3：
-/// objectives/project_brief 不进事件，保持事件轻），seed_outline 按此播种骨架行
+/// objectives/project_brief 不进事件，保持事件轻），seed_outline 按此播种骨架行。
+/// project_brief 仅 regenerate_chapter 的重建请求载荷（RegenOutline）携带（任务 15
+/// 裁定：单章上下文读既有 project 行 name 充当简介）；outline 事件恒 None 且
+/// 序列化跳过，wire 只增不改。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct OutlinePhasePayload {
@@ -17,6 +20,40 @@ pub struct OutlinePhasePayload {
     pub week_range: String,
     #[serde(default)]
     pub chapter_titles: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_brief: Option<String>,
+}
+
+/// regenerate 端点的出站请求（Rust -> Python，POST /api/regenerate/stream；
+/// 镜像 agent-service/app/schemas.py::RegenRequest）。
+/// 仅 Serialize：Rust 是唯一发送方，不经 IPC 反序列化。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegenRequest {
+    /// 原始计划生成请求（plans 七字段回填，逐字段与原请求一致）
+    pub request: PlanRequest,
+    /// 计划大纲骨架（同一次生成的产出骨架重建）
+    pub outline: RegenOutline,
+    /// 目标阶段索引（0-based）
+    pub phase_index: u32,
+    /// 目标章节索引（0-based）；None 表示全阶段重生成
+    pub chapter_index: Option<u32>,
+}
+
+/// 重建的计划大纲骨架（wire 对齐 agent-service/app/schemas.py::PlanOutline：
+/// PhaseOutline 的 objectives/projectBrief 有缺省值，未携带时 Python 侧自动补齐）。
+/// resources regenerate 链路不使用，恒为空列表。
+#[derive(Debug, Clone, Serialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RegenOutline {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub overview: String,
+    #[serde(default)]
+    pub estimated_total_hours: u32,
+    #[serde(default)]
+    pub phases: Vec<OutlinePhasePayload>,
 }
 
 /// 学习计划生成请求（前端 -> Rust -> Python）
@@ -319,11 +356,13 @@ pub enum PlanProgressEvent {
 }
 
 /// Python 流式端点的入站事件模型（消费方向：Python -> Rust，NDJSON 逐行）。
-/// 镜像 agent-service/app/main.py `_stream_plan_events` 的三种事件；与
-/// [PlanProgressEvent]（Rust -> 前端出站）是两个方向的独立模型：
+/// 镜像 agent-service/app/main.py `_stream_plan_events` / `_stream_regen_events`
+/// 的事件集；与 [PlanProgressEvent]（Rust -> 前端出站）是两个方向的独立模型：
 /// - {"type":"outline","phaseCount":N,"title":"…"}：骨架到达时 1 条；
 /// - {"type":"phase","index":i,"phase":{…camelCase 阶段…}}：每阶段 1 条，
 ///   可乱序，回炉重生成时同 index 重复推送（覆盖语义）；
+/// - {"type":"chapter","index":c,"phaseIndex":i,"chapter":{…}}：单章重生成
+///   完成 1 条（/api/regenerate/stream chapterIndex 指定路径，任务 14）；
 /// - {"type":"done","response":{…统一包络…}}：终态，必为最后一行。
 #[derive(Debug, Clone, Deserialize)]
 #[serde(
@@ -344,6 +383,13 @@ pub enum StreamEvent {
     },
     /// 单个阶段扩展完成
     Phase { index: u32, phase: StudyPhase },
+    /// 单章重生成完成（/api/regenerate/stream 的 chapterIndex 指定路径）：
+    /// index 为章节索引、phase_index 为所属阶段索引（0-based）
+    Chapter {
+        index: u32,
+        phase_index: u32,
+        chapter: ChapterDef,
+    },
     /// 终态：统一包络（plan / clarification / error），必为最后一行
     Done { response: PlanResponse },
 }
@@ -511,6 +557,7 @@ mod tests {
             name: "阶段一".into(),
             week_range: "第 1-4 周".into(),
             chapter_titles: vec!["甲".into()],
+            project_brief: None,
         })
         .unwrap();
         assert_eq!(value["chapterTitles"], serde_json::json!(["甲"]));
@@ -560,6 +607,91 @@ mod tests {
         }
     }
 
+    /// 单章重生成事件（任务 14 端点 chapterIndex 指定路径）：
+    /// phaseIndex 字段走 camelCase，chapter 为 camelCase ChapterDef
+    #[test]
+    fn parse_ndjson_line_accepts_chapter_event() {
+        let event = parse_ndjson_line(
+            r#"{"type":"chapter","index":1,"phaseIndex":0,"chapter":{"title":"所有权与借用","summary":"深入 Rust 内存模型","mainKnowledge":{"concepts":[{"name":"所有权","definition":"值在同一时刻只有唯一所有者"}]},"deepDives":[{"topic":"Drop","angle":"RAII","content":"长文"}]}}"#,
+        )
+        .expect("chapter 事件行应解析成功");
+        match event {
+            StreamEvent::Chapter {
+                index,
+                phase_index,
+                chapter,
+            } => {
+                assert_eq!(index, 1);
+                assert_eq!(phase_index, 0);
+                assert_eq!(chapter.title, "所有权与借用");
+                assert_eq!(chapter.main_knowledge.concepts[0].name, "所有权");
+                assert_eq!(chapter.deep_dives[0].topic, "Drop");
+            }
+            other => panic!("应为 Chapter 事件，实际：{other:?}"),
+        }
+    }
+
+    /// RegenRequest 出站 wire：request/outline 走 camelCase（phaseIndex/
+    /// chapterIndex 字段名 + outline 骨架字段），单章 projectBrief 序列化进载荷
+    #[test]
+    fn regen_request_serializes_camel_case() {
+        let body = RegenRequest {
+            request: PlanRequest {
+                goal: "学 Rust".into(),
+                level: "intermediate".into(),
+                weekly_hours: 12,
+                weeks: 8,
+                interests: vec!["并发".into()],
+                background: "写过 Go".into(),
+            },
+            outline: RegenOutline {
+                title: "T".into(),
+                overview: "O".into(),
+                estimated_total_hours: 96,
+                phases: vec![OutlinePhasePayload {
+                    name: "阶段一".into(),
+                    week_range: "第 1-2 周".into(),
+                    chapter_titles: vec!["甲章".into(), "乙章".into()],
+                    project_brief: Some("做章节笔记站".into()),
+                }],
+            },
+            phase_index: 0,
+            chapter_index: Some(1),
+        };
+        let value = serde_json::to_value(&body).unwrap();
+        assert_eq!(value["request"]["weeklyHours"], 12);
+        assert_eq!(value["request"]["level"], "intermediate");
+        assert_eq!(value["outline"]["estimatedTotalHours"], 96);
+        assert_eq!(
+            value["outline"]["phases"][0]["chapterTitles"],
+            serde_json::json!(["甲章", "乙章"])
+        );
+        assert_eq!(
+            value["outline"]["phases"][0]["projectBrief"],
+            "做章节笔记站"
+        );
+        assert_eq!(value["phaseIndex"], 0);
+        assert_eq!(value["chapterIndex"], 1);
+
+        // 全阶段重生成：chapterIndex 缺省为 null（Python 侧 int | None 收 None）
+        let phase_regen = serde_json::to_value(RegenRequest {
+            chapter_index: None,
+            ..body
+        })
+        .unwrap();
+        assert!(phase_regen["chapterIndex"].is_null());
+        // projectBrief 缺省（regenerate_phase 裁定传空上下文）：不序列化进载荷
+        let no_brief = serde_json::to_value(RegenOutline {
+            phases: vec![OutlinePhasePayload {
+                project_brief: None,
+                ..OutlinePhasePayload::default()
+            }],
+            ..RegenOutline::default()
+        })
+        .unwrap();
+        assert!(no_brief["phases"][0].get("projectBrief").is_none());
+    }
+
     /// 空行 / 坏 JSON / 未知 type 一律 None（调用方告警跳过，不中断流）
     #[test]
     fn parse_ndjson_line_rejects_junk_lines() {
@@ -602,6 +734,7 @@ mod tests {
                 name: "阶段一".into(),
                 week_range: "第 1-2 周".into(),
                 chapter_titles: vec!["甲章".into()],
+                project_brief: None,
             }]),
         };
         let value = serde_json::to_value(&outline).unwrap();

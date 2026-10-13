@@ -242,7 +242,6 @@ pub async fn seed_outline(
 ///   置 complete（状态机推进与数据写入原子）。
 ///
 /// 消费方：regenerate_chapter（任务 15）。
-#[allow(dead_code)]
 pub async fn upsert_chapter(
     pool: &PgPool,
     plan_id: Uuid,
@@ -291,7 +290,6 @@ pub async fn upsert_chapter(
 /// 阶段重置为 pending（regenerate_phase 开始时调用，前端即时转「生成中」）；
 /// 阶段内容（chapters）不动，重生成成功后由 upsert_phase 整体替换。
 /// 消费方：regenerate_phase（任务 15）。
-#[allow(dead_code)]
 pub async fn mark_phase_pending(
     pool: &PgPool,
     plan_id: Uuid,
@@ -310,7 +308,6 @@ pub async fn mark_phase_pending(
 /// 章节重置为 pending（regenerate_chapter 开始时调用）；注意同时把所属阶段回置
 /// pending——单章重生成会让阶段显示「生成中」，完成后由 upsert_chapter 阶段联动翻牌。
 /// 消费方：regenerate_chapter（任务 15）。
-#[allow(dead_code)]
 pub async fn mark_chapter_pending(
     pool: &PgPool,
     plan_id: Uuid,
@@ -342,7 +339,6 @@ pub async fn mark_chapter_pending(
 /// 失败收尾（children 位）：phases/chapters 中 status='pending' 的行置 failed；
 /// complete 永不被 failed 覆盖（状态机不变量：失败收尾只动 pending）。
 /// 消费方：finalize_plan(status=failed) / regenerate 失败路径（任务 15）。
-#[allow(dead_code)]
 pub async fn finalize_failed(pool: &PgPool, plan_id: Uuid) -> Result<(), AgentError> {
     sqlx::query("UPDATE phases SET status = 'failed' WHERE plan_id = $1 AND status = 'pending'")
         .bind(plan_id)
@@ -397,6 +393,24 @@ pub async fn finalize_plan(
     Ok(())
 }
 
+/// regenerate 成功收尾（任务 15 裁定的守卫语义）：done(plan) 后把计划行翻
+/// complete，但 failed 行不强推——单阶段/单章成功不改变计划级 complete 语义，
+/// 计划级收尾由后续全阶段/全章节重生成推进（已知简化，前端不依赖计划行状态展示）。
+/// generating 行（重生成期不应出现，防御性）与 complete 行（幂等重写）同样翻 complete。
+/// 消费方：commands regenerate 双命令的 done(plan) 路径（任务 15）。
+pub async fn finalize_regen_complete(pool: &PgPool, plan_id: Uuid) -> Result<(), AgentError> {
+    sqlx::query(
+        "UPDATE plans SET status = 'complete', updated_at = now()
+         WHERE id = $1 AND status <> 'failed'",
+    )
+    .bind(plan_id)
+    .execute(pool)
+    .await
+    .map_err(|e| fail("收尾重生成计划状态", e))?;
+    info!(%plan_id, "重生成计划行已按守卫语义收尾（failed 行保持）");
+    Ok(())
+}
+
 /// 删除整份计划（硬删除）：子表全部经外键 ON DELETE CASCADE 级联清空；
 /// id 不存在视为已删除，幂等成功。
 /// 消费方：commands::generate_plan（clarification 终态删 generating 行）。
@@ -439,7 +453,6 @@ pub struct PlanOutlineRow {
 /// 读取重建 PlanRequest 所需的七字段（goal/level/weeks/weeklyHours/interests/
 /// background 六字段本体，title 由 Plans 行同表可读不入本结构）；
 /// 计划不存在时返回 None。消费方：regenerate 编排（任务 15）。
-#[allow(dead_code)]
 pub async fn load_plan_request_meta(
     pool: &PgPool,
     plan_id: Uuid,
@@ -467,11 +480,12 @@ pub async fn load_plan_request_meta(
     }))
 }
 
-/// 读取计划大纲骨架（PlanOutline 形）：plans 元信息 + phases（name/weekRange）
-/// + 各阶段 chapters 标题列表（按 idx 升序）。计划不存在时返回 None。
+/// 读取计划大纲骨架（PlanOutline 形）：plans 元信息与 phases（name/weekRange）
+/// 及各阶段 chapters 标题列表（按 idx 升序）。计划不存在时返回 None。
+/// objectives / project_brief 不在骨架：大纲事件也不携带——重生成裁定，
+/// 全阶段重生成自产 objectives、projectBrief 传空；单章重生成的简介另读 project 行。
 ///
 /// 消费方：regenerate 编排（任务 15）。
-#[allow(dead_code)]
 pub async fn load_plan_outline(
     pool: &PgPool,
     plan_id: Uuid,
@@ -509,6 +523,7 @@ pub async fn load_plan_outline(
             name: prow.try_get("name").map_err(db_err)?,
             week_range: prow.try_get("week_range").map_err(db_err)?,
             chapter_titles: titles,
+            project_brief: None,
         });
     }
 
@@ -518,6 +533,26 @@ pub async fn load_plan_outline(
         estimated_total_hours: hours.max(0) as u32,
         phases,
     }))
+}
+
+/// 读取目标阶段的既有项目名（单章重生成的 projectBrief 上下文：任务 15 裁定
+/// ——读 project 行 name 充当简介，若有；无项目行 / 阶段不存在返回 None）。
+/// 消费方：regenerate_chapter（任务 15）。
+pub async fn load_phase_project_brief(
+    pool: &PgPool,
+    plan_id: Uuid,
+    phase_index: u32,
+) -> Result<Option<String>, AgentError> {
+    sqlx::query_scalar(
+        "SELECT pr.name FROM projects pr
+         JOIN phases p ON pr.phase_id = p.id
+         WHERE p.plan_id = $1 AND p.idx = $2",
+    )
+    .bind(plan_id)
+    .bind(i32::try_from(phase_index).unwrap_or(0))
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| fail("查询阶段项目简介", e))
 }
 
 // ---------------------------------------------------------------------------
