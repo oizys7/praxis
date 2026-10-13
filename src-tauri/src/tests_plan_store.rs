@@ -707,3 +707,84 @@ async fn test_plan_outline_roundtrip(pool: PgPool) {
         .unwrap()
         .is_none());
 }
+
+/// 升级路径回归（审查 P1）：ADD COLUMN status DEFAULT 'pending' 会把升级前
+/// 已有数据的行误标 pending——ensure_schema 的两条兜底 UPDATE 必须把它们修正。
+/// 真实遗留形态（骨架 seed 建制之前）：旧行全部为 upsert 写入——阶段必有章节行，
+/// 章节一般有子数据，但子表全空的章节理论可能（LLM 返回空 mainKnowledge）。
+/// 兜底语义：阶段有章节行→complete；章节有子数据→complete；子表全空的章节保持
+/// pending（新骨架生成的 pending 空行同样不被兜底误翻）。
+#[sqlx::test]
+#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+async fn test_legacy_rows_backfilled_to_complete_on_upgrade(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+
+    // 直接 upsert 两阶段（升级前语义：无骨架行）：阶段甲两章有数据；阶段乙一章子表全空
+    let phase_a = sample_phase("阶段甲", &["章甲内", "章乙内"]);
+    plan_store::upsert_phase(&pool, plan_id, 0, &phase_a)
+        .await
+        .expect("upsert_phase 失败");
+    let mut empty_chapter = sample_chapter("章空架子");
+    empty_chapter.main_knowledge.concepts.clear();
+    empty_chapter.main_knowledge.knowledge_points.clear();
+    empty_chapter.main_knowledge.diagrams.clear();
+    empty_chapter.deep_dives.clear();
+    let phase_b = StudyPhase {
+        name: "阶段乙".into(),
+        week_range: "第 1-2 周".into(),
+        objectives: vec![],
+        chapters: vec![empty_chapter],
+        theory: vec![],
+        practice: vec![],
+        assignments: vec![],
+        status: None,
+        project: PhaseProject {
+            name: "阶段乙·项目".into(),
+            description: String::new(),
+            background: String::new(),
+            steps: vec![],
+            estimated_hours: 0,
+            acceptance_criteria: vec![],
+        },
+    };
+    plan_store::upsert_phase(&pool, plan_id, 1, &phase_b)
+        .await
+        .expect("upsert_phase 失败");
+
+    // 造升级前旧形态：抹掉 status 列
+    sqlx::query("ALTER TABLE phases DROP COLUMN status")
+        .execute(&pool)
+        .await
+        .expect("DROP phases.status 失败");
+    sqlx::query("ALTER TABLE chapters DROP COLUMN status")
+        .execute(&pool)
+        .await
+        .expect("DROP chapters.status 失败");
+
+    // 重跑首连 DDL：ADD COLUMN（默认 pending）+ 兜底 UPDATE
+    prepare_schema(&pool).await;
+
+    // 两阶段均有章节行 → 兜底回 complete
+    assert_eq!(
+        phase_status(&pool, plan_id, 0).await.as_deref(),
+        Some("complete"),
+        "升级前已有内容的阶段应被兜底修正为 complete"
+    );
+    assert_eq!(
+        phase_status(&pool, plan_id, 1).await.as_deref(),
+        Some("complete"),
+        "有章节行的遗留阶段应被兜底修正为 complete"
+    );
+    // 有子数据的章节 → complete；子表全空的章节 → 保持 pending
+    assert_eq!(
+        chapter_status(&pool, plan_id, 0, 0).await.as_deref(),
+        Some("complete"),
+        "有子表数据的章节应被兜底修正为 complete"
+    );
+    assert_eq!(
+        chapter_status(&pool, plan_id, 1, 0).await.as_deref(),
+        Some("pending"),
+        "子表全空的章节不应被兜底误翻 complete"
+    );
+}
