@@ -99,7 +99,7 @@ const WS_RECONNECT_BACKOFF_SECS: &[u64] = &[1, 2, 5, 10, 10, 10, 10];
 /// 编排约定：
 /// - 入库前置：DB 可用则预置 generating 行（终态语义见 settle_terminal）；
 ///   DB 不可用不阻塞生成，仅经 StorageIssue 事件提示；
-/// - 提交失败（409 容量不足 / 422 参数校验 / 网络层）：删除预置行
+/// - 提交失败（429 容量不足 / 422 参数校验 / 网络层）：删除预置行
 ///   （不会有任何生成事件，避免僵尸 generating 行）+ Err 归一透传；
 /// - 生成所有权在 Python 后台任务：断线重连按游标补齐（见 GenerationConsumer），
 ///   Rust 重启后未收终态的行由 main.rs setup 启动清扫统一翻 failed。
@@ -294,16 +294,25 @@ trait WsEventSink {
 type WsFuture<'a> = Pin<Box<dyn Future<Output = Result<bool, AgentError>> + Send + 'a>>;
 
 /// 单条 WS 连接的读取循环：逐消息解析信封（坏消息告警跳过，不中断）→ 分派
-/// sink；收到 done（sink 返回 true）即收束。返回已消费的最大 seq；连接断开
-/// （Close / EOF / 协议错误）且未收终态时正常返回（由调用方决定重连）。
+/// sink；收到 done（sink 返回 true）即收束。返回（已消费的最大 seq, 可选错误）：
+/// 出错路径也带出已读 seq（审查 P2）：重连回放会高于真实消费点，但幂等兜底
+/// 前端不脏——代价仅为 Outline/PhaseDone 进度事件重复推送。
 async fn read_ws_events<S: WsEventSink>(
     mut stream: WsStream,
     req_id: &str,
     sink: &mut S,
-) -> Result<u64, AgentError> {
+) -> (u64, Option<AgentError>) {
     let mut last_seq: u64 = 0;
     while let Some(msg) = ws_next(&mut stream).await {
-        let msg = msg.map_err(|e| AgentError::Service(format!("事件通道读取失败：{e}")))?;
+        let msg = match msg {
+            Ok(m) => m,
+            Err(e) => {
+                return (
+                    last_seq,
+                    Some(AgentError::Service(format!("事件通道读取失败：{e}"))),
+                );
+            }
+        };
         let text = match msg {
             Message::Text(t) => t.as_str().to_owned(),
             Message::Binary(b) => String::from_utf8_lossy(&b).into_owned(),
@@ -319,11 +328,13 @@ async fn read_ws_events<S: WsEventSink>(
             continue; // 坏消息不中断消费
         };
         last_seq = last_seq.max(envelope.seq);
-        if sink.handle_event(envelope.seq, envelope.event).await? {
-            return Ok(last_seq); // 终态已收，正常收束
+        match sink.handle_event(envelope.seq, envelope.event).await {
+            Ok(true) => return (last_seq, None), // 终态已收，正常收束
+            Ok(false) => {}
+            Err(e) => return (last_seq, Some(e)),
         }
     }
-    Ok(last_seq)
+    (last_seq, None)
 }
 
 /// futures-util StreamExt::next 的窄包装：把 StreamExt 引入范围限制在这一个
@@ -432,19 +443,17 @@ impl GenerationConsumer {
                 Ok(stream) => {
                     // req_id 先取出克隆，避免与 sink 的 &mut self 借用冲突
                     let req_id = self.req_id.clone();
-                    let seq = read_ws_events(stream, &req_id, &mut self).await;
-                    match seq {
-                        Ok(seq) => {
-                            last_consumed = last_consumed.max(seq);
-                            if self.terminal {
-                                return Ok(()); // 终态已收尾（done 分派内完成）
-                            }
-                            // 连接断开但未收终态：继续重试循环
-                        }
-                        Err(e) => {
-                            warn!(req_id = %self.req_id, task_id = %self.task_id, error = %e, "事件通道读循环错误");
-                        }
+                    let (seq, err) = read_ws_events(stream, &req_id, &mut self).await;
+                    // 出错路径也推进消费点（审查 P2）：重连回放可能重叠已消费段，
+                    // 处理幂等（upsert/收尾幂等 + done 单发）保证不脏，仅观感重复
+                    last_consumed = last_consumed.max(seq);
+                    if self.terminal {
+                        return Ok(()); // 终态已收尾（done 分派内完成）
                     }
+                    if let Some(e) = err {
+                        warn!(req_id = %self.req_id, task_id = %self.task_id, error = %e, "事件通道读循环错误");
+                    }
+                    // 连接断开/读错误但未收终态：继续重试循环
                 }
                 Err(e) => {
                     warn!(req_id = %self.req_id, task_id = %self.task_id, error = %e, "事件通道连接失败");
@@ -1369,9 +1378,8 @@ mod tests {
             .await
             .expect("connect");
         let mut sink = CaptureSink::default();
-        let last_seq = read_ws_events(stream, "test-req", &mut sink)
-            .await
-            .expect("read");
+        let (last_seq, err) = read_ws_events(stream, "test-req", &mut sink).await;
+        assert!(err.is_none(), "读循环应正常收束：{err:?}");
         server.await.expect("server task");
 
         assert_eq!(last_seq, 3, "已消费最大 seq 应为 done 的 seq");
@@ -1405,9 +1413,8 @@ mod tests {
             .await
             .expect("connect");
         let mut sink = CaptureSink::default();
-        let last_seq = read_ws_events(stream, "test-req", &mut sink)
-            .await
-            .expect("read");
+        let (last_seq, err) = read_ws_events(stream, "test-req", &mut sink).await;
+        assert!(err.is_none(), "读循环应正常收束：{err:?}");
         server.await.expect("server task");
 
         assert_eq!(last_seq, 1);

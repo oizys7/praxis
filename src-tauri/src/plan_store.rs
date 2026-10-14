@@ -374,6 +374,8 @@ pub async fn has_phase_rows(pool: &PgPool, plan_id: Uuid) -> Result<bool, AgentE
 /// status='generating' 的存量行永远等不到终态事件 → 全部清为 failed（仅 DB
 /// 模式；重复执行恒为空集，幂等）；其 pending 骨架子行一并置 failed，
 /// complete 子行不动（finalize_failed 的状态机不变量）。
+/// 桌面单实例语义假定：若双实例并开，清扫可能把存活实例进行中的 generating
+/// 行暂翻 failed——该实例 done 收尾会终态覆写自愈，仅列表页短暂显示 failed。
 /// 返回清扫的行数（供日志）。消费方：main.rs setup 钩子。
 pub async fn sweep_stale_generating(pool: &PgPool) -> Result<u64, AgentError> {
     let stale: Vec<Uuid> = sqlx::query_scalar(

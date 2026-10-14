@@ -898,8 +898,8 @@ async fn test_ensure_schema_converges_child_tables_dropped(pool: PgPool) {
             "有阶段内容的 error 终态应翻 complete（可重生成/重看）"
         );
         assert!(
-            plan_store::has_phase_rows(&pool, plan_id).await.is_ok(),
-            "阶段行应保留"
+            matches!(plan_store::has_phase_rows(&pool, plan_id).await, Ok(true)),
+            "阶段行应保留（存在性为真，非仅查询成功）"
         );
     }
 

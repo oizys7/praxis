@@ -175,8 +175,9 @@ pub async fn get_task_snapshot(
 /// - 正常路径：lastSeq >= last_consumed，cursor = last_consumed，Python 回放
 ///   seq > cursor，不丢不重；
 /// - 防御（审查残留①）：cursor 不得超过 snapshot.lastSeq（cursor > lastSeq 时
-///   Python 侧回放窗口为空、任务已终态会直接关闭且不补发 done），此时回退到
-///   lastSeq 重放尾部事件——事件处理幂等（upsert / 收尾幂等），重放安全。
+///   Python 侧回放窗口为空、任务已终态会直接关闭且不补发 done），去到 lastSeq
+///   避免静默关闭；该不可达状态若真发生，本轮空收由重试耗尽的内容语义收尾兜底
+///   （非重放兜底——事件处理幂等仅保证重复回放不脏，非空窗口才生效）。
 ///   首连（last_consumed=0）恒回 0：全量回放，不丢任何已缓存事件。
 pub fn reconnect_cursor(last_consumed: u64, snapshot_last_seq: Option<u64>) -> u64 {
     match snapshot_last_seq {
@@ -208,8 +209,10 @@ mod tests {
     }
 
     /// 断线重连游标（审查残留①防御）：正常路径取已消费最大 seq（Python 回放
-    /// seq>cursor，不丢不重）；cursor 超过快照 lastSeq 时回退到 lastSeq 重放
-    /// 尾部（事件处理幂等）；快照缺失退回已消费值；首连（消费 0）恒回 0。
+    /// seq>cursor，不丢不重）；cursor 超过快照 lastSeq 时鈾到 lastSeq——
+    /// 避免超过游标被 Python 静默关闭（该状态下回放窗口为空、已终态连接
+    /// 直接关闭且不补 done，本轮空收由重试耗尽走内容语义收尾，非重放兜底）；
+    /// 快照缺失退回已消费值；首连（消费 0）恒回 0。
     #[test]
     fn reconnect_cursor_clamps_to_snapshot_last_seq() {
         // 正常重连：不丢不重
