@@ -1,7 +1,19 @@
 <script setup lang="ts">
-import { onMounted, ref, shallowRef, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 import { BookOpen, Settings } from "lucide-vue-next";
 import { useAgent } from "@/composables/useAgent";
+import {
+  completedPhaseCount,
+  disposeProgressListener,
+  ensureProgressListener,
+  followedObservation,
+  followedPlanId,
+  followPlan,
+  isObservationTerminal,
+  terminalPlanIds,
+  unfollowPlan,
+} from "@/composables/useGenerationProgress";
+import { fetchPlanRecord } from "@/composables/usePlanHistory";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -11,28 +23,16 @@ import PlanForm from "@/components/PlanForm.vue";
 import PlanListView from "@/components/PlanListView.vue";
 import PlanResult from "@/components/PlanResult.vue";
 import SettingsPage from "@/components/Settings.vue";
-import type {
-  OutlinePhasePayload,
-  PlanProgressEvent,
-  PlanRecord,
-  PlanRequest,
-  StudyPlan,
-} from "@/types/agent";
+import { normalizeError } from "@/composables/useAgent";
+import type { PlanRecord, PlanRequest, StudyPlan } from "@/types/agent";
 
 /**
  * App：页面骨架。
  * 上：顶部栏（品牌 + Agent 在线徽标）；下：左侧菜单栏 + 右侧页面内容。
- * 启动时通过 ping_agent 探测 Python 服务状态并展示徽标。
+ * 启动时通过 ping_agent 探测 Python 服务状态并展示徽标；并注册全局
+ * 'plan-progress' 监听（后台生成的进度流，模块级 store 观测）。
  */
-const {
-  loading,
-  error,
-  result,
-  progress,
-  storageIssue,
-  generatePlan,
-  pingAgent,
-} = useAgent();
+const { loading, error, result, generatePlan, pingAgent } = useAgent();
 
 /** Agent 服务在线状态：null = 检测中 */
 const agentOnline = ref<boolean | null>(null);
@@ -63,68 +63,99 @@ const historyPlanId = shallowRef<string | null>(null);
 /** 最近一次生成请求（保存到云端时取 goal / level / weeks 元数据） */
 const lastRequest = shallowRef<PlanRequest | null>(null);
 /**
- * 生成流程的大纲骨架态（渐进式渲染）：outline 事件载荷铺骨架树（阶段名 +
- * 章节标题清单 + 待生成状态点），phaseDone 推进对应阶段完成位；生成成功后
- * 清空（结果页接管），失败终态把未完成部分标「失败」。
+ * 生成进度观测视图（useGenerationProgress store）：outline 事件铺骨架树、
+ * PhaseDone 按阶段索引记账（去重），数据离开页面也不丢（模块级 store）。
+ * 生成终态由两个通道判定：phaseDone 集齐 phaseCount / 静默对账补齐。
  */
-const outlineSkeleton = ref<{
-  title: string;
-  overview: string;
-  phases: Array<OutlinePhasePayload & { done: boolean }>;
-  /** 生成失败后置 true：未完成的阶段/章节标「失败」 */
-  failed: boolean;
-} | null>(null);
+const genState = followedObservation;
 
-/** 生成进度事件处理：outline 载荷铺骨架树，phaseDone 推进对应阶段完成位 */
-function onGenerationProgress(event: PlanProgressEvent) {
-  const skeleton = outlineSkeleton.value;
-  if (event.type === "outline") {
-    outlineSkeleton.value = {
-      title: event.title,
-      overview: event.overview ?? "",
-      phases: (event.phases ?? []).map((p) => ({ ...p, done: false })),
-      failed: false,
+/** 页面正处于「后台生成进行中」（跟随了 plan 且未终态） */
+const generatingNow = computed(
+  () =>
+    !!genState.value &&
+    !isObservationTerminal(genState.value) &&
+    !genState.value.removed,
+);
+
+/** 大纲骨架已就位（outline 事件已到过；骨架树分支条件） */
+const outlineReady = computed(
+  () => !!genState.value && genState.value.phases.length > 0,
+);
+
+/** 生成完成的进度分母（outline 未到时为 0，进度条隐藏） */
+const progressTotal = computed(() => genState.value?.outlinePhaseCount ?? 0);
+const progressDone = computed(() =>
+  genState.value ? completedPhaseCount(genState.value) : 0,
+);
+
+// 生成终态拐点（phaseDone 集齐 / 对账集齐 / 行消失）：回读整份计划展示
+// 结果页（planId 注入后阶段/章的重生成入口可用），历史列表行不再转圈。
+watch(terminalPlanIds, async (ids) => {
+  const pid = followedPlanId.value;
+  if (!pid || !ids.includes(pid)) return;
+  const obs = genState.value;
+  if (obs?.removed) {
+    unfollowPlan();
+    error.value = {
+      code: "generation-gone",
+      message:
+        "该生成任务已结束，但未能产出可用的计划内容（可能信息不足以成计划或行已被清理）。",
+      hint: "可调整目标后重新生成，或到历史记录中查看既有计划。",
     };
-  } else if (event.type === "phaseDone" && skeleton?.phases[event.index]) {
-    skeleton.phases[event.index].done = true;
+    return;
   }
-}
-
-// 生成终态联动骨架：plan → 骨架清空（结果页接管）；error（传输错误或业务
-// error 包络）→ 未完成部分标「失败」（错误页 + 骨架同时可见部分成果）
-watch([error, result], ([err, res]) => {
-  const skeleton = outlineSkeleton.value;
-  if (!skeleton) return;
-  if (res?.status === "plan") {
-    outlineSkeleton.value = null;
-  } else if (err !== null || res?.status === "error") {
-    skeleton.failed = true;
+  try {
+    const record = await fetchPlanRecord(pid);
+    historyPlanId.value = pid;
+    result.value = {
+      status: "plan",
+      plan: record.plan,
+      clarifications: null,
+      error: null,
+    };
+  } catch (e) {
+    error.value = normalizeError(e);
+  } finally {
+    unfollowPlan();
   }
 });
 
 onMounted(async () => {
+  // 全局进度监听先于任何提交注册（outline 可能先于 invoke 返回值到达）
+  void ensureProgressListener();
   agentOnline.value = await pingAgent();
 });
 
-/** 点「新建计划」：切到生成视图（清空上次生成状态，展示干净表单） */
+// App 卸载（窗口关闭/重建）才解除全局监听：页面内导航不退出订阅，
+// 后台生成在离开页面后继续，回来时靠 store 恢复展示
+onUnmounted(() => disposeProgressListener());
+
+/** 点「新建计划」：切到生成视图（取消跟随旧生成，后台任务继续跑） */
 function onCreate() {
   historyMode.value = false;
   historyPlanId.value = null;
   lastRequest.value = null;
   result.value = null;
   error.value = null;
-  outlineSkeleton.value = null;
+  unfollowPlan();
   planView.value = "create";
 }
 
-/** 表单提交 → 调用 Tauri command（Rust → Python） */
-function onSubmit(request: PlanRequest) {
+/**
+ * 表单提交 → 注册监听 → invoke generate_plan（提交即返 {planId}）。
+ * 进度经全局事件驱动 store；终态由 watch(terminalPlanIds) 接管结果页。
+ */
+async function onSubmit(request: PlanRequest) {
   lastRequest.value = request;
   historyMode.value = false;
   historyPlanId.value = null;
   error.value = null;
-  outlineSkeleton.value = null;
-  void generatePlan(request, onGenerationProgress);
+  // 时序约定：listen 必须先于 invoke——第一段 outline 事件在命令
+  // 返回前后就可能到达，晚注册会丢首骨架
+  await ensureProgressListener();
+  const submitted = await generatePlan(request);
+  if (!submitted) return; // 提交失败：error 已置值，错误卡片展示
+  followPlan(submitted.planId);
 }
 
 /** 查看历史计划：注入已保存的计划并切到查看视图（携带 id 供重生成入口） */
@@ -133,7 +164,7 @@ function openHistoryPlan(record: PlanRecord) {
   historyPlanId.value = record.id;
   lastRequest.value = null;
   error.value = null;
-  outlineSkeleton.value = null;
+  unfollowPlan();
   result.value = {
     status: "plan",
     plan: record.plan,
@@ -236,8 +267,8 @@ function onPlanRefreshed(plan: StudyPlan) {
             />
 
             <section class="min-w-0 space-y-4">
-              <!-- 加载中（含流式生成进度：outline 定总数，phaseDone 推进） -->
-              <Card v-if="loading" class="animate-fade-in-up">
+              <!-- 后台生成进行中（提交即返后的过程页：outline 铺骨架，phaseDone 推进） -->
+              <Card v-if="generatingNow" class="animate-fade-in-up">
                 <CardContent
                   class="flex flex-col items-center gap-4 py-14 text-center"
                 >
@@ -247,24 +278,31 @@ function onPlanRefreshed(plan: StudyPlan) {
                   <div>
                     <p class="font-medium">Agent 正在编排你的学习计划…</p>
                     <p class="mt-1 text-sm text-muted-foreground">
-                      流程：澄清检查 → 规划生成 → 质量评审（约需 30~90 秒）
+                      后台生成，可随时离开页面，进度不会中断
                     </p>
                   </div>
-                  <!-- 生成进度：第 N/M 阶段完成 + 进度条 -->
-                  <div v-if="progress" class="w-full max-w-xs">
+                  <!-- 云端入库异常提示（storageIssue 事件，不中断生成） -->
+                  <p
+                    v-if="genState?.storageIssue"
+                    class="break-all text-xs text-destructive"
+                  >
+                    ⚠ {{ genState.storageIssue }}
+                  </p>
+                  <!-- 生成进度：第 N/M 阶段完成 + 进度条（urdine 集齐前隐藏） -->
+                  <div v-if="progressTotal" class="w-full max-w-xs">
                     <div
                       class="mb-1.5 flex justify-between text-xs text-muted-foreground"
                     >
                       <span
-                        >第 {{ progress.done }}/{{
-                          progress.total
+                        >第 {{ progressDone }}/{{
+                          progressTotal
                         }}
                         阶段完成</span
                       >
                       <span
                         >{{
                           Math.round(
-                            (progress.done / Math.max(progress.total, 1)) * 100,
+                            (progressDone / Math.max(progressTotal, 1)) * 100,
                           )
                         }}%</span
                       >
@@ -273,11 +311,23 @@ function onPlanRefreshed(plan: StudyPlan) {
                       <div
                         class="h-full rounded-full bg-primary transition-all duration-500"
                         :style="{
-                          width: `${(progress.done / Math.max(progress.total, 1)) * 100}%`,
+                          width: `${(progressDone / Math.max(progressTotal, 1)) * 100}%`,
                         }"
                       />
                     </div>
                   </div>
+                </CardContent>
+              </Card>
+
+              <!-- 提交在飞窗口（极短；generating 卡片就位前占位） -->
+              <Card v-else-if="loading" class="animate-fade-in-up">
+                <CardContent
+                  class="flex flex-col items-center gap-4 py-14 text-center"
+                >
+                  <div
+                    class="h-10 w-10 animate-spin rounded-full border-2 border-primary border-t-transparent"
+                  />
+                  <p class="text-sm text-muted-foreground">正在提交生成任务…</p>
                 </CardContent>
               </Card>
 
@@ -300,9 +350,9 @@ function onPlanRefreshed(plan: StudyPlan) {
                     </p>
                   </div>
                   <!-- 骨架已铺开说明大纲已产出：部分成果已入库，引导去历史记录重生成 -->
-                  <div v-if="outlineSkeleton" class="text-sm">
+                  <div v-if="genState?.phases.length" class="text-sm">
                     <p class="text-muted-foreground">
-                      已完成的阶段已保存，可到历史记录中查看并重新生成失败部分。
+                      已完成的阶段已保存在云端，可到历史记录中查看并重新生成失败部分。
                     </p>
                     <Button
                       variant="outline"
@@ -334,9 +384,9 @@ function onPlanRefreshed(plan: StudyPlan) {
                     </p>
                   </div>
                   <!-- 骨架已铺开说明大纲已产出：部分成果已入库，引导去历史记录重生成 -->
-                  <div v-if="outlineSkeleton" class="text-sm">
+                  <div v-if="genState?.phases.length" class="text-sm">
                     <p class="text-muted-foreground">
-                      已完成的阶段已保存，可到历史记录中查看并重新生成失败部分。
+                      已完成的阶段已保存在云端，可到历史记录中查看并重新生成失败部分。
                     </p>
                     <Button
                       variant="outline"
@@ -370,7 +420,7 @@ function onPlanRefreshed(plan: StudyPlan) {
                 :level="lastRequest?.level"
                 :weeks="lastRequest?.weeks"
                 :history-mode="historyMode"
-                :storage-issue="storageIssue"
+                :storage-issue="genState?.storageIssue"
                 @refreshed="onPlanRefreshed"
               />
 
@@ -388,27 +438,27 @@ function onPlanRefreshed(plan: StudyPlan) {
                 </CardContent>
               </Card>
 
-              <!-- 大纲骨架树（渐进式渲染，骨架是过程态：结果页由 PlanResult 接管） -->
+              <!-- 大纲骨架树（渐进式渲染，骨架是过程态：终态后由 PlanResult 接管） -->
               <Card
-                v-if="outlineSkeleton"
+                v-if="outlineReady"
                 class="animate-fade-in-up"
                 aria-live="polite"
               >
                 <CardContent class="space-y-4 py-6">
                   <div>
                     <h3 class="text-sm font-semibold">
-                      {{ outlineSkeleton.title }}
+                      {{ genState?.title }}
                     </h3>
                     <p
-                      v-if="outlineSkeleton.overview"
+                      v-if="genState?.overview"
                       class="mt-1 text-xs leading-relaxed text-muted-foreground"
                     >
-                      {{ outlineSkeleton.overview }}
+                      {{ genState.overview }}
                     </p>
                   </div>
                   <div class="space-y-3">
                     <div
-                      v-for="(phase, i) in outlineSkeleton.phases"
+                      v-for="(phase, i) in genState?.phases"
                       :key="i"
                       class="rounded-lg border p-3"
                     >
@@ -422,11 +472,15 @@ function onPlanRefreshed(plan: StudyPlan) {
                             class="text-xs text-muted-foreground"
                             >{{ phase.weekRange }}</span
                           >
-                          <Badge v-if="phase.done" variant="success"
+                          <!-- 阶段位：complete 绿 / failed 红 / 进行中不标
+                               （无真实失败信号不标红，storageIssue 走提示） -->
+                          <Badge
+                            v-if="genState?.phaseStatuses[i] === 'complete'"
+                            variant="success"
                             >✓ 已完成</Badge
                           >
                           <Badge
-                            v-else-if="outlineSkeleton.failed"
+                            v-else-if="genState?.phaseStatuses[i] === 'failed'"
                             variant="destructive"
                             >✗ 失败</Badge
                           >
@@ -441,24 +495,22 @@ function onPlanRefreshed(plan: StudyPlan) {
                           :key="ci"
                           class="flex items-center gap-2 text-sm text-muted-foreground"
                         >
-                          <!-- 状态点：完成绿色亮点，失败红，生成中灰 -->
+                          <!-- 章节点随本阶段位：完成绿，失败红，生成中灰 -->
                           <span
                             class="h-1.5 w-1.5 shrink-0 rounded-full"
                             :class="
-                              phase.done
+                              genState?.phaseStatuses[i] === 'complete'
                                 ? 'bg-emerald-500'
-                                : outlineSkeleton.failed
+                                : genState?.phaseStatuses[i] === 'failed'
                                   ? 'bg-destructive'
                                   : 'bg-muted-foreground/40'
                             "
                           /><span class="truncate"
                             >{{ chapterTitle
                             }}{{
-                              phase.done
+                              genState?.phaseStatuses[i] === "complete"
                                 ? ""
-                                : outlineSkeleton.failed
-                                  ? "（生成失败）"
-                                  : "（待生成）"
+                                : "（待生成）"
                             }}</span
                           >
                         </li>

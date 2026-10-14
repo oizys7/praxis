@@ -6,6 +6,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import {
+  isPlanGenerating,
+  terminalCounter,
+} from "@/composables/useGenerationProgress";
+import {
   fetchPlanRecord,
   fetchPlanSummaries,
   removePlan,
@@ -38,6 +42,12 @@ const error = ref<CommandError | null>(null);
 const openingId = ref<string | null>(null);
 
 onMounted(() => void refresh());
+
+// 后台生成终态信号（任一观测计划判定完成/消失）：正在展示的相关行需要
+// 刷新（title/overview/status 变化），重新拉列表保证所见即终态
+watch(terminalCounter, () => {
+  void refresh();
+});
 
 /** 搜索防抖 300ms */
 let debounceTimer: number | undefined;
@@ -201,6 +211,13 @@ function formatTime(iso: string): string {
           </p>
 
           <div class="flex flex-wrap items-center gap-2">
+            <!-- 生成中徽标：后台生成观测中的行（进度流未终态） -->
+            <Badge v-if="isPlanGenerating(item.id)" variant="secondary">
+              <span
+                class="mr-1.5 h-2.5 w-2.5 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"
+              />
+              生成中
+            </Badge>
             <Badge v-if="item.level" variant="secondary">
               {{ levelLabel(item.level) }}
             </Badge>

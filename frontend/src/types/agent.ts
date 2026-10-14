@@ -85,10 +85,14 @@ export interface StudyPhase {
 }
 
 /**
- * Rust -> 前端的生成进度事件（tauri Channel 推送）。
+ * Rust -> 前端的生成进度事件本体（payload）。
  * 与 src-tauri/src/protocol.rs 的 PlanProgressEvent serde 序列化逐字对齐
  * （tag = "type" + camelCase 字段，见该文件 progress_event_uses_type_tag 测试）；
  * outline 的 phases/overview 为大纲骨架载荷（渐进式骨架渲染，可缺省兼容旧载荷）。
+ *
+ * 两条消费路径（任务 22/23）同用该形状：
+ * - generate 链路：全局事件 'plan-progress' 的 payload（见 PlanProgressEnvelope）；
+ * - regenerate 双命令：仍经 invoke 的 tauri Channel 逐事件推送。
  */
 export type PlanProgressEvent =
   | {
@@ -100,6 +104,30 @@ export type PlanProgressEvent =
     }
   | { type: "phaseDone"; index: number; total: number }
   | { type: "storageIssue"; message: string };
+
+/**
+ * 全局进度事件 'plan-progress' 的载荷信封：与
+ * src-tauri/src/protocol.rs::PlanProgressEnvelope 逐字对齐（camelCase wire，
+ * 见该文件 plan_progress_envelope_wraps_payload 测试）。
+ * planId 与 generate_plan 命令返回值一致；kind 恒 "plan"（regen 不走该事件）。
+ */
+export type PlanProgressEnvelope = {
+  /** 归属计划 id（generate_plan 预置行 id） */
+  planId: string;
+  /** 链路种类：generate 恒 "plan" */
+  kind: string;
+  /** 进度事件本体（outline / phaseDone / storageIssue 三变体） */
+  payload: PlanProgressEvent;
+};
+
+/**
+ * generate_plan 命令的返回值：提交即返（不等终态），字段与
+ * src-tauri/src/commands.rs::PlanSubmitResult 对齐（camelCase wire）。
+ * 生成进度经 'plan-progress' 全局事件异步推送（见 PlanProgressEnvelope）。
+ */
+export type PlanSubmitResult = {
+  planId: string;
+};
 
 /** 推荐学习资源 */
 export interface StudyResource {

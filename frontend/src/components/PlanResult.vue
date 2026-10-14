@@ -60,7 +60,8 @@ const resourceTypeLabels: Record<string, string> = {
             预计总学时 ≈ {{ plan.estimatedTotalHours }}h
           </Badge>
         </div>
-        <CardDescription class="leading-relaxed">{{
+        <!-- 概要段落：空串（旧数据未写 overview）隐藏整行 -->
+        <CardDescription v-if="plan.overview" class="leading-relaxed">{{
           plan.overview
         }}</CardDescription>
         <!-- 云端自动保存状态（历史查看模式下隐藏：计划本就已入库） -->
