@@ -6,7 +6,12 @@
 //! - 错误归一与序列化见 error；数据模型见 protocol。
 //!
 //! 例外是 generate_plan / regenerate_phase / regenerate_chapter：流式消费 +
-//! 进度推送 + 自动入库的编排枢纽（共享 consume_ndjson_stream 骨架，见函数文档）。
+//! 进度推送 + 自动入库的编排枢纽。
+//! - generate_plan（任务 22）：提交即返 —— POST /api/generations 拿 taskId 后
+//!   spawn 后台任务经 WS 事件通道消费（断线重连），命令同步返回 {planId}，
+//!   进度经全局事件 'plan-progress' 推送；
+//! - regenerate 双命令：仍走 /api/regenerate/stream NDJSON 长流（共享
+//!   consume_ndjson_stream 骨架），进度经可选 Channel 推送（见函数文档）。
 //!
 //! 数据结构与以下两处严格对齐（字段均为 camelCase）：
 //! - frontend/src/types/agent.ts
@@ -15,25 +20,33 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use serde::Serialize;
 use sqlx::PgPool;
 use tauri::ipc::{Channel, JavaScriptChannelId};
+use tauri::Emitter;
+use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
-use crate::agent_client::{new_request_id, post_stream, send, PING_TIMEOUT, PLAN_TIMEOUT};
+use crate::agent_client::{
+    connect_generation_events, get_task_snapshot, new_request_id, post_stream, reconnect_cursor,
+    send, submit_plan_generation, WsStream, PING_TIMEOUT, PLAN_TIMEOUT,
+};
 use crate::db;
 use crate::error::AgentError;
 use crate::plan_store::{self, PlanRequestRow};
 use crate::protocol::{
-    parse_ndjson_line, PlanProgressEvent, PlanRecord, PlanRequest, PlanResponse, PlanSummary,
-    RegenOutline, RegenRequest, SavePlanRequest, StreamEvent,
+    parse_ndjson_line, parse_ws_envelope, PlanProgressEnvelope, PlanProgressEvent, PlanRecord,
+    PlanRequest, PlanResponse, PlanSummary, RegenOutline, RegenRequest, SavePlanRequest,
+    StreamEvent,
 };
 use crate::settings::{load_settings, save_settings_to_disk, AgentSettings};
 use crate::sidecar::ensure_agent_running;
 
 /// 读取云端数据库配置（config.yaml）；密码经主密钥解密为内存明文，
-/// 手写明文会在加载时自动加密回写（见 config::AppConfig::load_from）
-fn load_db_config(app: &tauri::AppHandle) -> crate::config::DbConfig {
+/// 手写明文会在加载时自动加密回写（见 config::AppConfig::load_from）。
+/// pub(crate)：main.rs setup 钩子的启动清扫同样需要读库配置。
+pub(crate) fn load_db_config(app: &tauri::AppHandle) -> crate::config::DbConfig {
     match crate::settings::key_dir(app) {
         Ok(dir) => crate::config::AppConfig::load(&dir).db,
         Err(_) => crate::config::DbConfig::default(),
@@ -41,16 +54,17 @@ fn load_db_config(app: &tauri::AppHandle) -> crate::config::DbConfig {
 }
 
 // ---------------------------------------------------------------------------
-// 学习计划生成（流式消费 + 进度推送 + 自动入库编排）
+// 学习计划生成（任务化：提交即返 + WS 事件消费 + 自动入库编排）
 // ---------------------------------------------------------------------------
 
 /// 本次生成的云端入库句柄：连接池 + 预置行 id；None 表示本次生成无云端入库
+#[derive(Clone)]
 struct Storage {
     pool: PgPool,
     plan_id: Uuid,
 }
 
-/// 进度推送：channel 未传（前端旧调用）或推送失败时静默跳过，不影响主流程
+/// 进度推送：channel 未传（regen 旧调用）或推送失败时静默跳过，不影响主流程
 fn notify(channel: Option<&Channel<PlanProgressEvent>>, event: PlanProgressEvent) {
     if let Some(ch) = channel {
         if let Err(e) = ch.send(event) {
@@ -59,57 +73,66 @@ fn notify(channel: Option<&Channel<PlanProgressEvent>>, event: PlanProgressEvent
     }
 }
 
-/// 生成学习计划（流式）：POST /api/generate-plan/stream，逐行消费 NDJSON 事件，
-/// 每阶段自动入库（plan_store 规范化多表）并经 Channel 向前端推送进度；
-/// done 终态的统一包络整体透传作为命令返回值（形状与旧非流式链路一致）。
+/// 全局事件推送（任务 22）：generate 链路进度经 'plan-progress' 事件推给前端，
+/// 载荷为 {planId, kind, payload}（payload 三变体形状不动）；推送失败仅告警，
+/// 不影响主流程（前端仍有 DB 轮询/刷新兑底）。
+fn emit_progress(app: &tauri::AppHandle, plan_id: Uuid, event: PlanProgressEvent) {
+    let envelope = PlanProgressEnvelope {
+        plan_id: plan_id.to_string(),
+        kind: "plan".into(),
+        payload: event,
+    };
+    if let Err(e) = app.emit("plan-progress", &envelope) {
+        warn!(error = %e, %plan_id, "plan-progress 事件推送失败");
+    }
+}
+
+/// 断线重连退避序列（秒）：连接中断且未收终态时按序重试（1s→2s→5s→10s 长尾）；
+/// 全部耗尽按失败收尾（生成所有权在 Python，重试只是补齐观测，不重不丢）。
+const WS_RECONNECT_BACKOFF_SECS: &[u64] = &[1, 2, 5, 10, 10, 10, 10];
+
+/// 生成学习计划（任务化，任务 22）：预置 generating 行 → POST /api/generations
+/// 提交后台任务（毫秒级拿 taskId）→ spawn 后台消费任务（WS 事件通道观测 +
+/// 逐阶段入库 + 全局事件推送）→ 命令立即返回 {planId}（前端不再等终态），
+/// 进度经 tauri::Emitter 'plan-progress' 全局事件推送（任务 23 前端 listen）。
 ///
 /// 编排约定：
-/// - 入库前置：DB 可用则预置 generating 行（终态按 plan / clarification / error 分别
-///   落 complete / 删行 / failed）；DB 不可用不阻塞生成，仅经 StorageIssue 事件提示；
-/// - 进度推送：channel 为可选参数（前端旧调用不传时优雅降级为不发进度）；
-/// - 容错：坏行告警跳过、单阶段入库失败不中断流（存储问题不吞生成结果）；
-/// - 异常路径：传输错误 / 超时 / 流提前中断（未收到 done）→ 已入库则收尾 failed + Err。
-///
-/// channel 形态说明：`tauri::Channel<T>` 无 Deserialize（仅 CommandArg），可选参数
-/// 用 `Option<JavaScriptChannelId>`（有 Deserialize，前端 `new Channel()` 传入的
-/// `__CHANNEL__ID` 字符串即其字面形式；key 缺失时反序列化为 None）+ webview 注入
-/// 还原，语义等同可选 Channel。
+/// - 入库前置：DB 可用则预置 generating 行（终态语义见 settle_terminal）；
+///   DB 不可用不阻塞生成，仅经 StorageIssue 事件提示；
+/// - 提交失败（409 容量不足 / 422 参数校验 / 网络层）：删除预置行
+///   （不会有任何生成事件，避免僵尸 generating 行）+ Err 归一透传；
+/// - 生成所有权在 Python 后台任务：断线重连按游标补齐（见 GenerationConsumer），
+///   Rust 重启后未收终态的行由 main.rs setup 启动清扫统一翻 failed。
 #[tauri::command]
 pub async fn generate_plan(
     app: tauri::AppHandle,
-    webview: tauri::Webview,
     request: PlanRequest,
-    channel: Option<JavaScriptChannelId>,
-) -> Result<PlanResponse, AgentError> {
+) -> Result<PlanSubmitResult, AgentError> {
     ensure_agent_running(&app).await?;
 
     let started = std::time::Instant::now();
     let req_id = new_request_id();
-    info!(%req_id, goal = %request.goal, "收到学习计划生成请求（流式）");
+    info!(%req_id, goal = %request.goal, "收到学习计划生成请求（任务化）");
 
-    // 前端传了 Channel 则还原为进度推送通道；旧调用不传则优雅降级为不发进度
-    let channel = channel.map(|id| id.channel_on(webview));
-    let progress = channel.as_ref();
-
-    // 1. 入库前置：DB 可用则预置 generating 行；不可用只提示不阻塞主流程
+    // 1. 入库前置：预置 generating 行（plan_id 无论入库与否都先定死，
+    //    事件信封 planId 必须与命令返回值一致）；不可入库只提示不阻塞主流程
+    let plan_id = Uuid::new_v4();
     let config = load_db_config(&app);
     let storage = match db::pool(&config).await {
-        Ok(pool) => {
-            let plan_id = Uuid::new_v4();
-            match plan_store::create_generating_plan(&pool, plan_id, &request).await {
-                Ok(()) => Some(Storage { pool, plan_id }),
-                Err(e) => {
-                    warn!(%req_id, error = %e, "预置生成中计划行失败，本次生成不入库");
-                    notify(
-                        progress,
-                        PlanProgressEvent::StorageIssue {
-                            message: format!("云端库写入失败，本次生成不会自动保存：{e}"),
-                        },
-                    );
-                    None
-                }
+        Ok(pool) => match plan_store::create_generating_plan(&pool, plan_id, &request).await {
+            Ok(()) => Some(Storage { pool, plan_id }),
+            Err(e) => {
+                warn!(%req_id, error = %e, "预置生成中计划行失败，本次生成不入库");
+                emit_progress(
+                    &app,
+                    plan_id,
+                    PlanProgressEvent::StorageIssue {
+                        message: format!("云端库写入失败，本次生成不会自动保存：{e}"),
+                    },
+                );
+                None
             }
-        }
+        },
         Err(e) => {
             warn!(%req_id, error = %e, "云端库不可用，本次生成不入库");
             let message = if config.host.trim().is_empty() {
@@ -117,98 +140,83 @@ pub async fn generate_plan(
             } else {
                 format!("云端库连接失败，本次生成未自动保存：{e}")
             };
-            notify(progress, PlanProgressEvent::StorageIssue { message });
+            emit_progress(&app, plan_id, PlanProgressEvent::StorageIssue { message });
             None
         }
     };
 
-    // 2. 流消费：总超时（PLAN_TIMEOUT）包住整个消费过程（含逐阶段入库）；
-    //    reqwest 请求侧同值总超时兜底（覆盖到响应体读完）；
-    //    分行/解析/非 2xx 校验基础设施提炼为 consume_ndjson_stream 共享骨架
-    //    （与 regenerate 双命令同源，防双份漂移），事件分派沉淀在 GeneratePlanSink
-    let consumed = match post_stream(
-        "/api/generate-plan/stream",
-        &request,
-        PLAN_TIMEOUT,
-        Some(&req_id),
-    )
-    .await
-    {
-        Ok(mut response) => {
-            let mut sink = GeneratePlanSink {
-                storage: storage.as_ref(),
-                progress,
-                req_id: &req_id,
-                weekly_hours: request.weekly_hours,
-                phase_count: 0,
-            };
-            match tokio::time::timeout(
-                PLAN_TIMEOUT,
-                consume_ndjson_stream(&mut response, &req_id, &mut sink),
-            )
-            .await
-            {
-                Ok(inner) => inner,
-                Err(_) => {
-                    error!(%req_id, timeout_secs = PLAN_TIMEOUT.as_secs(), "学习计划流式消费总超时");
-                    Err(AgentError::Service(format!(
-                        "生成计划超时（{} 秒），请稍后重试",
-                        PLAN_TIMEOUT.as_secs()
-                    )))
+    // 2. 提交后台任务：失败态删除预置行（无任何生成事件，行不得滞留 generating）
+    let task_id = match submit_plan_generation(&request, &req_id).await {
+        Ok(id) => id,
+        Err(e) => {
+            error!(%req_id, error = %e, "生成任务提交失败");
+            if let Some(s) = &storage {
+                if let Err(e2) = plan_store::delete_plan_full(&s.pool, s.plan_id).await {
+                    warn!(%req_id, error = %e2, "提交失败的预置行删除失败");
                 }
             }
-        }
-        Err(e) => {
-            error!(%req_id, error = %e, "流式生成请求发送失败");
-            Err(e)
+            return Err(e);
         }
     };
 
-    // 3. 终态分派结果：done 包络整体透传；未收到 done（传输错误/超时/提前 EOF）→ Err
-    let result = match consumed {
-        Ok(Some(envelope)) => {
-            info!(
-                %req_id,
-                status = %envelope.status,
-                elapsed_ms = started.elapsed().as_millis() as u64,
-                "学习计划流式生成完成"
-            );
-            Ok(envelope)
-        }
-        Ok(None) => {
-            error!(%req_id, "生成流提前结束：未收到 done 终态事件");
-            Err(AgentError::Service(
-                "生成流提前中断，未收到最终结果，请重试".into(),
-            ))
-        }
-        Err(e) => Err(e),
+    // 3. spawn 后台消费：WS 观测 + 落库 + 全局事件推送，与命令返回解耦
+    let consumer = GenerationConsumer {
+        app: app.clone(),
+        storage,
+        plan_id,
+        task_id: task_id.clone(),
+        req_id: req_id.clone(),
+        weekly_hours: request.weekly_hours,
+        phase_count: 0,
+        terminal: false,
     };
-
-    // 4. 异常路径收尾：已入库则标记 failed（done 三态已在流内收尾，不受此影响）
-    if result.is_err() {
-        if let Some(s) = &storage {
-            if let Err(e) =
-                plan_store::finalize_plan(&s.pool, s.plan_id, "failed", None, None).await
-            {
-                warn!(%req_id, error = %e, "标记生成失败状态失败");
-            }
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = consumer.run().await {
+            error!(error = %e, "后台生成消费任务异常退出");
         }
-    }
-    result
+    });
+
+    info!(
+        %req_id,
+        %plan_id,
+        task_id,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "学习计划生成任务已提交（后台消费已启动）"
+    );
+    Ok(PlanSubmitResult {
+        plan_id: plan_id.to_string(),
+    })
 }
 
-/// done 终态对应的入库收尾：plan -> complete；clarification -> 删除 generating 行；
-/// error（及防御性未知状态）-> failed，避免行滞留 generating。
-async fn settle_terminal(pool: &PgPool, plan_id: Uuid, status: &str) -> Result<(), AgentError> {
-    match status {
-        "plan" => plan_store::finalize_plan(pool, plan_id, "complete", None, None).await,
-        "clarification" => plan_store::delete_plan_full(pool, plan_id).await,
-        other => {
-            if other != "error" {
-                warn!(status = other, "未知 done 终态状态，按 failed 收尾");
-            }
-            plan_store::finalize_plan(pool, plan_id, "failed", None, None).await
-        }
+/// generate_plan 命令返回值：立即返回 {planId}（camelCase wire），后续进度经
+/// 'plan-progress' 全局事件推送（协议三端同步，plan v7 §2a）。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanSubmitResult {
+    pub plan_id: String,
+}
+
+/// done 终态对应的入库收尾（任务 22 失败语义修订）：
+/// - clarification → 删除 generating 行（保留既有三态语义防回归）；
+/// - 其余终态（plan / error / 防御性未知状态）：行内已有任何 phase 行 →
+///   complete（后续可重生成/重看）；零内容 → failed（含 finalize_failed 的
+///   pending 子行翻牌，见 plan_store::finalize_plan）。
+///   pub(crate)：tests_plan_store 的真库集成测试直接调取（收尾语义的库级验证）。
+pub(crate) async fn settle_terminal(
+    pool: &PgPool,
+    plan_id: Uuid,
+    status: &str,
+) -> Result<(), AgentError> {
+    if status == "clarification" {
+        return plan_store::delete_plan_full(pool, plan_id).await;
+    }
+    if status != "plan" && status != "error" {
+        warn!(status, "未知 done 终态状态，按内容语义收尾");
+    }
+    if plan_store::has_phase_rows(pool, plan_id).await? {
+        plan_store::finalize_plan(pool, plan_id, "complete", None, None).await
+    } else {
+        plan_store::finalize_plan(pool, plan_id, "failed", None, None).await
     }
 }
 
@@ -270,22 +278,220 @@ async fn consume_ndjson_stream(
     Ok(None)
 }
 
-/// generate_plan 的事件分派（原内联 match 提炼为 sink，与 regenerate 同走
-/// [consume_ndjson_stream]）：outline → 元信息更新 + 骨架播种；phase →
-/// upsert + PhaseDone；chapter → 非预期事件 warn 忽略防错；done → 终态入库
-/// 收尾（settle_terminal）+ 回传包络。
-struct GeneratePlanSink<'a> {
-    storage: Option<&'a Storage>,
-    progress: Option<&'a Channel<PlanProgressEvent>>,
-    req_id: &'a str,
+// ---------------------------------------------------------------------------
+// WS 事件消费（任务 22）：generate_plan 后台观测链路
+// ---------------------------------------------------------------------------
+
+/// WS 事件消费分派器：generate 链路专用（与流式链路的 StreamEventSink 同构，
+/// 但多带 seq——重连重放的安全网在游标，分派侧按 seq 只做日志关联）。
+/// 返回 Ok(true) 表示已收 done 终态（消费收束）；Ok(false) 继续消费。
+trait WsEventSink {
+    fn handle_event<'a>(&'a mut self, seq: u64, event: StreamEvent) -> WsFuture<'a>;
+}
+
+/// 分派单个事件的 boxed future：借用 &mut self 的生命周期；Send 约束因组合
+/// future 需跨 await（逐事件装箱，事件频次为每任务个位数，开销可忽略）。
+type WsFuture<'a> = Pin<Box<dyn Future<Output = Result<bool, AgentError>> + Send + 'a>>;
+
+/// 单条 WS 连接的读取循环：逐消息解析信封（坏消息告警跳过，不中断）→ 分派
+/// sink；收到 done（sink 返回 true）即收束。返回已消费的最大 seq；连接断开
+/// （Close / EOF / 协议错误）且未收终态时正常返回（由调用方决定重连）。
+async fn read_ws_events<S: WsEventSink>(
+    mut stream: WsStream,
+    req_id: &str,
+    sink: &mut S,
+) -> Result<u64, AgentError> {
+    let mut last_seq: u64 = 0;
+    while let Some(msg) = ws_next(&mut stream).await {
+        let msg = msg.map_err(|e| AgentError::Service(format!("事件通道读取失败：{e}")))?;
+        let text = match msg {
+            Message::Text(t) => t.as_str().to_owned(),
+            Message::Binary(b) => String::from_utf8_lossy(&b).into_owned(),
+            // 协议层 ping/pong（uvicorn 保活）由 tungstenite 自动应答，应用层不关心
+            Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => continue,
+            Message::Close(frame) => {
+                debug!(%req_id, code = frame.as_ref().map(|c| u16::from(c.code)), "事件通道服务端关闭");
+                break;
+            }
+        };
+        let Some(envelope) = parse_ws_envelope(&text) else {
+            warn!(%req_id, "事件通道出现无法解析的消息，已跳过");
+            continue; // 坏消息不中断消费
+        };
+        last_seq = last_seq.max(envelope.seq);
+        if sink.handle_event(envelope.seq, envelope.event).await? {
+            return Ok(last_seq); // 终态已收，正常收束
+        }
+    }
+    Ok(last_seq)
+}
+
+/// futures-util StreamExt::next 的窄包装：把 StreamExt 引入范围限制在这一个
+/// 函数内，避免全局引入污染其它同名方法解析。
+async fn ws_next(
+    stream: &mut WsStream,
+) -> Option<Result<Message, tokio_tungstenite::tungstenite::Error>> {
+    use futures_util::StreamExt;
+    stream.next().await
+}
+
+/// generate_plan 的后台消费者：持有云端入库句柄与推送出口，串起「snapshot →
+/// 连 WS → 逐事件入库/推送 → done 终态收尾」与断线重连（指数退避，游标补齐）。
+/// 全重试耗尽 / 任务消失：按内容语义收尾（有 phase 行 → complete，零内容 →
+/// failed）+ 归一 Err（由 spawn 外层记 error 日志；命令早已返回 planId）。
+struct GenerationConsumer {
+    /// 全局事件推送出口（'plan-progress'）
+    app: tauri::AppHandle,
+    /// 云端入库句柄；None = 本次生成不入库（仅推送，不落库）
+    storage: Option<Storage>,
+    plan_id: Uuid,
+    /// 后台生成任务 id（Python registry）
+    task_id: String,
+    req_id: String,
     /// 预计总学时估算的每周学时（outline 事件到达时 × 阶段数，粗估供列表页展示）
     weekly_hours: u32,
     /// PhaseDone 推送的阶段总数（outline 事件到达时更新）
     phase_count: u32,
+    /// 是否已收 done 终态（重连判断依据）
+    terminal: bool,
 }
 
-impl StreamEventSink for GeneratePlanSink<'_> {
-    fn handle_event<'a>(&'a mut self, event: StreamEvent) -> SinkFuture<'a> {
+impl GenerationConsumer {
+    /// 完整消费流程：重试循环内「snapshot 定游标 → 连接 → 读事件」；收终态
+    /// 即返回 Ok；重试耗尽 / 任务消失按内容语义收尾并返回 Err。
+    async fn run(mut self) -> Result<(), AgentError> {
+        let mut last_consumed: u64 = 0;
+        // attempt 0..=backoff.len()：首连 + 退避表次数的重连（共 8 次）
+        for attempt in 0..=WS_RECONNECT_BACKOFF_SECS.len() {
+            if attempt > 0 {
+                let secs = WS_RECONNECT_BACKOFF_SECS[attempt - 1];
+                warn!(
+                    req_id = %self.req_id,
+                    task_id = %self.task_id,
+                    attempt, backoff_secs = secs,
+                    "事件通道断开，退避后重连"
+                );
+                tokio::time::sleep(std::time::Duration::from_secs(secs)).await;
+            }
+
+            // 快照先于连接：任务不存在（sidecar 重启/驱逐）直接判失败，不在
+            // 无意义的重试上耗时间；快照网络失败降级为无 lastSeq 连接
+            // （cursor=0/last_consumed 全量回放，幂等安全）
+            let snapshot = match get_task_snapshot(&self.task_id, &self.req_id).await {
+                Ok(Some(s)) => {
+                    if s.kind != "plan" {
+                        warn!(
+                            req_id = %self.req_id,
+                            task_id = %self.task_id,
+                            kind = %s.kind,
+                            "快照 kind 与链路不符（协议异常），仍按 plan 消费"
+                        );
+                    }
+                    debug!(
+                        req_id = %self.req_id,
+                        snapshot_task_id = %s.task_id,
+                        status = %s.status,
+                        first_seq = s.first_seq,
+                        last_seq = s.last_seq,
+                        done = s.done,
+                        "任务快照已取（游标依据）"
+                    );
+                    Some(s)
+                }
+                Ok(None) => {
+                    warn!(
+                        req_id = %self.req_id,
+                        task_id = %self.task_id,
+                        "生成任务不存在或已驱逐"
+                    );
+                    self.settle_after_loss().await;
+                    return Err(AgentError::Service(
+                        "生成任务已丢失（服务重启或超期驱逐），请重新生成".into(),
+                    ));
+                }
+                Err(e) => {
+                    warn!(
+                        req_id = %self.req_id,
+                        task_id = %self.task_id,
+                        error = %e,
+                        "任务快照获取失败，直接尝试连接"
+                    );
+                    None
+                }
+            };
+            let cursor = reconnect_cursor(last_consumed, snapshot.as_ref().map(|s| s.last_seq));
+            debug!(
+                req_id = %self.req_id,
+                task_id = %self.task_id,
+                attempt,
+                cursor,
+                "连接事件通道"
+            );
+
+            match connect_generation_events(&self.task_id, cursor).await {
+                Ok(stream) => {
+                    // req_id 先取出克隆，避免与 sink 的 &mut self 借用冲突
+                    let req_id = self.req_id.clone();
+                    let seq = read_ws_events(stream, &req_id, &mut self).await;
+                    match seq {
+                        Ok(seq) => {
+                            last_consumed = last_consumed.max(seq);
+                            if self.terminal {
+                                return Ok(()); // 终态已收尾（done 分派内完成）
+                            }
+                            // 连接断开但未收终态：继续重试循环
+                        }
+                        Err(e) => {
+                            warn!(req_id = %self.req_id, task_id = %self.task_id, error = %e, "事件通道读循环错误");
+                        }
+                    }
+                }
+                Err(e) => {
+                    warn!(req_id = %self.req_id, task_id = %self.task_id, error = %e, "事件通道连接失败");
+                }
+            }
+        }
+
+        // 全重试耗尽：按内容语义收尾（观测丢失不等于生成失败，已入库的部分
+        // 内容对用户仍有价值，可重看/重生成）
+        self.settle_after_loss().await;
+        Err(AgentError::Service(
+            "生成进度通道中断（多次重连失败），本次进度不再跟踪，请稍后刷新查看".into(),
+        ))
+    }
+
+    /// 观测丢失后的收尾：有 phase 行 → complete；零内容 → failed。
+    /// 收尾失败仅告警（行可能滞留 generating，由下次启动清扫兜底）。
+    async fn settle_after_loss(&mut self) {
+        self.terminal = true;
+        let Some(s) = &self.storage else {
+            return;
+        };
+        let semantic_status = match plan_store::has_phase_rows(&s.pool, s.plan_id).await {
+            Ok(true) => "complete",
+            Ok(false) => "failed",
+            Err(e) => {
+                warn!(req_id = %self.req_id, error = %e, "阶段行存在性查询失败，按 failed 收尾");
+                "failed"
+            }
+        };
+        if let Err(e) =
+            plan_store::finalize_plan(&s.pool, s.plan_id, semantic_status, None, None).await
+        {
+            warn!(req_id = %self.req_id, error = %e, "观测丢失收尾失败（下次启动清扫兜底）");
+            emit_progress(
+                &self.app,
+                self.plan_id,
+                PlanProgressEvent::StorageIssue {
+                    message: format!("生成结果未能按终态入库：{e}"),
+                },
+            );
+        }
+    }
+}
+
+impl WsEventSink for GenerationConsumer {
+    fn handle_event<'a>(&'a mut self, seq: u64, event: StreamEvent) -> WsFuture<'a> {
         Box::pin(async move {
             match event {
                 StreamEvent::Outline {
@@ -295,15 +501,22 @@ impl StreamEventSink for GeneratePlanSink<'_> {
                     phases,
                 } => {
                     self.phase_count = count;
-                    if let Some(s) = self.storage {
+                    if let Some(s) = &self.storage {
                         // 预计总学时：大纲阶段数 × 每周学时（粗估，供云端列表页展示）
                         let hours = i64::from(self.weekly_hours).saturating_mul(i64::from(count));
-                        if let Err(e) =
-                            plan_store::update_outline_meta(&s.pool, s.plan_id, &title, hours).await
+                        if let Err(e) = plan_store::update_outline_meta(
+                            &s.pool,
+                            s.plan_id,
+                            &title,
+                            overview.as_deref(),
+                            hours,
+                        )
+                        .await
                         {
-                            warn!(%self.req_id, error = %e, "计划大纲元信息入库失败，不影响生成");
-                            notify(
-                                self.progress,
+                            warn!(req_id = %self.req_id, seq, error = %e, "计划大纲元信息入库失败，不影响生成");
+                            emit_progress(
+                                &self.app,
+                                self.plan_id,
                                 PlanProgressEvent::StorageIssue {
                                     message: format!("计划大纲未能自动保存：{e}"),
                                 },
@@ -315,9 +528,10 @@ impl StreamEventSink for GeneratePlanSink<'_> {
                             if let Err(e) =
                                 plan_store::seed_outline(&s.pool, s.plan_id, outline, &[]).await
                             {
-                                warn!(%self.req_id, error = %e, "大纲骨架播种失败，不影响生成");
-                                notify(
-                                    self.progress,
+                                warn!(req_id = %self.req_id, seq, error = %e, "大纲骨架播种失败，不影响生成");
+                                emit_progress(
+                                    &self.app,
+                                    self.plan_id,
                                     PlanProgressEvent::StorageIssue {
                                         message: format!("大纲骨架未能自动保存：{e}"),
                                     },
@@ -325,8 +539,9 @@ impl StreamEventSink for GeneratePlanSink<'_> {
                             }
                         }
                     }
-                    notify(
-                        self.progress,
+                    emit_progress(
+                        &self.app,
+                        self.plan_id,
                         PlanProgressEvent::Outline {
                             phase_count: count,
                             title,
@@ -334,18 +549,19 @@ impl StreamEventSink for GeneratePlanSink<'_> {
                             phases,
                         },
                     );
-                    Ok(None)
+                    Ok(false)
                 }
                 StreamEvent::Phase { index, phase } => {
-                    if let Some(s) = self.storage {
+                    if let Some(s) = &self.storage {
                         // Python 端 index 为小非负整数；防御性越界按 0 处理（实际不可达）
                         let idx = i32::try_from(index).unwrap_or(0);
                         if let Err(e) =
                             plan_store::upsert_phase(&s.pool, s.plan_id, idx, &phase).await
                         {
-                            warn!(%self.req_id, index, error = %e, "阶段入库失败，不中断生成流");
-                            notify(
-                                self.progress,
+                            warn!(req_id = %self.req_id, seq, index, error = %e, "阶段入库失败，不中断生成");
+                            emit_progress(
+                                &self.app,
+                                self.plan_id,
                                 PlanProgressEvent::StorageIssue {
                                     message: format!(
                                         "第 {} 阶段未能自动保存：{e}",
@@ -355,37 +571,50 @@ impl StreamEventSink for GeneratePlanSink<'_> {
                             );
                         }
                     }
-                    notify(
-                        self.progress,
+                    emit_progress(
+                        &self.app,
+                        self.plan_id,
                         PlanProgressEvent::PhaseDone {
                             index,
                             total: self.phase_count,
                         },
                     );
-                    Ok(None)
+                    Ok(false)
                 }
                 // 初生链路不应出现 chapter 事件（单章重生成专属，任务 14）；
                 // 出现即协议异常，忽略防错
                 StreamEvent::Chapter {
                     index, phase_index, ..
                 } => {
-                    warn!(%self.req_id, index, phase_index, "初生流出现非预期 chapter 事件，已忽略");
-                    Ok(None)
+                    warn!(
+                        req_id = %self.req_id,
+                        seq, index, phase_index,
+                        "初生链路出现非预期 chapter 事件，已忽略"
+                    );
+                    Ok(false)
                 }
                 StreamEvent::Done { response: envelope } => {
-                    if let Some(s) = self.storage {
+                    self.terminal = true;
+                    if let Some(s) = &self.storage {
                         if let Err(e) = settle_terminal(&s.pool, s.plan_id, &envelope.status).await
                         {
-                            warn!(%self.req_id, error = %e, "终态入库收尾失败，不影响生成结果返回");
-                            notify(
-                                self.progress,
+                            warn!(req_id = %self.req_id, seq, error = %e, "终态入库收尾失败，不影响事件推送");
+                            emit_progress(
+                                &self.app,
+                                self.plan_id,
                                 PlanProgressEvent::StorageIssue {
                                     message: format!("生成结果未能按终态入库：{e}"),
                                 },
                             );
                         }
                     }
-                    Ok(Some(envelope))
+                    info!(
+                        req_id = %self.req_id,
+                        task_id = %self.task_id,
+                        status = %envelope.status,
+                        "学习计划后台生成完成（终态已收）"
+                    );
+                    Ok(true)
                 }
             }
         })
@@ -1068,5 +1297,120 @@ mod tests {
         // chapter 越界：甲章只有 1 章，index 1 越界；空章节阶段的 index 0 同样越界
         assert!(validate_regen_targets(&outline, 0, Some(1)).is_err());
         assert!(validate_regen_targets(&outline, 1, Some(0)).is_err());
+    }
+
+    /// 进程内最小 WS 服务器：accept 升级后按序发送文本消息，随后正常关闭
+    /// （仅服务回放侧，不模拟 Python 业务逻辑；足够验证信封消费循环）。
+    async fn mini_ws_server(listener: tokio::net::TcpListener, messages: &[&str]) {
+        let (stream, _) = listener.accept().await.expect("accept");
+        let mut ws = tokio_tungstenite::accept_async(stream)
+            .await
+            .expect("upgrade");
+        use futures_util::SinkExt;
+        for m in messages {
+            ws.send(Message::Text(m.to_string().into()))
+                .await
+                .expect("send");
+        }
+        let _ = ws.close(None).await;
+    }
+
+    /// WS 事件消费 capture sink：记录 (seq, 事件种类) 序列与终态标记
+    #[derive(Default)]
+    struct CaptureSink {
+        events: Vec<(u64, &'static str)>,
+        terminal: bool,
+    }
+
+    impl WsEventSink for CaptureSink {
+        fn handle_event<'a>(&'a mut self, seq: u64, event: StreamEvent) -> WsFuture<'a> {
+            Box::pin(async move {
+                let tag = match &event {
+                    StreamEvent::Outline { .. } => "outline",
+                    StreamEvent::Phase { .. } => "phase",
+                    StreamEvent::Chapter { .. } => "chapter",
+                    StreamEvent::Done { .. } => "done",
+                };
+                self.events.push((seq, tag));
+                if tag == "done" {
+                    self.terminal = true;
+                    return Ok(true); // done 即收束
+                }
+                Ok(false)
+            })
+        }
+    }
+
+    /// WS 信封流消费（任务 22）：outline/phase/done 依次分派、坏消息跳过不
+    /// 中断、收到 done 即收束并返回已消费最大 seq（与 Python 信封 {"seq","event"}
+    /// 的 JSON 形状逐字段对齐，对照 main/tasks 侧信封构造）。
+    #[tokio::test]
+    async fn read_ws_events_streams_envelopes_until_done() {
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std_listener.set_nonblocking(true).unwrap();
+        let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            mini_ws_server(
+                listener,
+                &[
+                    r#"{"seq":1,"event":{"type":"outline","phaseCount":2,"title":"标题"}}"#,
+                    "不是 JSON", // 坏消息：应告警跳过，不中断消费
+                    r#"{"seq":2,"event":{"type":"phase","index":0,"phase":{"name":"阶段一"}}}"#,
+                    r#"{"seq":3,"event":{"type":"done","response":{"status":"plan"}}}"#,
+                ],
+            )
+            .await;
+        });
+
+        let url = format!("ws://127.0.0.1:{port}/api/generations/t/events?cursor=0");
+        let (stream, _) = tokio_tungstenite::connect_async(url.as_str())
+            .await
+            .expect("connect");
+        let mut sink = CaptureSink::default();
+        let last_seq = read_ws_events(stream, "test-req", &mut sink)
+            .await
+            .expect("read");
+        server.await.expect("server task");
+
+        assert_eq!(last_seq, 3, "已消费最大 seq 应为 done 的 seq");
+        assert_eq!(
+            sink.events,
+            vec![(1, "outline"), (2, "phase"), (3, "done")],
+            "信封按序分派，坏消息应被跳过"
+        );
+        assert!(sink.terminal, "done 分派后 sink 应标记终态");
+    }
+
+    /// WS 连接提前断开（未收 done）：返回已消费 seq 且不标记终态，由消费方
+    /// 按游标重连补齐（重连循环本身的编排依赖 snapshot/DB/Emitter，不在此测）。
+    #[tokio::test]
+    async fn read_ws_events_returns_consumed_seq_on_premature_close() {
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std_listener.set_nonblocking(true).unwrap();
+        let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            mini_ws_server(
+                listener,
+                &[r#"{"seq":1,"event":{"type":"outline","phaseCount":1,"title":"T"}}"#],
+            )
+            .await;
+        });
+
+        let url = format!("ws://127.0.0.1:{port}/api/generations/t/events?cursor=0");
+        let (stream, _) = tokio_tungstenite::connect_async(url.as_str())
+            .await
+            .expect("connect");
+        let mut sink = CaptureSink::default();
+        let last_seq = read_ws_events(stream, "test-req", &mut sink)
+            .await
+            .expect("read");
+        server.await.expect("server task");
+
+        assert_eq!(last_seq, 1);
+        assert!(!sink.terminal, "未收 done 不应标记终态（重连后补齐）");
     }
 }

@@ -55,20 +55,25 @@ pub async fn create_generating_plan(
     Ok(())
 }
 
-/// 大纲就绪：覆写计划标题与预计总学时（title 暂为 goal 截断的占位时由本函数替换）。
-/// 消费方：commands::generate_plan（outline 事件到达时）。
+/// 大纲就绪：覆写计划标题、概述与预计总学时（title 暂为 goal 截断的占位时由
+/// 本函数替换）。overview 修复（任务 22）：此前漏写 plans.overview 列，前端
+/// 历史条目/详情概述为空——有值必写；Python 端缺省产出 Some("")，空串视为
+/// 缺失照写空串（列 NOT NULL DEFAULT ''，NULL 不可写）。
+/// 消费方：commands generate_plan 后台消费（outline 事件到达时）。
 pub async fn update_outline_meta(
     pool: &PgPool,
     plan_id: Uuid,
     title: &str,
+    overview: Option<&str>,
     estimated_total_hours: i64,
 ) -> Result<(), AgentError> {
     sqlx::query(
-        "UPDATE plans SET title = $2, estimated_total_hours = $3, updated_at = now()
+        "UPDATE plans SET title = $2, overview = $3, estimated_total_hours = $4, updated_at = now()
          WHERE id = $1",
     )
     .bind(plan_id)
     .bind(title)
+    .bind(overview.unwrap_or(""))
     .bind(i32::try_from(estimated_total_hours).unwrap_or(0))
     .execute(pool)
     .await
@@ -351,6 +356,43 @@ pub async fn mark_chapter_pending(
         .map_err(|e| fail("重置所属阶段状态", e))?;
     info!(%plan_id, phase_index, chapter_index, "章节及所属阶段已置回 pending");
     Ok(())
+}
+
+/// 判定计划是否存在任何 phase 行（收尾语义修订的判定基础，见 commands
+/// settle_terminal：有阶段内容 → complete，零内容 → failed）。
+/// 消费方：commands::settle_terminal（done 终态与断线耗尽收尾）。
+pub async fn has_phase_rows(pool: &PgPool, plan_id: Uuid) -> Result<bool, AgentError> {
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phases WHERE plan_id = $1)")
+        .bind(plan_id)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| fail("查询阶段行存在性", e))?;
+    Ok(exists)
+}
+
+/// 启动清扫（任务 22）：sidecar / 应用重启后，后台生成任务随 Python 进程消失，
+/// status='generating' 的存量行永远等不到终态事件 → 全部清为 failed（仅 DB
+/// 模式；重复执行恒为空集，幂等）；其 pending 骨架子行一并置 failed，
+/// complete 子行不动（finalize_failed 的状态机不变量）。
+/// 返回清扫的行数（供日志）。消费方：main.rs setup 钩子。
+pub async fn sweep_stale_generating(pool: &PgPool) -> Result<u64, AgentError> {
+    let stale: Vec<Uuid> = sqlx::query_scalar(
+        "UPDATE plans SET status = 'failed', updated_at = now()
+         WHERE status = 'generating' RETURNING id",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| fail("清扫存量生成中计划", e))?;
+    for plan_id in &stale {
+        if let Err(e) = finalize_failed(pool, *plan_id).await {
+            warn!(%plan_id, error = %e, "清扫存量计划的子行收尾失败（主行已置 failed）");
+        }
+    }
+    let count = stale.len() as u64;
+    if count > 0 {
+        info!(count, "启动清扫：存量 generating 计划行已置 failed");
+    }
+    Ok(count)
 }
 
 /// 失败收尾（children 位）：phases/chapters 中 status='pending' 的行置 failed；

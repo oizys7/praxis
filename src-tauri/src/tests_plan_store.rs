@@ -11,6 +11,7 @@
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::commands;
 use crate::db;
 use crate::plan_store;
 use crate::plan_store::{PlanOutlineRow, PlanRequestRow};
@@ -332,7 +333,7 @@ async fn test_get_plan_reassembles_sorted(pool: PgPool) {
     plan_store::upsert_phase(&pool, plan_id, 1, &sample_phase("阶段乙", &["乙章"]))
         .await
         .unwrap();
-    plan_store::update_outline_meta(&pool, plan_id, "重组后的标题", 66)
+    plan_store::update_outline_meta(&pool, plan_id, "重组后的标题", Some("整体概述文本"), 66)
         .await
         .unwrap();
 
@@ -346,6 +347,11 @@ async fn test_get_plan_reassembles_sorted(pool: PgPool) {
         "phases 必须按 idx 升序重组"
     );
     assert_eq!(record.title, "重组后的标题", "大纲元信息应已覆写标题");
+    // overview 落库修复（任务 22）：有值必写，列表页/详情页概述不再为空
+    assert_eq!(
+        record.overview, "整体概述文本",
+        "大纲 overview 应随元信息一并落库"
+    );
     assert_eq!(record.plan.estimated_total_hours, 66);
     // markdown 正文等值读回（含 mermaid 码块，逐阶段完整）
     for phase in &record.plan.phases {
@@ -860,4 +866,123 @@ async fn test_ensure_schema_converges_child_tables_dropped(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(count(&pool, "chapters").await, 1);
+
+    // -----------------------------------------------------------------------
+    // 任务 22：收尾语义修订（有 phase 行 → complete，包括 error 终态）与启动清扫
+    // -----------------------------------------------------------------------
+
+    /// 收尾语义修订：done(error) 但行内已有任何 phase 行 → plans 置 complete
+    /// （后续可重生成/重看，观测丢失不吞已入库内容）
+    #[sqlx::test]
+    #[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+    async fn test_settle_terminal_error_with_phase_rows_completes(pool: PgPool) {
+        prepare_schema(&pool).await;
+        let plan_id = new_generating_plan(&pool).await;
+        plan_store::seed_outline(&pool, plan_id, &sample_outline(&["阶段甲"], &[1]), &[])
+            .await
+            .unwrap();
+        plan_store::upsert_phase(&pool, plan_id, 0, &sample_phase("阶段甲", &["甲章"]))
+            .await
+            .unwrap();
+        assert!(plan_store::has_phase_rows(&pool, plan_id).await.unwrap());
+
+        commands::settle_terminal(&pool, plan_id, "error")
+            .await
+            .expect("settle_terminal 失败");
+        let status: String = sqlx::query_scalar("SELECT status FROM plans")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            status, "complete",
+            "有阶段内容的 error 终态应翻 complete（可重生成/重看）"
+        );
+        assert!(
+            plan_store::has_phase_rows(&pool, plan_id).await.is_ok(),
+            "阶段行应保留"
+        );
+    }
+
+    /// 零内容收尾：未播种也未扩展任何阶段 → plans 置 failed（plan/error 终态同口径；
+    /// clarification 仍删 generating 行，既有三态语义防回归）
+    #[sqlx::test]
+    #[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+    async fn test_settle_terminal_zero_content_fails(pool: PgPool) {
+        prepare_schema(&pool).await;
+        let plan_id = new_generating_plan(&pool).await;
+
+        // 终态为 plan 但零内容：同样按失败收尾（宁可失败态可删，不留假 complete）
+        commands::settle_terminal(&pool, plan_id, "plan")
+            .await
+            .expect("settle_terminal 失败");
+        let status: String = sqlx::query_scalar("SELECT status FROM plans")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(status, "failed", "零内容的 plan 终态应翻 failed");
+    }
+
+    /// clarification 终态：删 generating 行（既有语义防回归）
+    #[sqlx::test]
+    #[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+    async fn test_settle_terminal_clarification_deletes_row(pool: PgPool) {
+        prepare_schema(&pool).await;
+        let plan_id = new_generating_plan(&pool).await;
+
+        commands::settle_terminal(&pool, plan_id, "clarification")
+            .await
+            .expect("settle_terminal 失败");
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plans")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count, 0, "clarification 终态应删除 generating 行");
+    }
+
+    /// 启动清扫：status='generating' 存量行翻 failed + pending 子行翻 failed，
+    /// complete 行不受影响；二次清扫恒为空集（幂等）
+    #[sqlx::test]
+    #[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+    async fn test_sweep_stale_generating_only_touches_generating(pool: PgPool) {
+        prepare_schema(&pool).await;
+        let stale_id = new_generating_plan(&pool).await;
+        plan_store::seed_outline(&pool, stale_id, &sample_outline(&["阶段甲"], &[1]), &[])
+            .await
+            .unwrap();
+
+        // 对照行：complete 状态不受清扫影响
+        let done_id = new_generating_plan(&pool).await;
+        sqlx::query("UPDATE plans SET status = 'complete' WHERE id = $1")
+            .bind(done_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let swept = plan_store::sweep_stale_generating(&pool).await.unwrap();
+        assert_eq!(swept, 1, "只应清扫 generating 行");
+
+        let stale_status: String = sqlx::query_scalar("SELECT status FROM plans WHERE id = $1")
+            .bind(stale_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(stale_status, "failed");
+        // pending 骨架子行一并置 failed（complete 子行不动）
+        let stale_phase: String = sqlx::query_scalar("SELECT status FROM phases LIMIT 1")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(stale_phase, "failed");
+
+        let done_status: String = sqlx::query_scalar("SELECT status FROM plans WHERE id = $1")
+            .bind(done_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(done_status, "complete", "complete 行不应被清扫触碰");
+
+        // 幂等：二次清扫无存量可清
+        let swept_again = plan_store::sweep_stale_generating(&pool).await.unwrap();
+        assert_eq!(swept_again, 0, "清扫应幂等（二次调用为空集）");
+    }
 }

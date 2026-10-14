@@ -47,6 +47,8 @@ aes-gcm = "0.10"
 base64 = "0.22"
 rand = "0.8"
 serde_yaml = "0.9"
+tokio-tungstenite = "0.30.0"
+futures-util = "0.3.34"
 
 [profile.release]
 # 减小产物体积的常见配置

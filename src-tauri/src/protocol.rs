@@ -58,7 +58,7 @@ pub struct RegenOutline {
 
 /// 学习计划生成请求（前端 -> Rust -> Python）
 /// Serialize：转发给 Python 时由 reqwest .json() 序列化；Deserialize：接收 Tauri IPC 参数
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PlanRequest {
     /// 学习目标
@@ -345,6 +345,72 @@ pub fn parse_ndjson_line(line: &str) -> Option<StreamEvent> {
         return None;
     }
     serde_json::from_str(line).ok()
+}
+
+// ---------------------------------------------------------------------------
+// 生成任务化协议（任务 22：提交即返 + WS 事件消费）
+// ---------------------------------------------------------------------------
+
+/// 后台生成任务提交体（Rust -> Python，POST /api/generations）。
+/// 镜像 agent-service/app/schemas.py::GenerationSubmit（CamelModel，camelCase）：
+/// kind 与载荷二选一严格配对，本任务只用 plan ↔ planRequest。
+/// 仅 Serialize：Rust 是唯一发送方。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationSubmit {
+    /// 任务种类：本任务恒为 "plan"（regen 继续走流式端点）
+    pub kind: String,
+    /// plan 任务载荷（与既有 PlanRequest 同构）
+    pub plan_request: PlanRequest,
+}
+
+/// 提交响应（Python -> Rust）：毫秒级返回的任务 id。
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationSubmitResponse {
+    pub task_id: String,
+}
+
+/// 任务状态快照（Python -> Rust，GET /api/generations/{taskId}/snapshot）：
+/// WS 连接前的诊断与断线重连游标依据（cursor 不得超过 lastSeq）。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerationTaskSnapshot {
+    pub task_id: String,
+    pub kind: String,
+    /// 任务生命周期状态：running | finished | cancelled
+    pub status: String,
+    pub first_seq: u64,
+    pub last_seq: u64,
+    /// 事件日志是否已收尾（末条必为 done）
+    pub done: bool,
+}
+
+/// WS 事件信封（Python -> Rust）：每条 WS 消息 {"seq": n, "event": {...}}，
+/// event 与 NDJSON 行同构（StreamEvent）；seq 从 1 自增，回放/直播共用。
+#[derive(Debug, Clone, Deserialize)]
+pub struct WsEnvelope {
+    pub seq: u64,
+    pub event: StreamEvent,
+}
+
+/// WS 信封解析：坏 JSON / 缺字段 / event 内未知 type 一律 None（告警跳过）。
+pub fn parse_ws_envelope(text: &str) -> Option<WsEnvelope> {
+    serde_json::from_str(text).ok()
+}
+
+/// Rust -> 前端的全局进度事件信封（任务 22 起 'plan-progress' 事件的载荷）。
+/// [PlanProgressEvent] 三变体形状保持不动，仅外包一层定位信息（planId 归属 /
+/// kind 区分链路），前端经 tauri 全局 listen 按事件名收取。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanProgressEnvelope {
+    /// 归属计划 id（generate_plan 预置行 id，与命令返回值一致）
+    pub plan_id: String,
+    /// 链路种类：generate 链路恒 "plan"（regen 仍走 Channel 通道）
+    pub kind: String,
+    /// 进度事件本体（Outline / PhaseDone / StorageIssue）
+    pub payload: PlanProgressEvent,
 }
 
 #[cfg(test)]
@@ -708,5 +774,117 @@ mod tests {
             serde_json::to_value(&issue).unwrap(),
             serde_json::json!({"type": "storageIssue", "message": "存储不可用"})
         );
+    }
+
+    /// WS 信封解析（任务 22）：{"seq": n, "event": {...}}，event 与 NDJSON 同构；
+    /// seq 缺失 / 结构破坏 / event 未知 type 一律 None
+    #[test]
+    fn ws_envelope_parse_aligns_with_ndjson_events() {
+        let phase = parse_ws_envelope(
+            r#"{"seq":3,"event":{"type":"phase","index":0,"phase":{"name":"进阶"}}}"#,
+        )
+        .expect("phase 信封应解析成功");
+        assert_eq!(phase.seq, 3);
+        match phase.event {
+            StreamEvent::Phase { index, phase } => {
+                assert_eq!(index, 0);
+                assert_eq!(phase.name, "进阶");
+            }
+            other => panic!("应为 Phase 事件，实际：{other:?}"),
+        }
+
+        let done =
+            parse_ws_envelope(r#"{"seq":9,"event":{"type":"done","response":{"status":"plan"}}}"#)
+                .expect("done 信封应解析成功");
+        match done.event {
+            StreamEvent::Done { response } => assert_eq!(response.status, "plan"),
+            other => panic!("应为 Done 事件，实际：{other:?}"),
+        }
+
+        // event 复用既有 StreamEvent 载荷（含可选骨架缺省）
+        let outline = parse_ws_envelope(
+            r#"{"seq":1,"event":{"type":"outline","phaseCount":4,"title":"Rust 入门"}}"#,
+        )
+        .expect("outline 信封应解析成功");
+        assert!(matches!(
+            outline.event,
+            StreamEvent::Outline { phase_count: 4, .. }
+        ));
+
+        // 非信封 / 缺 seq / event 坏行一律 None
+        assert!(parse_ws_envelope("{not-json").is_none());
+        assert!(
+            parse_ws_envelope(r#"{"event":{"type":"done"}}"#).is_none(),
+            "缺 seq 应 None"
+        );
+        assert!(
+            parse_ws_envelope(r#"{"seq":1,"event":{"type":"unknown"}}"#).is_none(),
+            "未知 event 应 None"
+        );
+    }
+
+    /// 提交体 wire：kind + planRequest（camelCase），与 Python GenerationSubmit
+    /// （CamelModel）逐字段对齐
+    #[test]
+    fn generation_submit_serializes_camel_case() {
+        let body = GenerationSubmit {
+            kind: "plan".into(),
+            plan_request: PlanRequest {
+                goal: "学 Rust".into(),
+                level: "intermediate".into(),
+                weekly_hours: 12,
+                weeks: 8,
+                interests: vec!["并发".into()],
+                background: "写过 Go".into(),
+            },
+        };
+        let value = serde_json::to_value(&body).unwrap();
+        assert_eq!(value["kind"], "plan");
+        assert!(
+            !value
+                .get("regenRequest")
+                .map(|v| !v.is_null())
+                .unwrap_or(false),
+            "plan 提交不带 regenRequest"
+        );
+        assert_eq!(value["planRequest"]["weeklyHours"], 12);
+        assert_eq!(
+            value["planRequest"]["interests"],
+            serde_json::json!(["并发"])
+        );
+    }
+
+    /// 全局进度事件信封（任务 22）：{planId, kind, payload}，payload 三变体形状不动
+    #[test]
+    fn plan_progress_envelope_wraps_payload() {
+        let envelope = PlanProgressEnvelope {
+            plan_id: "uuid-1".into(),
+            kind: "plan".into(),
+            payload: PlanProgressEvent::PhaseDone { index: 0, total: 4 },
+        };
+        let value = serde_json::to_value(&envelope).unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({"planId": "uuid-1", "kind": "plan",
+                "payload": {"type": "phaseDone", "index": 0, "total": 4}})
+        );
+    }
+
+    /// 提交响应与任务快照反序列化：Python 端 camelCase（taskId/firstSeq/lastSeq）
+    #[test]
+    fn task_meta_models_deserialize_camel_case() {
+        let submitted: GenerationSubmitResponse =
+            serde_json::from_str(r#"{"taskId":"abc123"}"#).expect("提交响应应可反序列化");
+        assert_eq!(submitted.task_id, "abc123");
+
+        let snapshot: GenerationTaskSnapshot = serde_json::from_str(
+            r#"{"taskId":"abc123","kind":"plan","status":"running","firstSeq":1,"lastSeq":5,"done":false}"#,
+        )
+        .expect("快照应可反序列化");
+        assert_eq!(snapshot.task_id, "abc123");
+        assert_eq!(snapshot.kind, "plan");
+        assert_eq!(snapshot.status, "running");
+        assert_eq!(snapshot.last_seq, 5);
+        assert!(!snapshot.done);
     }
 }

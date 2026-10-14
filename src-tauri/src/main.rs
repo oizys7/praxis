@@ -52,6 +52,29 @@ fn main() {
             let guard = logging::init(&log_dir);
             app.manage(guard);
             tracing::info!("Praxis 桌面壳启动");
+
+            // 启动清扫（任务 22）：sidecar 重启后后台生成任务已随 Python 进程
+            // 消失，上一进程遗留的 status='generating' 行永远等不到终态事件，
+            // 全部翻 failed（幂等；仅 DB 模式，库不可用则跳过不影响启动）。
+            let app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                let config = commands::load_db_config(&app_handle);
+                if config.host.trim().is_empty() {
+                    tracing::debug!("云端库未配置，跳过启动清扫");
+                    return;
+                }
+                match db::pool(&config).await {
+                    Ok(pool) => match plan_store::sweep_stale_generating(&pool).await {
+                        Ok(count) if count > 0 => {
+                            tracing::info!(count, "启动清扫完成：存量 generating 计划已置 failed")
+                        }
+                        Ok(_) => {}
+                        Err(e) => tracing::warn!(error = %e, "启动清扫执行失败"),
+                    },
+                    Err(e) => tracing::warn!(error = %e, "云端库不可用，跳过启动清扫"),
+                }
+            });
+
             Ok(())
         })
         .build(tauri::generate_context!())
