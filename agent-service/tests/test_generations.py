@@ -288,13 +288,6 @@ async def test_snapshot_fields(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _run_plan_to_finish() -> str:
-    """后台注册一个 mock plan 任务并等终态（单独立循环，供 WS 回放例消费）。"""
-    monkeypatch_free_settings = settings
-    monkeypatch_free_settings.allow_mock_llm = True  # type: ignore[misc]
-    return asyncio.run(_wait_finished_plan())
-
-
 async def _wait_finished_plan() -> str:
     from app.schemas import PlanRequest
 
@@ -306,7 +299,7 @@ async def _wait_finished_plan() -> str:
 
 
 def _fetch_log(task_id: str) -> list[dict[str, Any]]:
-    """读出注册表日志（回放对照基准），终态已由 _run_plan_to_finish 保证。"""
+    """读出注册表日志（回放对照基准），终态已由 _wait_finished_plan 保证。"""
     entry = registry.get(task_id)
     assert entry is not None and entry.status != "running"
     return [event for _, event in entry.events]
@@ -345,7 +338,7 @@ class TestWsReplay:
         assert len(replay) == len(events) - 1, "cursor=1 应跳过 seq=1"
         for i, message in enumerate(replay):
             assert message["seq"] == 2 + i, "后缀 seq 必须连续"
-        assert replay[-1]["event"] == events[-1], "后缀收尾必须与日志一致"
+        assert [m["event"] for m in replay] == events[1:], "后缀必须逐事件与日志 seq>=2 完全一致"
 
     def test_ws_missing_task_4404(self):
         """任务不存在 → WS 关闭 code=4404。"""

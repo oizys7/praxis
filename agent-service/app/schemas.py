@@ -72,8 +72,8 @@ class GenerationSubmit(CamelModel):
     """后台生成任务提交体（POST /api/generations）。
 
     kind 与载荷二选一严格配对：plan ↔ planRequest；regen_phase / regen_chapter
-    ↔ regenRequest。配对关系由 Discriminated Union 显式建模（kind 为判别字段），
-    错配（如 plan 却带 regenRequest）在校验层直接拒绝（422）。
+    ↔ regenRequest。配对关系由 model_post_init 显式校验（扁平模型，非
+    discriminated union），错配（如 plan 却带 regenRequest）在校验层直接拒绝（422）。
     """
 
     kind: str = Field(..., description="任务种类：plan | regen_phase | regen_chapter")
@@ -83,7 +83,7 @@ class GenerationSubmit(CamelModel):
     )
 
     def model_post_init(self, __context: Any, /) -> None:
-        """显式校验 kind 与载荷的配对关系（discriminated union 之外的补充防线）。"""
+        """显式校验 kind 与载荷的配对关系（本模型的核心防线，无 discriminated union）。"""
         allowed = {"plan", "regen_phase", "regen_chapter"}
         if self.kind not in allowed:
             raise ValueError(

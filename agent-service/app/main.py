@@ -264,7 +264,7 @@ async def generation_snapshot(task_id: str):
 
 @app.delete("/api/generations/{task_id}")
 async def cancel_generation(task_id: str):
-    """幂等 cancel：running → 取消（done(error, cancelled) 由 _run 落日志）；
+    """幂等 cancel：running → 取消（done(error, cancelled) 由 registry.cancel 同步落日志）；
 
     已终态任务原样返回当前状态（200）；不存在返回 404。
     """

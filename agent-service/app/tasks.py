@@ -113,7 +113,9 @@ class TaskRegistry:
         """获取锁后追加（终态 done 翻译路径专用；常规事件走 _append）。
 
         注意：调用方**不得**已持有该锁 —— asyncio.Lock 非重入，嵌套申请即死锁；
-        已持锁的调用方（cancel）改用 _append_locked。
+        已持锁的调用方（cancel）改用 _append_locked。另：所有 per-task 锁
+        临界区必须保持无 await（append 协议的隐式前提）——若需在锁内挂起，
+        必须重新设计追加协议（见审查 P2-1）。
         """
         async with self.lock_for(entry.task_id):
             self._append_locked(entry, event)
@@ -245,7 +247,7 @@ class TaskRegistry:
         """幂等 cancel：running → task.cancel() + 立即落 done(error, cancelled)。
 
         done 在本方法内同步追加（不再等 _run 的 CancelledError 分支），保证
-        DELETE 返回时日志已收尾、重复 DELETE 结果一致（幂等）；</g>_run 的
+        DELETE 返回时日志已收尾、重复 DELETE 结果一致（幂等）；_run 的
         CancelledError 分支见 done 已落不再追加。已终态任务原样返回；
         不存在抛 KeyError（端点 404）。
         """
