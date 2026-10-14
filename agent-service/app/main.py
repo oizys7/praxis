@@ -19,29 +19,37 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
-from typing import Any, cast
+from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from pydantic import ValidationError
 
-from app import nodes
+from app import tasks
 from app.config import settings
-from app.errors import AgentServiceError, register_error_handlers
+from app.errors import register_error_handlers
 from app.graph import agent_graph
 from app.llm import reset_chat_model_cache
 from app.logging_config import setup_logging, uvicorn_log_config
 from app.schemas import (
     AgentSettingsModel,
-    ErrorDetail,
+    GenerationSubmit,
     HealthResponse,
     PlanRequest,
     PlanResponse,
     RegenRequest,
     StudyPlan,
+)
+from app.tasks import (
+    ConcurrencyExceededError,
+    TaskKind,
+    TaskStatus,
+    registry,
 )
 
 setup_logging()
@@ -176,80 +184,13 @@ async def generate_plan_stream(request: PlanRequest) -> StreamingResponse:
 
 
 async def _stream_plan_events(request: PlanRequest) -> AsyncIterator[str]:
-    """驱动图流式执行，把节点增量翻译为 NDJSON 事件行。
+    """NDJSON 薄包装：透传 tasks._plan_event_dicts 的 event dict（wire 不变）。
 
-    业务异常（AgentServiceError）在此捕获并翻译为 error 包络的 done 终态行
-    （形状与非流式通道全局 handler 的产出一致，见 app/errors.py），保证
-    「done 必为最后一行」的协议承诺在任何终态下都成立；意外异常不在此捕获，
-    仍由 Starlette 中断流。
+    事件管道已降层到 app/tasks.py 供后台任务与流端点共用；本函数只负责
+    NDJSON 序列化（ensure_ascii=False + 尾行换行），字节级兼容旧线协议。
     """
-    # langgraph v1 astream 的 Sequence stream_mode 重载未建模 (mode, chunk)
-    # 元组返回形状，cast 对齐运行时实际产出（与 graph.py 的签名误报处理同理）
-    stream = cast(
-        AsyncIterator[tuple[str, Any]],
-        agent_graph.astream(
-            {"request": request.model_dump(by_alias=True)},
-            stream_mode=["updates", "values"],
-        ),
-    )
-    final_state: dict[str, Any] = {}
-    try:
-        async for mode, chunk in stream:
-            if mode == "updates":
-                for node, update in chunk.items():
-                    # 图终态哨兵（如 __end__）的增量可能非 dict，直接跳过
-                    if not isinstance(update, dict):
-                        continue
-                    # outline 节点增量到达：推 1 条 outline 事件
-                    # （phases 载荷供渐进式骨架渲染：阶段名 / 周区间 / 章节标题，
-                    # objectives 等不进事件保持轻量；outline dict 本就是
-                    # by_alias camelCase，字段名直接对齐）
-                    if node == "outline" and "outline" in update:
-                        outline = update["outline"]
-                        yield _ndjson_line(
-                            {
-                                "type": "outline",
-                                "phaseCount": len(outline.get("phases") or []),
-                                "title": outline.get("title", ""),
-                                "overview": outline.get("overview", ""),
-                                "phases": [
-                                    {
-                                        "name": phase.get("name", ""),
-                                        "weekRange": phase.get("weekRange", ""),
-                                        "chapterTitles": phase.get("chapterTitles") or [],
-                                    }
-                                    for phase in outline.get("phases") or []
-                                ],
-                            }
-                        )
-                    # 并行扩展 / 定向回炉的增量到达：逐阶段推 phase 事件
-                    # （expand_revision 携带全量草稿，未点名阶段会重复推送，
-                    # 消费方按 index 覆盖即可，语义不变）
-                    elif node in ("expand_phase", "expand_revision") and (
-                        "phase_drafts" in update
-                    ):
-                        for index, phase in update["phase_drafts"].items():
-                            yield _ndjson_line(
-                                {"type": "phase", "index": int(index), "phase": phase}
-                            )
-            else:  # values：整图状态快照，记录最新一份作为终态
-                final_state = chunk
-    except AgentServiceError as exc:
-        # 业务失败（无 Key / 超时 / 解析失败等）不中断流：翻译为 error 终态，
-        # 与非流式通道 agent_service_error_handler 同构（200 语义 + code=service）
-        logger.warning("流式生成业务失败：%s", exc)
-        response = PlanResponse(
-            status="error",
-            error=ErrorDetail(code="service", message=str(exc)),
-        )
-    else:
-        response = build_response(final_state)
-
-    # 终态包络：mode="json" 先落成 JSON 安全标量（枚举 / UUID 安全），
-    # plan / clarification / error 三种终态统一走 done 收尾
-    yield _ndjson_line(
-        {"type": "done", "response": response.model_dump(mode="json", by_alias=True)}
-    )
+    async for event in tasks._plan_event_dicts(request):
+        yield _ndjson_line(event)
 
 
 @app.post("/api/regenerate/stream")
@@ -282,89 +223,112 @@ async def regenerate_stream(payload: RegenRequest) -> StreamingResponse:
 
 
 async def _stream_regen_events(payload: RegenRequest) -> AsyncIterator[str]:
-    """把单条重生成结果翻译为 NDJSON 事件行（phase / chapter → done）。
+    """NDJSON 薄包装：透传 tasks._regen_event_dicts 的 event dict（wire 不变）。"""
+    async for event in tasks._regen_event_dicts(payload):
+        yield _ndjson_line(event)
 
-    生成完成后，终态包络统一在函数末尾推 done：成功 PlanResponse(status=plan)，
-    业务失败翻译为 status=error（错误内容来自异常文本或越界校验说明）。
+
+# ---------------------------------------------------------------------------
+# 生成任务化端点（v7）：提交即返 + 快照 + 取消 + WS 游标回放/直播
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/generations")
+async def create_generation(request: Request):
+    """提交后台生成任务：毫秒级返回 {taskId}，生成由 Python 后台任务跑完整图。
+
+    连接断开 / 页面关闭 / Rust 重启都不影响生成；进度经 WS 事件通道查询。
+    并发池（plan/regen 共享 MAX_CONCURRENT）占满返回 429（中文 message）。
     """
-    request_dict = payload.request.model_dump(by_alias=True)
-    outline_dict = payload.outline.model_dump(by_alias=True)
-    phases = outline_dict.get("phases") or []
-    phase_index = payload.phase_index
-    phase_outline = phases[phase_index] if 0 <= phase_index < len(phases) else None
+    try:
+        body = await request.json()
+    except Exception as exc:  # 非 JSON / 解析失败统一 422
+        raise HTTPException(status_code=422, detail=f"请求体不是合法 JSON：{exc}") from exc
+    kind, payload = _parse_generation_submit(body)
+    try:
+        task_id = await registry.submit(kind, payload)
+    except ConcurrencyExceededError as exc:
+        logger.warning("提交被拒（容量不足）：%s", exc)
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    return {"taskId": task_id}
 
-    if phase_outline is None:
-        yield _error_done(
-            f"重生成目标阶段越界：phaseIndex={phase_index}，大纲共 {len(phases)} 个阶段"
-        )
+
+@app.get("/api/generations/{task_id}/snapshot")
+async def generation_snapshot(task_id: str):
+    """任务状态摘要：{taskId, kind, status, firstSeq, lastSeq, done}；不存在 404。"""
+    entry = registry.get(task_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="任务不存在或已驱逐")
+    return registry.snapshot(entry)
+
+
+@app.delete("/api/generations/{task_id}")
+async def cancel_generation(task_id: str):
+    """幂等 cancel：running → 取消（done(error, cancelled) 由 _run 落日志）；
+
+    已终态任务原样返回当前状态（200）；不存在返回 404。
+    """
+    try:
+        entry = await registry.cancel(task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="任务不存在或已驱逐") from exc
+    return {"taskId": entry.task_id, "status": entry.status.value}
+
+
+def _parse_generation_submit(body: Any) -> tuple[TaskKind, Any]:
+    """提交体显式校验（kind + 二选一载荷），错配翻译为 422（不走全局 200 包络）。
+
+    返回 (kind, payload)，payload 为与 kind 配对的 PlanRequest / RegenRequest。
+    """
+    try:
+        submitted = GenerationSubmit.model_validate(body)
+    except ValidationError as exc:
+        errors = exc.errors()[:3]
+        raise HTTPException(
+            status_code=422, detail=f"请求参数不合法：{errors}"
+        ) from exc
+    return TaskKind(submitted.kind), submitted.payload()
+
+
+@app.websocket("/api/generations/{task_id}/events")
+async def generation_events(ws: WebSocket, task_id: str, cursor: int = 0) -> None:
+    """事件通道（WS）：连接后先回放 seq>cursor 缓存，再直播新事件直至 done。
+
+    每条消息信封 {"seq": n, "event": {...}}，event 与 NDJSON 行同构；
+    回放窗口在 per-task lock 下快照衔接，不丢不重；心跳依赖 uvicorn 协议层
+    ping/pong（默认 ws_ping_interval），应用层不自制心跳；任务不存在 /
+    已驱逐 → 接受后立即以 4404 关闭（不做鉴权：localhost sidecar）。
+    """
+    await ws.accept()
+    entry = registry.get(task_id)
+    if entry is None:
+        await ws.close(code=4404, reason="任务不存在或已驱逐")
         return
 
-    try:
-        if payload.chapter_index is None:  # 全阶段重生成
-            phase = await nodes.regenerate_phase(
-                request_dict, outline_dict, phase_index
-            )
-            yield _ndjson_line(
-                {"type": "phase", "index": phase_index, "phase": phase}
-            )
-            done = _plan_done()
-        else:  # 单章重生成
-            chapter_index = payload.chapter_index
-            chapter_titles = phase_outline.get("chapterTitles") or []
-            if not 0 <= chapter_index < len(chapter_titles):
-                done = _error_response(
-                    f"重生成目标章节越界：phaseIndex={phase_index} 的 chapterIndex="
-                    f"{chapter_index}，该阶段共 {len(chapter_titles)} 个章节"
-                )
-            else:
-                chapter = await nodes.regenerate_chapter(
-                    request_dict, outline_dict, phase_index, chapter_index
-                )
-                yield _ndjson_line(
-                    {
-                        "type": "chapter",
-                        "index": chapter_index,
-                        "phaseIndex": phase_index,
-                        "chapter": chapter,
-                    }
-                )
-                done = _plan_done()
-    except AgentServiceError as exc:
-        # 业务失败（无 Key / 超时 / 解析失败等）不中断流：翻译为 error 终态，
-        # 与 _stream_plan_events 同构（app/errors.py：code=service）
-        logger.warning("重生成业务失败：%s", exc)
-        done = PlanResponse(
-            status="error",
-            error=ErrorDetail(code="service", message=str(exc)),
-        )
-
-    # 终态包络：mode="json" 先落成 JSON 安全标量；数据已由 phase / chapter
-    # 事件携带，done 只报告成败（plan / error 两种终态统一走 done 收尾）
-    yield _ndjson_line(
-        {"type": "done", "response": done.model_dump(mode="json", by_alias=True)}
-    )
+    seq_sent = cursor  # 回放下界：cursor 之后的缓存才回放（不丢不重）
+    done_sent = False
+    while True:
+        # 每轮在 per-task lock 内快照：新事件的追加同样持锁，衔接无缝
+        async with registry.lock_for(task_id):
+            pending = [(seq, event) for seq, event in entry.events if seq > seq_sent]
+        for seq, event in pending:
+            await _ws_send(ws, seq, event)
+            seq_sent = seq
+            if event.get("type") == "done":
+                done_sent = True
+        if done_sent or (
+            not pending
+            and entry.status is not TaskStatus.running
+            and entry.done
+        ):
+            break
+        await asyncio.sleep(0.05)
+    await ws.close()
 
 
-def _plan_done() -> PlanResponse:
-    """成功终态包络：status=plan，数据已由 phase / chapter 事件先行携带。"""
-    return PlanResponse(status="plan")
-
-
-def _error_response(message: str) -> PlanResponse:
-    """参数层面失败（越界等）的 error 包络（code=validation）。"""
-    return PlanResponse(
-        status="error", error=ErrorDetail(code="validation", message=message)
-    )
-
-
-def _error_done(message: str) -> str:
-    """构造一行 error 终态的 done 事件（code=validation，参数层面失败）。"""
-    response = PlanResponse(
-        status="error", error=ErrorDetail(code="validation", message=message)
-    )
-    return _ndjson_line(
-        {"type": "done", "response": response.model_dump(mode="json", by_alias=True)}
-    )
+async def _ws_send(ws: WebSocket, seq: int, event: dict[str, Any]) -> None:
+    """发送一条信封消息：连接断开时 send 抛异常，端点自然退出。"""
+    await ws.send_json({"seq": seq, "event": event})
 
 
 def _ndjson_line(event: dict[str, Any]) -> str:

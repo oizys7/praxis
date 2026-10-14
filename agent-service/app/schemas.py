@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -66,6 +66,55 @@ class RegenRequest(CamelModel):
     chapter_index: int | None = Field(
         default=None, ge=0, description="目标章节索引（0-based）；None 表示全阶段"
     )
+
+
+class GenerationSubmit(CamelModel):
+    """后台生成任务提交体（POST /api/generations）。
+
+    kind 与载荷二选一严格配对：plan ↔ planRequest；regen_phase / regen_chapter
+    ↔ regenRequest。配对关系由 Discriminated Union 显式建模（kind 为判别字段），
+    错配（如 plan 却带 regenRequest）在校验层直接拒绝（422）。
+    """
+
+    kind: str = Field(..., description="任务种类：plan | regen_phase | regen_chapter")
+    plan_request: PlanRequest | None = Field(default=None, description="plan 任务的载荷")
+    regen_request: RegenRequest | None = Field(
+        default=None, description="regen 任务的载荷"
+    )
+
+    def model_post_init(self, __context: Any, /) -> None:
+        """显式校验 kind 与载荷的配对关系（discriminated union 之外的补充防线）。"""
+        allowed = {"plan", "regen_phase", "regen_chapter"}
+        if self.kind not in allowed:
+            raise ValueError(
+                f"kind 必须是 {'|'.join(sorted(allowed))}，实际为: {self.kind!r}"
+            )
+        payload_present = self.plan_request is not None or self.regen_request is not None
+        wants_plan = self.kind == "plan"
+        wants_regen = self.kind != "plan"
+        if not payload_present:
+            raise ValueError(
+                "缺少任务载荷：plan 任务必须带 planRequest，"
+                "regen_phase / regen_chapter 任务必须带 regenRequest"
+            )
+        if wants_plan and self.plan_request is None:
+            raise ValueError("kind=plan 时必须携带 planRequest（不得携带 regenRequest）")
+        if wants_regen and self.regen_request is None:
+            raise ValueError(
+                f"kind={self.kind} 时必须携带 regenRequest（不得携带 planRequest）"
+            )
+        if wants_plan and self.regen_request is not None:
+            raise ValueError("kind=plan 时不得携带 regenRequest")
+        if wants_regen and self.plan_request is not None:
+            raise ValueError(f"kind={self.kind} 时不得携带 planRequest")
+
+    def payload(self) -> PlanRequest | RegenRequest:
+        """取与 kind 配对的载荷对象（shape 在 model_post_init 已保证）。"""
+        if self.kind == "plan":
+            assert self.plan_request is not None
+            return self.plan_request
+        assert self.regen_request is not None
+        return self.regen_request
 
 
 # ---------------------------------------------------------------------------
