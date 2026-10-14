@@ -155,7 +155,8 @@ let listenPromise: Promise<void> | null = null;
  * 第一段 outline 事件可能在命令返回前后就发出，listen 必须先于 invoke。
  */
 export function ensureProgressListener(): Promise<void> {
-  listenPromise ??= listen<PlanProgressEnvelope>("plan-progress", (event) => {
+  if (listenPromise) return listenPromise;
+  const own = listen<PlanProgressEnvelope>("plan-progress", (event) => {
     const { planId, kind, payload } = event.payload;
     if (!planId) return;
     // 槽位事件式建槽：applyProgressEvent 内部消费（含晚到的 outline）
@@ -163,11 +164,28 @@ export function ensureProgressListener(): Promise<void> {
       observations.value[planId] = newObservation(planId);
     }
     applyProgressEvent(observations.value[planId], kind, payload);
-  }).then((fn) => {
-    unlisten = fn;
-    startPolling();
-  });
-  return listenPromise;
+  })
+    .then((fn): void => {
+      // 审查 Finding-2：dispose 先于在途 listen 兑现时，监听在卸载后
+      // 「复活」且永不再释放——token 校验失效（listenPromise 已换新/清空）
+      // 即立即释放，不赋给 unlisten
+      if (listenPromise !== own) {
+        fn();
+        return;
+      }
+      unlisten = fn;
+      startPolling();
+    })
+    .catch((e) => {
+      // 审查 Finding-7：listen 失败（IPC 关停瞬时）不永久缓存被拒 promise，
+      // 复位后允许下次调用重试；错误继续上抛给 await 者感知
+      if (listenPromise === own) {
+        listenPromise = null;
+      }
+      throw e;
+    });
+  listenPromise = own;
+  return own;
 }
 
 /** 解除全局监听并停掉对账轮询（App unmount 时机调用） */
@@ -227,6 +245,12 @@ async function reconcileOnce(obs: GenerationObservation) {
   try {
     const record = await fetchPlanRecord(obs.planId);
     obs.missCount = 0;
+    // outline 事件丢失（HMR/监听迟到）而 DB 阶段行齐全：用 DB 阶段数补
+    // 分母，否则 isObservationTerminal 恒 false → 终态永不触发、轮询无限
+    // 持续（审查 Finding-3）
+    if (obs.outlinePhaseCount === 0 && record.plan.phases.length > 0) {
+      obs.outlinePhaseCount = record.plan.phases.length;
+    }
     // 详情的阶段状态逐位对账（只补 'complete' / 'failed'，pending 不动：
     // 行在 generating 时骨架行恒pending，语义上仍属进行中）
     record.plan.phases.forEach((phase, index) => {

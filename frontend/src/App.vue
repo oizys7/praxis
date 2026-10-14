@@ -60,6 +60,8 @@ const planView = ref<"list" | "create">("list");
 const historyMode = ref(false);
 /** 当前打开的历史记录 id（阶段/章节重生成入口依赖；新生成流程无 id） */
 const historyPlanId = shallowRef<string | null>(null);
+/** 终态快照时的入库告警（审查 minor：终态 unfollow 后应继续展示的结果页属性） */
+const resultStorageIssue = ref<string | null>(null);
 /** 最近一次生成请求（保存到云端时取 goal / level / weeks 元数据） */
 const lastRequest = shallowRef<PlanRequest | null>(null);
 /**
@@ -113,6 +115,10 @@ watch(terminalPlanIds, async (ids) => {
       clarifications: null,
       error: null,
     };
+    // 审查 minor：终态 unfollow 会清空 genState，结果页的入库告警徽标若
+    // 继续绑 genState?.storageIssue 会失真为「已自动保存」——终态快照时
+    // 把 obs.storageIssue 固化到独立 ref，经模板桥接给结果页
+    resultStorageIssue.value = obs?.storageIssue ?? null;
   } catch (e) {
     error.value = normalizeError(e);
   } finally {

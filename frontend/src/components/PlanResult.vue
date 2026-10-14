@@ -27,7 +27,7 @@ defineProps<{
   weeks?: number;
   /** 历史查看模式：计划已入云，不显示保存状态徽标 */
   historyMode?: boolean;
-  /** 云端自动入库异常提示（useAgent 的 storageIssue；null = 入库正常） */
+  /** 云端自动入库异常提示（任务 23 起源自进度观测 store / App 终态快照；null = 入库正常） */
   storageIssue?: string | null;
   /**
    * 历史计划 id：阶段/章节级重生成入口依赖。新生成结果（Rust 自动入库
