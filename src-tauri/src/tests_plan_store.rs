@@ -578,6 +578,38 @@ async fn test_seed_outline_idempotent(pool: PgPool) {
     assert_eq!(count(&pool, "resources").await, 2, "二次播种不得重复资源");
 }
 
+/// done 包络资源补写（任务 24，审查 Finding-1）：upsert_resources
+/// DELETE+INSERT 幂等覆写（重发 done 不重复、可减可增），get_plan 回读有值
+#[sqlx::test]
+#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+async fn test_upsert_resources_overwrites_and_reads_back(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+
+    // 无资源 -> 空写（幂等基线：重复调用不残留）
+    plan_store::upsert_resources(&pool, plan_id, &[])
+        .await
+        .unwrap();
+    plan_store::upsert_resources(&pool, plan_id, &sample_resources())
+        .await
+        .expect("upsert_resources 失败");
+    assert_eq!(count(&pool, "resources").await, 2);
+
+    // 重发 done（覆写）：数量可减不残留旧行
+    plan_store::upsert_resources(&pool, plan_id, &sample_resources()[..1])
+        .await
+        .expect("二次覆写失败");
+    assert_eq!(count(&pool, "resources").await, 1, "重发 done 不得重复资源");
+
+    // get_plan 回读有值（结果页资源卡唯一内容源）
+    let record = db::get_plan_by_pool(&pool, &plan_id.to_string())
+        .await
+        .expect("get_plan 失败");
+    assert_eq!(record.plan.resources.len(), 1);
+    assert_eq!(record.plan.resources[0].title, "The Rust Book");
+    assert_eq!(record.plan.resources[0].kind, "docs");
+}
+
 /// 状态机主链：seed → upsert idx=0 → complete；失败收尾后 idx=1（含章节）变 failed，
 /// idx=0（complete）不受影响——失败收尾只动 pending
 #[sqlx::test]
@@ -886,7 +918,7 @@ async fn test_ensure_schema_converges_child_tables_dropped(pool: PgPool) {
             .unwrap();
         assert!(plan_store::has_phase_rows(&pool, plan_id).await.unwrap());
 
-        commands::settle_terminal(&pool, plan_id, "error")
+        commands::settle_terminal_with_hours(&pool, plan_id, "error", None)
             .await
             .expect("settle_terminal 失败");
         let status: String = sqlx::query_scalar("SELECT status FROM plans")
@@ -912,7 +944,7 @@ async fn test_ensure_schema_converges_child_tables_dropped(pool: PgPool) {
         let plan_id = new_generating_plan(&pool).await;
 
         // 终态为 plan 但零内容：同样按失败收尾（宁可失败态可删，不留假 complete）
-        commands::settle_terminal(&pool, plan_id, "plan")
+        commands::settle_terminal_with_hours(&pool, plan_id, "plan", None)
             .await
             .expect("settle_terminal 失败");
         let status: String = sqlx::query_scalar("SELECT status FROM plans")
@@ -929,7 +961,7 @@ async fn test_ensure_schema_converges_child_tables_dropped(pool: PgPool) {
         prepare_schema(&pool).await;
         let plan_id = new_generating_plan(&pool).await;
 
-        commands::settle_terminal(&pool, plan_id, "clarification")
+        commands::settle_terminal_with_hours(&pool, plan_id, "clarification", None)
             .await
             .expect("settle_terminal 失败");
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plans")

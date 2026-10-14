@@ -216,6 +216,10 @@ pub struct PlanRecord {
     pub id: String,
     pub title: String,
     pub goal: String,
+    /// 行级生成状态：generating | complete | failed（数据库字面量原样透传，
+    /// 任务 24 补全：历史行徽章跨会话恢复，字段名单词 status 无 camel 歧义）
+    #[serde(default)]
+    pub status: String,
     #[serde(default)]
     pub overview: String,
     /// 保存时的学习水平（冗余自 PlanRequest，列表页展示用）
@@ -238,6 +242,9 @@ pub struct PlanSummary {
     pub id: String,
     pub title: String,
     pub goal: String,
+    /// 行级生成状态（同 PlanRecord.status，数据库字面量原样透传）
+    #[serde(default)]
+    pub status: String,
     #[serde(default)]
     pub overview: String,
     #[serde(default)]
@@ -886,5 +893,59 @@ mod tests {
         assert_eq!(snapshot.status, "running");
         assert_eq!(snapshot.last_seq, 5);
         assert!(!snapshot.done);
+    }
+
+    /// 行级生成状态（任务 24）：PlanSummary/PlanRecord 携带数据库字面量
+    /// generating | complete | failed，蛇形/小写原样透传（不 rename 为 camel）；
+    /// 旧 wire（无 status 字段）反序列化不报错（serde default 兼容）
+    #[test]
+    fn plan_summary_and_record_carry_row_status_verbatim() {
+        let summary: PlanSummary = serde_json::from_str(
+            r#"{"id":"uuid-1","title":"T","goal":"G","createdAt":"2026-01-01T00:00:00Z","status":"generating"}"#,
+        )
+        .expect("PlanSummary 应可反序列化");
+        assert_eq!(summary.status, "generating");
+
+        // 字面量原样：failed / generating 不改写（与蛇形枚举词的价值一致）
+        let value = serde_json::to_value(PlanSummary {
+            id: "uuid-2".into(),
+            title: "T".into(),
+            goal: "G".into(),
+            status: "failed".into(),
+            overview: "O".into(),
+            level: "beginner".into(),
+            weeks: 8,
+            favorite: false,
+            created_at: "2026-01-01T00:00:00Z".into(),
+        })
+        .unwrap();
+        assert_eq!(value["status"], "failed", "status 字面量透传不改写");
+
+        // 旧 wire：无 status 字段（经验库/旧前端快照）缺省反序列化为空串不炸
+        let legacy: PlanSummary =
+            serde_json::from_str(r#"{"id":"u","title":"T","goal":"G","createdAt":"c"}"#)
+                .expect("旧 wire 应兼容");
+        assert_eq!(legacy.status, "");
+
+        // PlanRecord 同口径：携带行级 status
+        let record: PlanRecord = serde_json::from_str(
+            r#"{"id":"uuid-1","title":"T","goal":"G","createdAt":"2026-01-01T00:00:00Z","plan":{},"status":"complete"}"#,
+        )
+        .expect("PlanRecord 应可反序列化");
+        assert_eq!(record.status, "complete");
+        let plan_record_value = serde_json::to_value(PlanRecord {
+            id: "uuid-3".into(),
+            title: "T".into(),
+            goal: "G".into(),
+            status: "generating".into(),
+            overview: "O".into(),
+            level: "beginner".into(),
+            weeks: 8,
+            favorite: false,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            plan: StudyPlan::default(),
+        })
+        .unwrap();
+        assert_eq!(plan_record_value["status"], "generating");
     }
 }

@@ -154,7 +154,7 @@ pub async fn list_plans(config: &DbConfig, query: &str) -> Result<Vec<PlanSummar
     let pool = pool(config).await?;
     let pattern = format!("%{}%", query.trim());
     let rows = sqlx::query(
-        "SELECT id, title, goal, overview, level, weeks, favorite, created_at
+        "SELECT id, title, goal, overview, level, weeks, favorite, created_at, status
          FROM plans
          WHERE title ILIKE $1 OR goal ILIKE $1
          ORDER BY favorite DESC, created_at DESC
@@ -175,6 +175,9 @@ pub async fn list_plans(config: &DbConfig, query: &str) -> Result<Vec<PlanSummar
             id: id.to_string(),
             title: row.try_get("title").map_err(db_err)?,
             goal: row.try_get("goal").map_err(db_err)?,
+            // 行级生成状态（generating | complete | failed）随列表回传，
+            // 历史徽章跨会话恢复（任务 24 补全）
+            status: row.try_get("status").map_err(db_err)?,
             overview: row.try_get("overview").map_err(db_err)?,
             level: row.try_get("level").map_err(db_err)?,
             weeks: weeks.max(0) as u32,
@@ -195,7 +198,7 @@ pub async fn get_plan(config: &DbConfig, id: &str) -> Result<PlanRecord, AgentEr
 /// get_plan 的 pool 版核心（pub(crate) 供集成测试直连临时库复用）
 pub(crate) async fn get_plan_by_pool(pool: &PgPool, id: &str) -> Result<PlanRecord, AgentError> {
     let row = sqlx::query(
-        "SELECT id, title, goal, overview, level, weeks, favorite, created_at, plan_json, estimated_total_hours
+        "SELECT id, title, goal, overview, level, weeks, favorite, created_at, plan_json, status, estimated_total_hours
          FROM plans WHERE id = $1",
     )
     .bind(parse_id(id)?)
@@ -210,6 +213,9 @@ pub(crate) async fn get_plan_by_pool(pool: &PgPool, id: &str) -> Result<PlanReco
     let created: chrono::DateTime<chrono::Utc> = row.try_get("created_at").map_err(db_err)?;
     let weeks: i32 = row.try_get("weeks").map_err(db_err)?;
     let estimated_total_hours: i32 = row.try_get("estimated_total_hours").map_err(db_err)?;
+    // 行级生成状态（generating | complete | failed）：legacy plan_json 行的列值
+    // 如实回传（默认 'complete'），与新行同口径（任务 24 补全）
+    let status: String = row.try_get("status").map_err(db_err)?;
     let title: String = row.try_get("title").map_err(db_err)?;
     let overview: String = row.try_get("overview").map_err(db_err)?;
     let plan = match plan_json {
@@ -231,6 +237,7 @@ pub(crate) async fn get_plan_by_pool(pool: &PgPool, id: &str) -> Result<PlanReco
         id: record_id.to_string(),
         title,
         goal: row.try_get("goal").map_err(db_err)?,
+        status,
         overview,
         level: row.try_get("level").map_err(db_err)?,
         weeks: weeks.max(0) as u32,

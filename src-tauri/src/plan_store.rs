@@ -255,6 +255,48 @@ pub async fn seed_outline(
     Ok(())
 }
 
+/// done 终态补写推荐资源（单事务）：DELETE 后批量 INSERT（DELETE+INSERT 幂等
+/// 覆写，重发 done 不重复；同一事务保证半途失败不留脏数据）。
+/// 消费方：GenerationConsumer done 分支（任务 23 审查 Finding-1：结果页唯一
+/// 内容源是回读 DB，done 包络携带的 resources 不落库则资源卡永久缺失）。
+/// 空数组不调用（调用方以 plan.resources 非空为前提，避免覆写清空既有序源）。
+/// plan_store::tests 的真库集成测试直接调取验证幂等/回读。
+pub async fn upsert_resources(
+    pool: &PgPool,
+    plan_id: Uuid,
+    resources: &[StudyResource],
+) -> Result<(), AgentError> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| fail("开启资源写入事务", e))?;
+
+    // 整体替换：旧资源行不残留（与 upsert_phase 的子数据替换语义同源）
+    sqlx::query("DELETE FROM resources WHERE plan_id = $1")
+        .bind(plan_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| fail("清理旧资源", e))?;
+
+    for (i, resource) in resources.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO resources (plan_id, idx, title, type, note) VALUES ($1, $2, $3, $4, $5)",
+        )
+        .bind(plan_id)
+        .bind(i32::try_from(i).unwrap_or(0))
+        .bind(&resource.title)
+        .bind(&resource.kind)
+        .bind(&resource.note)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| fail("写入学习资源", e))?;
+    }
+
+    tx.commit().await.map_err(|e| fail("提交资源事务", e))?;
+    info!(%plan_id, count = resources.len(), "done 包络推荐资源已落库");
+    Ok(())
+}
+
 /// 单章 upsert（单事务）：骨架行的内容填充 / 章节重生成入库。
 /// - phases 行必须已存在（seed_outline 或既有数据），否则报错（单章不凭空建阶段）；
 /// - chapters ON CONFLICT (phase_id, idx) 更新 title/summary/content_md，status

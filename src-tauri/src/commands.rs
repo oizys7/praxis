@@ -196,16 +196,20 @@ pub struct PlanSubmitResult {
     pub plan_id: String,
 }
 
-/// done 终态对应的入库收尾（任务 22 失败语义修订）：
+/// done 终态对应的入库收尾（任务 22 失败语义修订；任务 24 增学时终值变体）：
 /// - clarification → 删除 generating 行（保留既有三态语义防回归）；
 /// - 其余终态（plan / error / 防御性未知状态）：行内已有任何 phase 行 →
 ///   complete（后续可重生成/重看）；零内容 → failed（含 finalize_failed 的
-///   pending 子行翻牌，见 plan_store::finalize_plan）。
+///   pending 子行翻牌，见 plan_store::finalize_plan）；
+/// - estimated_total_hours 为 Some 时随收尾覆写学时终值（done 包络携带的
+///   plan.estimatedTotalHours 与 outline 期粗估差异修正，见 done 分派；
+///   finalize_plan COALESCE 语义，None 保持原值）。
 ///   pub(crate)：tests_plan_store 的真库集成测试直接调取（收尾语义的库级验证）。
-pub(crate) async fn settle_terminal(
+pub(crate) async fn settle_terminal_with_hours(
     pool: &PgPool,
     plan_id: Uuid,
     status: &str,
+    estimated_total_hours: Option<i64>,
 ) -> Result<(), AgentError> {
     if status == "clarification" {
         return plan_store::delete_plan_full(pool, plan_id).await;
@@ -214,9 +218,9 @@ pub(crate) async fn settle_terminal(
         warn!(status, "未知 done 终态状态，按内容语义收尾");
     }
     if plan_store::has_phase_rows(pool, plan_id).await? {
-        plan_store::finalize_plan(pool, plan_id, "complete", None, None).await
+        plan_store::finalize_plan(pool, plan_id, "complete", None, estimated_total_hours).await
     } else {
-        plan_store::finalize_plan(pool, plan_id, "failed", None, None).await
+        plan_store::finalize_plan(pool, plan_id, "failed", None, estimated_total_hours).await
     }
 }
 
@@ -564,30 +568,45 @@ impl WsEventSink for GenerationConsumer {
                     if let Some(s) = &self.storage {
                         // Python 端 index 为小非负整数；防御性越界按 0 处理（实际不可达）
                         let idx = i32::try_from(index).unwrap_or(0);
-                        if let Err(e) =
-                            plan_store::upsert_phase(&s.pool, s.plan_id, idx, &phase).await
-                        {
-                            warn!(req_id = %self.req_id, seq, index, error = %e, "阶段入库失败，不中断生成");
-                            emit_progress(
-                                &self.app,
-                                self.plan_id,
-                                PlanProgressEvent::StorageIssue {
-                                    message: format!(
-                                        "第 {} 阶段未能自动保存：{e}",
-                                        index.saturating_add(1)
-                                    ),
-                                },
-                            );
+                        match plan_store::upsert_phase(&s.pool, s.plan_id, idx, &phase).await {
+                            Ok(()) => {
+                                // 审查 Finding-4（任务 24）：阶段行确已落库才推
+                                // PhaseDone，避免前端假完成 + 回读缺行
+                                emit_progress(
+                                    &self.app,
+                                    self.plan_id,
+                                    PlanProgressEvent::PhaseDone {
+                                        index,
+                                        total: self.phase_count,
+                                    },
+                                );
+                            }
+                            Err(e) => {
+                                warn!(req_id = %self.req_id, seq, index, error = %e, "阶段入库失败，不中断生成");
+                                emit_progress(
+                                    &self.app,
+                                    self.plan_id,
+                                    PlanProgressEvent::StorageIssue {
+                                        message: format!(
+                                            "第 {} 阶段未能自动保存：{e}",
+                                            index.saturating_add(1)
+                                        ),
+                                    },
+                                );
+                            }
                         }
+                    } else {
+                        // 无云端入库句柄（库不可用降级）：无落库语义可判，进度
+                        // 推送照常（观测与入库解耦，前端仍有终态对账兑底）
+                        emit_progress(
+                            &self.app,
+                            self.plan_id,
+                            PlanProgressEvent::PhaseDone {
+                                index,
+                                total: self.phase_count,
+                            },
+                        );
                     }
-                    emit_progress(
-                        &self.app,
-                        self.plan_id,
-                        PlanProgressEvent::PhaseDone {
-                            index,
-                            total: self.phase_count,
-                        },
-                    );
                     Ok(false)
                 }
                 // 初生链路不应出现 chapter 事件（单章重生成专属，任务 14）；
@@ -605,7 +624,38 @@ impl WsEventSink for GenerationConsumer {
                 StreamEvent::Done { response: envelope } => {
                     self.terminal = true;
                     if let Some(s) = &self.storage {
-                        if let Err(e) = settle_terminal(&s.pool, s.plan_id, &envelope.status).await
+                        // 审查 Finding-1（任务 24）：done 包络携带的推荐资源落库
+                        // （DELETE+INSERT 幂等覆写，重发 done 不重复）——结果页
+                        // 唯一内容源是回读 DB，缺此步则资源卡永久缺失。
+                        // clarification（plan=None）不写：行随终态删除，级联清理。
+                        if let Some(plan) = &envelope.plan {
+                            if let Err(e) =
+                                plan_store::upsert_resources(&s.pool, s.plan_id, &plan.resources)
+                                    .await
+                            {
+                                warn!(req_id = %self.req_id, seq, error = %e, "done 包络资源落库失败，不影响终态收尾");
+                                emit_progress(
+                                    &self.app,
+                                    self.plan_id,
+                                    PlanProgressEvent::StorageIssue {
+                                        message: format!("推荐资源未能自动保存：{e}"),
+                                    },
+                                );
+                            }
+                        }
+                        // 学时终值覆写（Finding-1 附加）：outline 期仅粗估
+                        // （weeklyHours × 阶段数，计划 v7 §3 有意不引 LLM 终值），
+                        // done 包络携带 plan.estimatedTotalHours 终值，一并修正；
+                        // 零值视为缺省不覆写
+                        let hours = envelope
+                            .plan
+                            .as_ref()
+                            .map(|p| p.estimated_total_hours)
+                            .filter(|h| *h > 0)
+                            .map(i64::from);
+                        if let Err(e) =
+                            settle_terminal_with_hours(&s.pool, s.plan_id, &envelope.status, hours)
+                                .await
                         {
                             warn!(req_id = %self.req_id, seq, error = %e, "终态入库收尾失败，不影响事件推送");
                             emit_progress(
