@@ -34,6 +34,12 @@ defineProps<{
    * 的 id 未回传前端）不传，重生成按钮不渲染，失败部分引导走历史详情。
    */
   planId?: string;
+  /**
+   * 行级生成状态（get_plan 回读的 PlanRecord.status 平铺字段，非
+   * record.plan 内容）：generating → 「生成进行中」提示条；failed →
+   * 「生成未完成」引导重生成提示条；其余/缺省不加标。
+   */
+  rowStatus?: string;
 }>();
 
 /** 子组件（PhaseCard → ChapterSection）重生成完成：刷新后的计划整体上抛供调用方替换 */
@@ -51,6 +57,28 @@ const resourceTypeLabels: Record<string, string> = {
 
 <template>
   <div class="animate-fade-in-up space-y-4">
+    <!--
+      行级状态兜底提示条（任务 25）：数据源是 get_plan 回读的 PlanRecord.status
+      （rowStatus，wire 平铺字段与 record.plan 平级行），数据路径可达——
+      failed 引导重生成失败部分；generating 说明见到的是当前已生成部分。
+    -->
+    <div
+      v-if="rowStatus === 'generating'"
+      class="flex items-center gap-2 rounded-md border bg-secondary/50 px-3 py-2 text-sm text-secondary-foreground"
+    >
+      <span
+        class="h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"
+      />
+      生成进行中：以下为当前已生成的部分，完成后列表会自动刷新，重新进入可看到全文。
+    </div>
+    <div
+      v-else-if="rowStatus === 'failed'"
+      class="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+    >
+      ⚠
+      该计划生成未完成，可对下方标记为失败的部分点「重新生成」补齐，或稍后在历史记录中重试。
+    </div>
+
     <!-- 计划概览 -->
     <Card>
       <CardHeader>

@@ -60,6 +60,13 @@ const planView = ref<"list" | "create">("list");
 const historyMode = ref(false);
 /** 当前打开的历史记录 id（阶段/章节重生成入口依赖；新生成流程无 id） */
 const historyPlanId = shallowRef<string | null>(null);
+/**
+ * 结果页行级生成状态（任务 25）：get_plan 回读的 PlanRecord.status 快照，
+ * 经 prop rowStatus 传给 PlanResult 渲染兜底提示条（generating/failed）。
+ * 采用快照而非随 result 重新推导：result 只装 record.plan（StudyPlan）
+ * 不含行级字段，两者同步维护。
+ */
+const resultRowStatus = shallowRef<string | null>(null);
 /** 终态快照时的入库告警（审查 minor：终态 unfollow 后应继续展示的结果页属性） */
 const resultStorageIssue = ref<string | null>(null);
 /** 最近一次生成请求（保存到云端时取 goal / level / weeks 元数据） */
@@ -109,6 +116,9 @@ watch(terminalPlanIds, async (ids) => {
   try {
     const record = await fetchPlanRecord(pid);
     historyPlanId.value = pid;
+    // 行级 status 随同一份 record 取到（终态收尾已 settle）：failed 零内容
+    // 行不会走到这里被误标（removed 分支已先行拦截），complete 不加标
+    resultRowStatus.value = record.status;
     result.value = {
       status: "plan",
       plan: record.plan,
@@ -142,6 +152,7 @@ function onCreate() {
   historyPlanId.value = null;
   lastRequest.value = null;
   result.value = null;
+  resultRowStatus.value = null;
   error.value = null;
   unfollowPlan();
   planView.value = "create";
@@ -171,6 +182,9 @@ function openHistoryPlan(record: PlanRecord) {
   lastRequest.value = null;
   error.value = null;
   unfollowPlan();
+  // 行级 status 与整份 plan 平级同批回传（PlanRecord 平铺结构，非 record.plan
+  // 内容）：generating/failed 详情兜底提示条据此渲染（任务 25）
+  resultRowStatus.value = record.status;
   result.value = {
     status: "plan",
     plan: record.plan,
@@ -188,6 +202,7 @@ function dismissError() {
 /** 清空生成失败的业务 error 包络（骨架保留，便于看到部分成果与失败标记） */
 function dismissResultError() {
   result.value = null;
+  resultRowStatus.value = null;
 }
 
 /** 阶段/章节重生成完成：用刷新后的计划行整体替换当前结果 */
@@ -427,6 +442,7 @@ function onPlanRefreshed(plan: StudyPlan) {
                 :weeks="lastRequest?.weeks"
                 :history-mode="historyMode"
                 :storage-issue="genState?.storageIssue"
+                :row-status="resultRowStatus ?? undefined"
                 @refreshed="onPlanRefreshed"
               />
 

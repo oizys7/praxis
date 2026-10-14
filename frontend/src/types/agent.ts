@@ -295,6 +295,14 @@ export interface PlanRecord {
   id: string;
   title: string;
   goal: string;
+  /**
+   * 行级生成状态：generating | complete | failed（数据库字面量原样透传，
+   * 无 camel 歧义不加 rename；与 src-tauri/src/protocol.rs::PlanRecord.status
+   * 逐字对齐——wire 单测 plan_summary_and_record_carry_row_status_verbatim
+   * 为权威；旧 wire 缺该字段时 Rust 侧 serde default 补空串，前端按未知值
+   * 不加标处理）
+   */
+  status: string;
   overview: string;
   level: string;
   weeks: number;
@@ -308,6 +316,8 @@ export interface PlanSummary {
   id: string;
   title: string;
   goal: string;
+  /** 行级生成状态（同 PlanRecord.status，数据库字面量原样透传，wire 单测为权威） */
+  status: string;
   overview: string;
   level: string;
   weeks: number;

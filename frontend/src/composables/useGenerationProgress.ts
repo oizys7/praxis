@@ -89,8 +89,12 @@ export function isObservationTerminal(
   if (!obs || obs.terminal || obs.removed || obs.outlinePhaseCount <= 0) {
     return false;
   }
-  // ruff 无关的 TS 细节：Object.keys 对稀疏 record 的键数即可做覆盖判断，
-  // 索引键值均为数字，无需逐位比 Set
+  // 覆盖口径：Object.keys 薪数键数即可做稀疏 record 的覆盖判断，与值无关
+  // （索引键值均为数字，无需逐位比 Set）——phaseStatuses[index] = 'failed'
+  // 的键同样计入覆盖数：阶段入库失败不发 PhaseDone（upsert Ok 才发），
+  // 该阶段只能由详情对账回填 failed（reconcileOnce），键存在即视为该
+  // 阶段已收口，终态可达；与 completedPhaseCount（只数值数为
+  // 'complete'，进度条分子）口径分工
   return Object.keys(obs.phaseStatuses).length >= obs.outlinePhaseCount;
 }
 
@@ -141,6 +145,9 @@ function applyProgressEvent(
       obs.storageIssue = payload.message;
       break;
     }
+    // 防御未知 payload 型别：静默不记账，不误触终态
+    default:
+      break;
   }
   if (isObservationTerminal(obs)) notifyTerminal(obs);
 }

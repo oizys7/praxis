@@ -211,12 +211,28 @@ function formatTime(iso: string): string {
           </p>
 
           <div class="flex flex-wrap items-center gap-2">
-            <!-- 生成中徽标：后台生成观测中的行（进度流未终态） -->
-            <Badge v-if="isPlanGenerating(item.id)" variant="secondary">
+            <!--
+              行级三态徽章（任务 25）：两条来源取并集，不冲突——
+              ① store 实时判据 isPlanGenerating：本会话进度流观测未终态的行
+                （事件最早，终态后立刻收口）；
+              ② wire 判据 item.status：Rust list_plans 回传的数据库行级
+                status（generating | complete | failed，跨会话权威——应用
+                重启后 store 无观测，②单独覆盖；异秒差（行已终态/收尾未刷新）
+                由 terminalCounter 终态信号触发 refresh 拉新列表收口）。
+              complete 不加标（点击查看即见内容，无需噪声）。
+            -->
+            <Badge
+              v-if="isPlanGenerating(item.id) || item.status === 'generating'"
+              variant="secondary"
+            >
               <span
                 class="mr-1.5 h-2.5 w-2.5 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"
               />
               生成中
+            </Badge>
+            <!-- 生成失败徽标：行级终态 failed（收尾零内容/清扫翻牌/生成中止） -->
+            <Badge v-if="item.status === 'failed'" variant="destructive">
+              生成失败
             </Badge>
             <Badge v-if="item.level" variant="secondary">
               {{ levelLabel(item.level) }}
