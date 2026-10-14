@@ -221,8 +221,12 @@ function formatTime(iso: string): string {
                 由 terminalCounter 终态信号触发 refresh 拉新列表收口）。
               complete 不加标（点击查看即见内容，无需噪声）。
             -->
+            <!--
+              审查 Finding-2：wire failed 优先于 store 观测——行已终态失败但
+              store 终态最长滞后 ~2 分钟（静默对账窗口）时不显示双徽章
+            -->
             <Badge
-              v-if="isPlanGenerating(item.id) || item.status === 'generating'"
+              v-if="isPlanGenerating(item.id) && item.status !== 'failed'"
               variant="secondary"
             >
               <span

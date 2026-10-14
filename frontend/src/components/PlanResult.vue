@@ -71,8 +71,17 @@ const resourceTypeLabels: Record<string, string> = {
       />
       生成进行中：以下为当前已生成的部分，完成后列表会自动刷新，重新进入可看到全文。
     </div>
+    <!--
+      审查 Finding-1：failed 行的失败阶段/章节经重生成全部补齐后，行级
+      status 仍停留 failed（Rust 侧 regen 收口不强推 complete），提示条
+      须叠加内容判据避免「已无可失败标记却仍引导重生成」的自相矛盾；
+      onPlanRefreshed 用刷新后的 plan 实时替换 result，补齐后提示条自动消失。
+    -->
     <div
-      v-else-if="rowStatus === 'failed'"
+      v-else-if="
+        rowStatus === 'failed' &&
+        plan.phases.some((p) => p.status === 'failed' || p.status === 'pending')
+      "
       class="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive"
     >
       ⚠
