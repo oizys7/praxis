@@ -288,7 +288,7 @@ function onPlanRefreshed(plan: StudyPlan) {
                   >
                     ⚠ {{ genState.storageIssue }}
                   </p>
-                  <!-- 生成进度：第 N/M 阶段完成 + 进度条（urdine 集齐前隐藏） -->
+                  <!-- 生成进度：第 N/M 阶段完成 + 进度条（outline 未到则隐藏） -->
                   <div v-if="progressTotal" class="w-full max-w-xs">
                     <div
                       class="mb-1.5 flex justify-between text-xs text-muted-foreground"

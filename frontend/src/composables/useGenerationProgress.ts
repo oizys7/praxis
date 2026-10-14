@@ -25,7 +25,7 @@ type Envelope = PlanProgressEnvelope;
 /** 单个后台生成任务的观测态（骨架 + 阶段状态集合 + 提示） */
 export interface GenerationObservation {
   planId: string;
-  /** 大纲要据（outline 事件优先；详情对账不覆盖——骨架变化只增不改位） */
+  /** 大纲骨架（outline 事件优先；详情对账不覆盖——骨架变化只增不改位） */
   title: string;
   overview: string;
   outlinePhaseCount: number;
