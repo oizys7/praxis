@@ -97,7 +97,7 @@ const WS_RECONNECT_BACKOFF_SECS: &[u64] = &[1, 2, 5, 10, 10, 10, 10];
 /// 进度经 tauri::Emitter 'plan-progress' 全局事件推送（任务 23 前端 listen）。
 ///
 /// 编排约定：
-/// - 入库前置：DB 可用则预置 generating 行（终态语义见 settle_terminal）；
+/// - 入库前置：DB 可用则预置 generating 行（终态语义见 settle_terminal_with_hours）；
 ///   DB 不可用不阻塞生成，仅经 StorageIssue 事件提示；
 /// - 提交失败（429 容量不足 / 422 参数校验 / 网络层）：删除预置行
 ///   （不会有任何生成事件，避免僵尸 generating 行）+ Err 归一透传；
@@ -628,25 +628,32 @@ impl WsEventSink for GenerationConsumer {
                         // （DELETE+INSERT 幂等覆写，重发 done 不重复）——结果页
                         // 唯一内容源是回读 DB，缺此步则资源卡永久缺失。
                         // clarification（plan=None）不写：行随终态删除，级联清理。
+                        // 空资源也不写（审查 P2-1）：保持与 docstring 契约一致，
+                        // 避免末来 outline 播种资源被空 done 覆写清零。
                         if let Some(plan) = &envelope.plan {
-                            if let Err(e) =
-                                plan_store::upsert_resources(&s.pool, s.plan_id, &plan.resources)
-                                    .await
-                            {
-                                warn!(req_id = %self.req_id, seq, error = %e, "done 包络资源落库失败，不影响终态收尾");
-                                emit_progress(
-                                    &self.app,
-                                    self.plan_id,
-                                    PlanProgressEvent::StorageIssue {
-                                        message: format!("推荐资源未能自动保存：{e}"),
-                                    },
-                                );
-                            }
-                        }
-                        // 学时终值覆写（Finding-1 附加）：outline 期仅粗估
-                        // （weeklyHours × 阶段数，计划 v7 §3 有意不引 LLM 终值），
-                        // done 包络携带 plan.estimatedTotalHours 终值，一并修正；
-                        // 零值视为缺省不覆写
+                            if !plan.resources.is_empty() {
+                                if let Err(e) = plan_store::upsert_resources(
+                                    &s.pool,
+                                    s.plan_id,
+                                    &plan.resources,
+                                )
+                                .await
+                                {
+                                    warn!(req_id = %self.req_id, seq, error = %e, "done 包络资源落库失败，不影响终态收尾");
+                                    emit_progress(
+                                        &self.app,
+                                        self.plan_id,
+                                        PlanProgressEvent::StorageIssue {
+                                            message: format!("推荐资源未能自动保存：{e}"),
+                                        },
+                                    );
+                                }
+                            } // resources 非空守卫
+                        } // plan Some（clarification 级联清理豁免）
+                          // 学时终值覆写（Finding-1 附加）：outline 期仅粗估
+                          // （weeklyHours × 阶段数，计划 v7 §3 有意不引 LLM 终值），
+                          // done 包络携带 plan.estimatedTotalHours 终值，一并修正；
+                          // 零值视为缺省不覆写
                         let hours = envelope
                             .plan
                             .as_ref()

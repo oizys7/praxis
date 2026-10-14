@@ -401,8 +401,8 @@ pub async fn mark_chapter_pending(
 }
 
 /// 判定计划是否存在任何 phase 行（收尾语义修订的判定基础，见 commands
-/// settle_terminal：有阶段内容 → complete，零内容 → failed）。
-/// 消费方：commands::settle_terminal（done 终态与断线耗尽收尾）。
+/// settle_terminal_with_hours：有阶段内容 → complete，零内容 → failed）。
+/// 消费方：commands 终态收尾（done 终态与断线耗尽收尾）。
 pub async fn has_phase_rows(pool: &PgPool, plan_id: Uuid) -> Result<bool, AgentError> {
     let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phases WHERE plan_id = $1)")
         .bind(plan_id)
