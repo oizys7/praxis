@@ -47,6 +47,9 @@ aes-gcm = "0.10"
 base64 = "0.22"
 rand = "0.8"
 serde_yaml = "0.9"
+# 目录推导：app_config.rs 在拿到 AppHandle 前复刻 Tauri app_data_dir（dirs::data_dir()/{identifier}），
+# 与 tauri 内部同源（同一 dirs crate），避免手写各平台目录规则
+dirs = "7"
 tokio-tungstenite = "0.30.0"
 futures-util = "0.3.34"
 

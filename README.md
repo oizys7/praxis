@@ -195,6 +195,28 @@ command 抛错时前端捕获到 `{ code, message, hint }`：`code ∈ connectio
 | `AGENT_SERVICE_URL`     | `http://127.0.0.1:8000` | Rust 端请求的 Agent 服务地址（仅开发模式）                                         |
 | `PRAXIS_ALLOW_MOCK_LLM` | `false`                 | **离线演示模式**：不调用 LLM，返回确定性 Mock 计划                                 |
 
+### config.json：应用级配置文件
+
+Rust 端与 Python 端共享的启动配置文件（模板见仓库根 `config.example.json`，`config.json` 本机维护不入库）。**查找顺序**（首个命中者生效，找不到则启动报错并列出全部候选路径）：
+
+1. `--config <路径>` 命令行参数（sidecar 模式显式指定）
+2. 开发模式：仓库根 `config.json`（可执行文件路径检测到工作区标记 `tauri.conf.json` / `src-tauri` 时）
+3. 应用数据目录 `config.json`（与 settings.json 同目录，如 `%APPDATA%/com.praxis.desktop/config.json`）
+
+| 字段                   | 默认值      | 说明                                                                    |
+| ---------------------- | ----------- | ----------------------------------------------------------------------- |
+| `database.url`         | 空          | **生产库**连接串（`postgres://user:password@host:5432/db`）；运行时读写 |
+| `database.testUrl`     | 空          | **测试库**连接串，`cargo test` 专用（与生产库分离，双字段落位）         |
+| `logging.level`        | `info`      | 日志级别（Rust / Python 全端生效）                                      |
+| `logging.dir`          | 空          | 日志目录；空 = 各端默认路径（Rust 走 app_log_dir，Python 走推导目录）   |
+| `service.host`         | `127.0.0.1` | Agent 服务监听地址                                                      |
+| `service.port`         | `8000`      | Agent 服务监听端口                                                      |
+| `agent.mockMode`       | `false`     | 离线演示模式**冷启动默认**（settings.json 的 mock 开关仍是运行时权威）  |
+| `secrets.keyDir`       | 空          | 主密钥目录；空 = `secret.rs` 现有默认（应用数据目录）                   |
+| `secrets.sealPassword` | 空          | 手动封存密码；空 = `secret.rs` 现有默认（交互生成）                     |
+
+> 模板另含 `_comment` 说明字段（JSON 不支持注释，解析时会被忽略）；未知字段一律忽略，缺省段落/字段/显式 `null` 回退内置默认值。各环境变量向 config.json 的迁移清单见计划文档任务 28–29（当前双链过渡期）。
+
 ## 安装步骤
 
 前置依赖：[Rust](https://rustup.rs/)（含 `cargo`）、Node.js ≥ 18、Python ≥ 3.11、[uv](https://docs.astral.sh/uv/)（推荐，用于 Python 虚拟环境）。

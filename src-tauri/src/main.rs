@@ -4,6 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod agent_client;
+mod app_config;
 mod commands;
 mod config;
 mod db;
@@ -17,6 +18,8 @@ mod settings;
 mod sidecar;
 
 // plan_store 集成测试（需 DATABASE_URL 指向本机可建的 PostgreSQL，见模块文档）
+#[cfg(test)]
+mod tests_app_config;
 #[cfg(test)]
 mod tests_plan_store;
 
