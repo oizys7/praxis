@@ -30,6 +30,7 @@ import asyncio
 import json
 import logging
 import operator
+import re
 from typing import Annotated, Any, TypedDict
 
 from app import prompts, validators
@@ -122,6 +123,23 @@ def _level_audience(req: PlanRequest) -> str:
     return _LEVEL_AUDIENCES.get(req.level, _LEVEL_AUDIENCES[Level.beginner])
 
 
+# ---- 目标模糊度判据（反馈③，2026-10-15 用户裁定：加轻量模糊度，详细
+# ---- 输入不受影响仍直接放行，不礙优先路径）——
+# 「学/做 + 主题」纯前缀形态（如 学Python / learn Python），未带场景/产出/水平限定
+_BROAD_GOAL_RE = re.compile(
+    r"^(?:学|做|learn|make)[\s:：]*[\w\u4e00-\u9fff]{1,8}$", re.IGNORECASE
+)
+_MAX_BROAD_GOAL_CHARS = 8  # 4-8 字内的短目标一律视为宽泛（<4 走 goal_too_short）
+
+
+def _goal_too_broad(goal: str) -> bool:
+    """轻量模糊度判定：4-8 字短目标，或整体只是「学/做＋主题」形态。"""
+    text = " ".join(goal.split())
+    if not 4 <= len(text) <= _MAX_BROAD_GOAL_CHARS:
+        return False
+    return bool(_BROAD_GOAL_RE.match(text))
+
+
 def _detect_issues(req: PlanRequest) -> list[tuple[str, str]]:
     """基于规则的完整性检查，返回 (问题代码, 描述) 列表。
 
@@ -133,6 +151,13 @@ def _detect_issues(req: PlanRequest) -> list[tuple[str, str]]:
     if len(req.goal.strip()) < 4:
         issues.append(
             ("goal_too_short", f"学习目标「{req.goal}」过于简短，难以据此规划")
+        )
+    elif _goal_too_broad(req.goal):
+        issues.append(
+            (
+                "goal_too_broad",
+                f"学习目标「{req.goal}」较为宽泛，难以据此安排有针对性的内容",
+            )
         )
     if not 1 <= req.weekly_hours <= 80:
         issues.append(

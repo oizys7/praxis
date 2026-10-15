@@ -20,7 +20,13 @@ from app.mock import (
     build_mock_outline,
 )
 from app.nodes import AgentState
-from app.schemas import Chapter, PhaseExtrasOutput, PhaseProject, ReviewOutput
+from app.schemas import (
+    Chapter,
+    PhaseExtrasOutput,
+    PhaseProject,
+    PlanRequest,
+    ReviewOutput,
+)
 
 # camelCase 请求，形状等同 PlanRequest.model_dump(by_alias=True)
 REQUEST = {
@@ -565,3 +571,36 @@ async def test_review_mock_skips(monkeypatch):
     result = await nodes.review_node(_state(plan={"phases": []}))
 
     assert result["passed"] is True
+
+
+# ---------------------------------------------------------------------------
+# clarify 判据：轻量模糊度检查（反馈③用户裁定，2026-10-15）
+# ---------------------------------------------------------------------------
+
+
+def _req_with_goal(goal: str) -> PlanRequest:
+    """围绕 _detect_issues 构造仅 goal 不同的 PlanRequest。"""
+    return PlanRequest.model_validate({**REQUEST, "goal": goal})
+
+
+def test_clarify_broad_goal_prefix_form():
+    """「学/做 + 主题」纯前缀形态（如 学Python）触发 goal_too_broad。"""
+    issues = dict(nodes._detect_issues(_req_with_goal("学Python")))
+    assert "goal_too_broad" in issues
+    assert "goal_too_short" not in issues
+
+
+def test_clarify_specific_goal_passes():
+    """带场景/产出的详细目标不受模糊度判据影响，仍直接放行。"""
+    issues = dict(
+        nodes._detect_issues(_req_with_goal("自学 Python 爬虫并做出数据抓取系统"))
+    )
+    assert "goal_too_broad" not in issues
+    assert "goal_too_short" not in issues
+
+
+def test_clarify_extra_short_goal_only_short():
+    """3 字以下目标只走 goal_too_short；模糊度判据不重复报。"""
+    issues = dict(nodes._detect_issues(_req_with_goal("学英语")))
+    assert "goal_too_short" in issues
+    assert "goal_too_broad" not in issues
