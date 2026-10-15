@@ -19,6 +19,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::OnceLock;
 
 use serde::Serialize;
 use sqlx::PgPool;
@@ -241,6 +242,7 @@ pub async fn generate_plan(
     request: PlanRequest,
 ) -> Result<PlanSubmitResult, AgentError> {
     ensure_agent_running(&app).await?;
+    sync_saved_settings_once(&app).await;
 
     let started = std::time::Instant::now();
     let req_id = new_request_id();
@@ -987,6 +989,7 @@ async fn run_regen(
     chapter_index: Option<u32>,
 ) -> Result<PlanResponse, AgentError> {
     ensure_agent_running(&app).await?;
+    sync_saved_settings_once(&app).await;
 
     let started = std::time::Instant::now();
     let req_id = new_request_id();
@@ -1234,6 +1237,9 @@ async fn next_line(
 #[tauri::command]
 pub async fn ping_agent(app: tauri::AppHandle) -> Result<bool, AgentError> {
     ensure_agent_running(&app).await?;
+    // 前端启动即 ping：这里是启动静默同步的主入口（服务就绪即把持久化
+    // 设置热推 Python，用户无需再到设置页手动点保存）
+    sync_saved_settings_once(&app).await;
 
     let started = std::time::Instant::now();
     let response = send(
@@ -1263,6 +1269,52 @@ pub fn get_settings(app: tauri::AppHandle) -> Result<AgentSettings, AgentError> 
     Ok(load_settings(&app))
 }
 
+/// 启动静默同步：本进程是否已把持久化设置推给 Agent 服务。
+/// 失败不置位——下个 Agent 命令重试（服务此刻可能尚未就绪）。
+static AGENT_CONFIG_SYNCED: OnceLock<()> = OnceLock::new();
+
+/// 把设置推给 Agent 服务（POST /api/config），成功返回 true。
+/// 从 save_settings 提取共用：设置页保存热链与启动静默同步同源。
+async fn push_agent_config(settings: &AgentSettings) -> bool {
+    match send(
+        reqwest::Method::POST,
+        "/api/config",
+        PING_TIMEOUT,
+        Some(settings),
+        None,
+    )
+    .await
+    {
+        Ok(response) if response.status().is_success() => true,
+        Ok(response) => {
+            warn!(
+                status = %response.status(),
+                "配置热推失败（服务返回非 2xx）"
+            );
+            false
+        }
+        Err(e) => {
+            debug!(error = %e, "Agent 服务未运行，配置热推未完成");
+            false
+        }
+    }
+}
+
+/// 首个 Agent 命令前把 settings.json 静默热推给 Python（每进程一次）。
+/// 接缝背景：任务 29 退役环境变量冷启动后，Python 端 LLM 配置唯一入口是
+/// /api/config 热链，但启动后无人补位推送（持久化设置只有设置页手动保存
+/// 才会触发），导致每次重启都要手动点一次热加载——本函数补齐该缺口。
+async fn sync_saved_settings_once(app: &tauri::AppHandle) {
+    if AGENT_CONFIG_SYNCED.get().is_some() {
+        return;
+    }
+    let settings = load_settings(app);
+    if push_agent_config(&settings).await {
+        let _ = AGENT_CONFIG_SYNCED.set(());
+        info!("持久化设置已启动同步到 Agent 服务（/api/config）");
+    }
+}
+
 /// 保存应用设置：写盘持久化 + 热推送给运行中的 Agent 服务（POST /api/config）。
 ///
 /// 推送失败不阻塞保存：release 模式下次拉起 sidecar 时经环境变量注入生效；
@@ -1275,27 +1327,10 @@ pub async fn save_settings(
     save_settings_to_disk(&app, &settings).map_err(AgentError::Service)?;
     info!("设置已保存到 settings.json");
 
-    match send(
-        reqwest::Method::POST,
-        "/api/config",
-        PING_TIMEOUT,
-        Some(&settings),
-        None,
-    )
-    .await
-    {
-        Ok(response) if response.status().is_success() => {
-            info!("配置已热加载到 Agent 服务");
-        }
-        Ok(response) => {
-            warn!(
-                status = %response.status(),
-                "配置热加载失败（服务返回非 2xx）；下次 Agent 启动时生效"
-            );
-        }
-        Err(e) => {
-            debug!(error = %e, "Agent 服务未运行，配置将在下次启动时生效");
-        }
+    if push_agent_config(&settings).await {
+        // 本进程后续无需再启动同步（配置已在运行时热链上）
+        let _ = AGENT_CONFIG_SYNCED.set(());
+        info!("配置已热加载到 Agent 服务");
     }
     Ok(())
 }
