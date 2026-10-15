@@ -132,7 +132,7 @@ impl std::fmt::Display for AppConfigError {
                     .collect();
                 write!(
                     f,
-                    "未找到配置文件 config.json：请复制仓库根 config.example.json 为 config.json 并填写。\n已按顺序查找以下位置，均不存在：\n{}",
+                    "未找到配置文件 config.json：请复制仓库根 config.example.json 为 config.json 并填写。\n已按顺序查找以下位置，均未找到可读的 config.json：\n{}",  // 审查 Finding-4：存在但为目录/不可读的候选也算未命中
                     listed.join("\n")
                 )
             }

@@ -17,9 +17,9 @@ mod secret;
 mod settings;
 mod sidecar;
 
-// plan_store 集成测试（需 DATABASE_URL 指向本机可建的 PostgreSQL，见模块文档）
 #[cfg(test)]
 mod tests_app_config;
+// plan_store 集成测试（需 config.json database.testUrl 桥接 DATABASE_URL，任务 28 起，见模块文档）
 #[cfg(test)]
 mod tests_plan_store;
 
