@@ -55,7 +55,10 @@ export default {
       keyframes: {
         "fade-in-up": {
           "0%": { opacity: "0", transform: "translateY(6px)" },
-          "100%": { opacity: "1", transform: "translateY(0)" },
+          // 终帧必须 none：both fill 会永久保留 100% 帧，任何非 none transform
+          // 都会成为 fixed子孙（如 PlanResult 悬浮目录）的 containing block，
+          // 把 fixed 钉进内容盒——这是「右缘竖线不见」的根因（目录修复）。
+          "100%": { opacity: "1", transform: "none" },
         },
       },
       animation: {
