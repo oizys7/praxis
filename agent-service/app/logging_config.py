@@ -5,11 +5,13 @@
     <ISO8601 本地时间> [<LEVEL>] [<logger 名>] <消息> [key=value ...]
     2026-10-03T15:04:05.123+08:00 [INFO] [praxis.main] --> POST /api/generate-plan req_id=req-...
 
-- 级别：PRAXIS_LOG_LEVEL 环境变量（双端读同一变量，默认 INFO）
+- 级别：config.json 的 logging.level（双端同一配置文件，默认 INFO）
+- 目录：config.json 的 logging.dir；为空时按运行数据目录常量推导
+  （RUNTIME_DATA_DIR/logs，与 Rust 端 app_log_dir 同构）
 - 轮转：单文件上限 10MB（与 Rust 端 MAX_LOG_BYTES 对齐），保留 3 个滚动备份
   （agent.log.1/2/3），总占用上限 = 4 × 10MB = 40MB
-- 输出：%LOCALAPPDATA%/Praxis/logs/agent.log（Linux/macOS ~/.local/share/Praxis/logs/）
-- 开发（有控制台）：额外输出 stderr；打包（--noconsole）仅写文件
+- 输出：日志目录/agent.log；开发（有控制台）额外输出 stderr；打包
+  （--noconsole）仅写文件
 - 时间戳与 Rust chrono to_rfc3339_opts(Millis) 输出逐字符一致
 """
 
@@ -17,10 +19,12 @@ from __future__ import annotations
 
 import logging
 import logging.handlers
-import os
 import sys
 from datetime import datetime
 from pathlib import Path
+
+from app import config as _config
+from app.config import RUNTIME_DATA_DIR
 
 #: 统一格式模板（时间由 IsoFormatter 生成 ISO 8601，与 Rust 端 PraxisFormat 对齐）
 LOG_FORMAT = "%(asctime)s [%(levelname)s] [%(name)s] %(message)s"
@@ -31,21 +35,19 @@ MAX_LOG_BYTES = 10 * 1024 * 1024
 #: 滚动备份数：总占用上限 = (1 + BACKUP_COUNT) × 10MB = 40MB
 BACKUP_COUNT = 3
 
-#: 日志级别环境变量（与 Rust 端同一变量）
-LEVEL_ENV = "PRAXIS_LOG_LEVEL"
 
+def resolve_log_dir() -> Path:
+    """日志目录：config.json 的 logging.dir 优先（相对路径相对启动 cwd 解析）；
+    为空时（缺省）落到运行数据目录常量下的 logs/——只按 Path.home() 推导，
+    不存在任何环境变量读取（配置文件化的唯一数据源是本文件 + config.json）。
 
-def default_log_dir() -> Path:
-    """日志目录：release 由 Rust 经 PRAXIS_LOG_DIR 注入（Tauri app_log_dir，双端同目录）；
-    未注入时（独立 uvicorn 开发模式）回退到同结构的本机目录。"""
-    env_dir = os.getenv("PRAXIS_LOG_DIR")
-    if env_dir:
-        return Path(env_dir)
-    if os.name == "nt":
-        base = Path(os.getenv("LOCALAPPDATA") or Path.home() / "AppData/Local")
-    else:
-        base = Path(os.getenv("XDG_DATA_HOME") or Path.home() / ".local/share")
-    return base / "com.praxis.desktop" / "logs"
+    经 _config 模块属性动态读取：tests 重绑 config.runtime_config 即可
+    覆盖取值，不依赖导入期捕获的单例引用。
+    """
+    configured = _config.runtime_config.logging_dir
+    if configured:
+        return Path(configured)
+    return RUNTIME_DATA_DIR / "logs"
 
 
 class IsoFormatter(logging.Formatter):
@@ -71,8 +73,9 @@ def setup_logging(level: str | None = None) -> None:
     if any(isinstance(h, logging.handlers.RotatingFileHandler) for h in root.handlers):
         return
 
-    level_name = (level or os.getenv(LEVEL_ENV) or "INFO").upper()
-    log_dir = default_log_dir()
+    # 显式 level 参数仅保留给调用方覆盖；默认取 config.json 的 logging.level
+    level_name = (level or _config.runtime_config.logging_level or "INFO").upper()
+    log_dir = resolve_log_dir()
     log_dir.mkdir(parents=True, exist_ok=True)
 
     file_handler = logging.handlers.RotatingFileHandler(

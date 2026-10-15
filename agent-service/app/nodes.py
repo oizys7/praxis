@@ -49,11 +49,11 @@ logger = logging.getLogger("praxis.nodes")
 # 过多 LLM 连接（首展 Send 多实例与定向回炉 gather 共用同一信号量）
 _EXPAND_SEMAPHORE = asyncio.Semaphore(3)
 
-# 未配置 Key 的统一引导文案（mock 判定之后、真实 LLM 调用之前抛出）
+# 未配置 Key 的统一引导文案（mock 判定之后、真实 LLM 调用之前抛出）。
+# LLM 冷启动无环境变量链：Key 只能经设置页配置（保存即热更），文案据此引导。
 _NO_KEY_HINT = (
-    "未配置 LLM API Key：请复制 agent-service/.env.example 为 .env 并填入 "
-    "OPENAI_API_KEY（或 ANTHROPIC_API_KEY）；"
-    "或设置 PRAXIS_ALLOW_MOCK_LLM=true 使用离线演示模式。"
+    "未配置 LLM API Key：请在应用设置页填写当前提供商的 API Key"
+    "（保存后立即生效），或在设置页开启「离线演示模式」先体验全链路。"
 )
 
 # 首次展开阶段时注入 phase.yaml 的占位评审意见（模板据此判断「非回炉」）
@@ -482,7 +482,9 @@ async def review_node(state: AgentState) -> dict[str, Any]:
 
     LLM 判定失败的阶段索引与校验失败索引取并集后写入
     pending_phase_indexes（定向回炉的唯一入口）。
-    mock / 未配置 Key：跳过评审直接放行，保证全链路可用。
+    mock 模式：跳过评审直接放行，保证全链路可用。
+    未配置 Key：同样放行（附提示备注）——评审是辅助能力，
+    明确的无 Key 业务错误由 outline / expand 环节抛出（见 _NO_KEY_HINT）。
     """
     plan = state.get("plan") or {}
     validation_issues: list[str] = state.get("validation_issues") or []
@@ -490,7 +492,7 @@ async def review_node(state: AgentState) -> dict[str, Any]:
     if settings.allow_mock_llm:
         return {"passed": True, "review_notes": ["（Mock 模式：未执行真实 LLM 评审）"]}
     if not has_llm_config():
-        return {"passed": True, "review_notes": ["（未配置 API Key：跳过评审）"]}
+        return {"passed": True, "review_notes": ["（未配置 API Key：请在应用设置页配置后重试；本轮跳过评审）"]}
 
     output = await invoke_structured(
         ReviewOutput,

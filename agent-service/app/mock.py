@@ -1,7 +1,8 @@
-"""离线演示模式（PRAXIS_ALLOW_MOCK_LLM=true）使用的确定性计划生成器。
+"""离线演示模式（config.json agent.mockMode / 设置页 mock 热更开关）使用的确定性计划生成器。
 
-用途：没有 API Key 时也能跑通"前端 -> Tauri -> FastAPI -> LangGraph"全链路，
-便于开发调试 UI 与通信协议。生产使用请关闭该开关。
+用途：没有 API Key 时也能跑通“前端 -> Tauri -> FastAPI -> LangGraph”全链路，
+便于开发调试 UI 与通信协议。生产使用请关闭该开关（config.json 不设
+mockMode，并在设置页关闭离线演示开关）。
 
 两级生成（与 outline_node / expand_phase_node 节点一一对应）：
 - build_mock_outline：先产出 PlanOutline 骨架（阶段大纲，不含章节正文）；

@@ -78,12 +78,14 @@ Praxis/
     │   ├── llm.py          # LLM 工厂 + invoke_structured（五提供商）
     │   ├── mock.py         # 离线演示模式的确定性计划
     │   ├── logging_config.py # 统一日志（与 Rust 格式契约对齐）
-    │   └── config.py       # 运行配置（env 冷启动 + /api/config 热更新）
+    │   └── config.py       # config.json 冷启动装载 + /api/config 热更新
     ├── prompts/            # 提示词 YAML（clarify / plan / review）
-    ├── agent_entry.py      # PyInstaller 打包入口（sidecar 引导）
-    ├── pyproject.toml
-    └── .env.example
+    ├── agent_entry.py      # 服务启动引导（sidecar 生产入口 + dev 热重载入口）
+    └── pyproject.toml
 ```
+
+仓库根另有共享配置：`config.example.json`（入库模板）/ `config.json`
+（本机文件，gitignore 覆盖，Python/Rust 两端共用，见下文「配置」）。
 
 ## 通信协议（三端统一）
 
@@ -183,17 +185,7 @@ command 抛错时前端捕获到 `{ code, message, hint }`：`code ∈ connectio
 | 智谱 GLM    | OpenAI 兼容（open.bigmodel.cn）   | `glm-5.3-flash`            |
 | OpenCode Go | OpenAI 兼容（opencode.ai/zen/go） | `grok-4.7`                 |
 
-**冷启动初始值（可选）**：设置页从未保存过时，服务才读取环境变量（`agent-service/.env`，模板见 `.env.example`，含五家提供商的全部变量）。release 安装包由 Rust 壳把 settings.json 注入 sidecar 环境变量，进程一起动就带配置；运行中的服务由 `POST /api/config` 热更新（`LLM_PROVIDER` / 各家 Key 与模型名 / `PRAXIS_ALLOW_MOCK_LLM`）。监听地址与端口属进程生命周期属性，不支持热更。
-
-| 变量                    | 默认值                  | 说明                                                                               |
-| ----------------------- | ----------------------- | ---------------------------------------------------------------------------------- |
-| `LLM_PROVIDER`          | `openai`                | `openai` / `anthropic` / `deepseek` / `glm` / `opencode`                           |
-| `OPENAI_API_KEY` 等     | 空                      | 五家各自的 Key：`OPENAI_` / `ANTHROPIC_` / `DEEPSEEK_` / `GLM_` / `OPENCODE_` 前缀 |
-| `OPENAI_MODEL` 等       | 各家默认                | 五家各自的模型名，同上前缀                                                         |
-| `AGENT_SERVICE_HOST`    | `127.0.0.1`             | FastAPI 监听地址                                                                   |
-| `AGENT_SERVICE_PORT`    | `8000`                  | FastAPI 监听端口                                                                   |
-| `AGENT_SERVICE_URL`     | `http://127.0.0.1:8000` | Rust 端请求的 Agent 服务地址（仅开发模式）                                         |
-| `PRAXIS_ALLOW_MOCK_LLM` | `false`                 | **离线演示模式**：不调用 LLM，返回确定性 Mock 计划                                 |
+**冷启动分两层**：LLM 十二字段不存在环境变量冷启动——只有 settings.json → `/api/config` 一条链（设置页保存即热加载）；服务监听 / 日志 / 离线演示开关等运维项则收敛在仓库根共享的 `config.json`（Python 与 Rust 两端各取所需，字段表与查找顺序见下文「config.json：应用级配置文件」）。Python 端启动未配置任何 Key 且 `agent.mockMode` 未开时：服务仍正常启动（健康检查可用），生成接口返回明确错误提示到应用「设置」页配置。
 
 ### config.json：应用级配置文件
 
@@ -234,9 +226,9 @@ npm install
 cd agent-service
 uv sync
 
-# 4) 配置（可选）：应用内置「设置」页随时可配置五家 LLM 提供商并热加载，无需改文件。
-#    如需预置冷启动初始值，才复制 .env 模板：
-# cp .env.example .env
+# 4) 配置：LLM 五家提供商在应用内置「设置」页配置（保存即热加载，无需改文件）；
+#    服务监听 / 日志 / 离线演示开关等运维项在仓库根 config.json
+#    （首次 npm run dev 时自动从 config.example.json 复制模板，可直接用默认值）
 ```
 
 > Tauri 在 Windows 上还需要 WebView2（Win10/11 一般自带）与 Visual Studio C++ 构建工具。
@@ -254,6 +246,7 @@ npm run dev
 
 ```bash
 # 终端 1 —— Python Agent 服务（uv run 自动发现并使用 .venv，无需手动激活）
+# 前提：仓库根已有 config.json（config.py 沿 cwd 向上按 src-tauri 标记自动找到它）
 cd agent-service
 uv run uvicorn app.main:app --reload --port 8000
 
@@ -299,8 +292,8 @@ Python / uv / Node**，双击安装即可使用（唯一系统依赖 WebView2，
 | 开发（debug）  | `scripts/dev.mjs` 启动的 uvicorn，或手动 `uv run uvicorn` | 固定 8000    | 本仓库开发 |
 | 生产（安装包） | 应用自动拉起内置 `agent/praxis-agent.exe`                 | 动态随机分配 | 终端用户   |
 
-- 生产模式下 `praxis.exe` 启动时自动拉起 sidecar 子进程（随机空闲端口经
-  `AGENT_SERVICE_PORT` 传给子进程），轮询 `/health` 就绪后才开始服务；
+- 生产模式下 `praxis.exe` 启动时自动拉起 sidecar 子进程（随机空闲端口经 CLI
+  参数 `--port N --config <路径>` 传给子进程），轮询 `/health` 就绪后才开始服务；
   应用退出时自动收割子进程，无孤儿进程。
 - `AGENT_SERVICE_URL` 环境变量在开发模式仍可覆盖服务地址；生产模式不适用。
 - 安装包体积约 35-50 MB（内置 CPython 运行时与依赖，压缩后）。
@@ -323,7 +316,8 @@ clarify ──信息不完整──→ END（返回澄清问题，前端高亮�
 
 - 所有提示词集中在 `agent-service/prompts/*.yaml`，改文案不需要动代码；
 - LLM 输出通过 `with_structured_output(PydanticModel)` 强制 JSON，解析失败会自动重试；
-- 无 API Key 时设 `PRAXIS_ALLOW_MOCK_LLM=true`，全链路照常可跑（用于 UI / 联调）。
+- 无 API Key 时在 `config.json` 设 `agent.mockMode=true`（或在应用设置页开启
+  离线演示开关），全链路照常可跑（用于 UI / 联调）。
 
 ## 常见问题
 
@@ -331,7 +325,7 @@ clarify ──信息不完整──→ END（返回澄清问题，前端高亮�
 - **编译报 `icons/icon.ico not found`**：项目已内置默认图标；若误删 `src-tauri/icons/`，执行 `npm run tauri -- icon app-icon.png` 重新生成。
 - **`npm run dev` 报 No module named uvicorn 或 tauri 找不到配置**：前者先执行 `cd agent-service && uv sync`；后者是因为 tauri-cli 必须从仓库根运行，请统一使用 `npm run tauri -- <命令>`（已内置处理）。
 - **Windows pip 报 GBK 编码错误**：本项目已全面改用 uv（`uv sync`），不再经过 pip；依赖统一声明在 `agent-service/pyproject.toml`。
-- **更换 LLM 提供商**：`.env` 中设 `LLM_PROVIDER=anthropic` 并填对应 Key，无需改代码。
+- **更换 LLM 提供商**：应用「设置」页直接切换提供商并填对应 Key，保存即生效，无需改代码。
 
 ## 开源协议
 

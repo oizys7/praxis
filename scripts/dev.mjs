@@ -3,16 +3,20 @@
  * scripts/dev.mjs —— 一键启动 Praxis 开发环境
  *
  * 同时拉起两个进程：
- *   1. Python Agent 服务：uvicorn app.main:app --reload（目录 agent-service/，
- *      优先使用 .venv 虚拟环境解释器，依赖都装在里面）
+ *   1. Python Agent 服务：agent_entry.py（内部 uvicorn，--reload 热重载，
+ *      目录 agent-service/，优先使用 .venv 虚拟环境解释器，依赖都装在里面；
+ *      经 --config 传入仓库根 config.json，与 Rust sidecar 的 CLI 引导同构）
  *   2. Tauri 桌面端：frontend/node_modules/.bin/tauri dev（必须从仓库根运行，
  *      tauri-cli 只在 cwd 子树内查找 tauri.conf.json；其 beforeDevCommand
  *      会自动启动 Vite dev server）
  *
+ * 启动前配置预检：仓库根无 config.json 时从 config.example.json 复制模板
+ * 并提示按需填写（LLM Key 在应用「设置」页配置，不入 config.json）。
+ *
  * 用法：在仓库根目录执行 `npm run dev`，Ctrl+C 一次性停止全部子进程。
  */
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { copyFileSync, existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -59,13 +63,24 @@ function launch(name, command, args, opts = {}) {
   return child;
 }
 
-// ---------- 启动前环境预检 ----------
-const envFile = path.join(ROOT, "agent-service", ".env");
-if (!existsSync(envFile)) {
+// ---------- 启动前配置预检 ----------
+// config.json（gitignore 覆盖，不入库）是 Python/Rust 共用的冷启动配置；
+// 缺失时从模板复制一份（全默认值即可启动），LLM 各家 Key 在应用「设置」页配置。
+const configPath = path.join(ROOT, "config.json");
+const configExample = path.join(ROOT, "config.example.json");
+if (!existsSync(configPath)) {
+  if (!existsSync(configExample)) {
+    console.error(
+      "[dev] 未找到 config.json 与 config.example.json（配置模板），无法启动 Agent 服务。\n" +
+        "      请确认仓库版本包含 config.example.json（配置文件化改造交付物）。",
+    );
+    process.exit(1);
+  }
+  copyFileSync(configExample, configPath);
   console.warn(
-    "[dev] 提示：未找到 agent-service/.env。\n" +
-      "      请复制 .env.example 为 .env 并填入 OPENAI_API_KEY；\n" +
-      "      或在 .env 中设置 PRAXIS_ALLOW_MOCK_LLM=true 使用离线演示模式（无需 API Key）。",
+    "[dev] 已从 config.example.json 复制生成 config.json；按需编辑该文件" +
+      "（service.host/port、logging.level/dir、agent.mockMode）。\n" +
+      "      LLM API Key 不在 config.json：请在应用「设置」页配置（保存即热加载）。",
   );
 }
 
@@ -88,13 +103,11 @@ launch(
   "agent-service",
   `"${venvPython}"`,
   [
-    "-m",
-    "uvicorn",
-    "app.main:app",
-    "--host",
-    "127.0.0.1",
+    "agent_entry.py",
     "--port",
     "8000",
+    "--config",
+    `"${configPath}"`,
     "--reload",
   ],
   { cwd: path.join(ROOT, "agent-service") },
