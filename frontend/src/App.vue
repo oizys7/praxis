@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
 // task-C: 仅在既有 lucide-vue-next import 行追加 ArrowLeft（返回按钮前置箭头），script 业务逻辑未动
-import { ArrowLeft, BookOpen, Settings } from "lucide-vue-next";
+import { ArrowLeft, ArrowUp, BookOpen, Settings } from "lucide-vue-next";
 import { useAgent } from "@/composables/useAgent";
 import {
   completedPhaseCount,
@@ -59,6 +59,12 @@ const MENU_ITEMS: MenuItem[] = [
 const planView = ref<"list" | "create">("list");
 /** 历史查看模式：右侧展示已保存计划，隐藏左侧表单与保存按钮 */
 const historyMode = ref(false);
+/** 详情页主滚动容器（回顶按钮的滚动目标，反馈⑥） */
+const planMainRef = ref<HTMLElement | null>(null);
+/** 回到顶部：平滑滚动详情主区 */
+function scrollPlanToTop() {
+  planMainRef.value?.scrollTo({ top: 0, behavior: "smooth" });
+}
 /** 当前打开的历史记录 id（阶段/章节重生成入口依赖；新生成流程无 id） */
 const historyPlanId = shallowRef<string | null>(null);
 /**
@@ -239,19 +245,9 @@ function onPlanRefreshed(plan: StudyPlan) {
             </p>
           </div>
         </div>
-        <!-- task-C: 「返回列表」自内容滚动区上移至固定 header 右侧（不随内容滚动）。
-             显示条件沿用原按钮位置所在的 planView === 'create' 分支，与原行为完全等价
-             （新建页与历史查看页均可见，historyMode 属其子集）。 -->
+        <!-- 返回列表按钮 task-F: 回内容区原位（右侧 section 顶部）并 sticky 固定；
+             header 不再放置，保持顶栏清净。 -->
         <div class="flex items-center gap-3">
-          <Button
-            v-if="planView === 'create'"
-            variant="ghost"
-            size="sm"
-            @click="planView = 'list'"
-          >
-            <ArrowLeft class="h-4 w-4" />
-            返回列表
-          </Button>
           <Badge
             :variant="
               agentOnline === null
@@ -279,7 +275,11 @@ function onPlanRefreshed(plan: StudyPlan) {
       />
 
       <!-- 学习计划页：列表（默认） / 生成与查看 -->
-      <main v-if="activePage === 'plan'" class="min-w-0 flex-1 overflow-y-auto">
+      <main
+        v-if="activePage === 'plan'"
+        ref="planMainRef"
+        class="min-w-0 flex-1 overflow-y-auto"
+      >
         <PlanListView
           v-if="planView === 'list'"
           @create="onCreate"
@@ -298,10 +298,25 @@ function onPlanRefreshed(plan: StudyPlan) {
             />
 
             <section class="min-w-0 space-y-4">
-              <!-- 后台生成进行中（提交即返后的过程页：outline 铺骨架，phaseDone 推进） -->
-              <Card v-if="generatingNow" class="animate-fade-in-up">
+              <!-- 返回列表：仅固定（sticky）在内容区顶部，不随内容滚走，与原
+                   位置语义一致（task-F） -->
+              <Button
+                v-if="planView === 'create'"
+                variant="ghost"
+                size="sm"
+                class="sticky top-0 z-10 self-start rounded-lg bg-background/85 px-2 py-1 backdrop-blur transition-colors hover:text-foreground"
+                @click="planView = 'list'"
+              >
+                <ArrowLeft class="h-4 w-4" />
+                返回列表
+              </Button>
+
+              <!-- 后台生成进行中（提交即返后的过程页：outline 铺骨架，phaseDone 推进；
+                   task-F: 骨架就绪后本卡退场——继续转圈属反词; 右栏首卡内边距
+                   p-6 与左侧 PlanForm 卡 p-6 基准一致（task-F 对齐） -->
+              <Card v-if="generatingNow && !outlineReady" class="animate-fade-in-up">
                 <CardContent
-                  class="flex flex-col items-center gap-4 py-14 text-center"
+                  class="flex flex-col items-center gap-4 p-6 text-center"
                 >
                   <div
                     class="h-10 w-10 animate-spin rounded-full border-2 border-primary border-t-transparent"
@@ -459,7 +474,7 @@ function onPlanRefreshed(plan: StudyPlan) {
               <!-- 空态 -->
               <Card v-else class="border-dashed">
                 <CardContent
-                  class="flex flex-col items-center gap-2 py-16 text-center"
+                  class="flex flex-col items-center gap-2 p-6 text-center"
                 >
                   <div class="text-4xl">🗺️</div>
                   <p class="font-medium">你的学习路线图将在这里出现</p>
@@ -559,6 +574,19 @@ function onPlanRefreshed(plan: StudyPlan) {
             </section>
           </div>
         </div>
+
+        <!-- 详情页回顶小按钮（task-F：fixed 右下角，历史详情模式下显示） -->
+        <Button
+          v-if="historyMode"
+          variant="outline"
+          size="sm"
+          class="fixed bottom-6 right-8 z-30 h-9 w-9 rounded-full p-0 text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
+          title="回到顶部"
+          aria-label="回到顶部"
+          @click="scrollPlanToTop"
+        >
+          <ArrowUp class="h-4 w-4" />
+        </Button>
       </main>
 
       <!-- 设置页：Agent 运行配置（保存即写盘 + 热加载） -->
