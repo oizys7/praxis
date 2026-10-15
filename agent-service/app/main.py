@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import warnings
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -125,8 +126,15 @@ def build_response(final_state: dict[str, Any]) -> PlanResponse:
 @app.post(
     "/api/generate-plan", response_model=PlanResponse, response_model_by_alias=True
 )
+@warnings.deprecated(
+    "v0.1 G1 清理 —— Rust 已走 WS 后台生成（任务 22），前端不再调用"
+)
 async def generate_plan(request: PlanRequest) -> PlanResponse:
-    """生成学习计划：驱动 LangGraph 状态图并组装统一包络（一次性返回）。"""
+    """弃用：v0.1 G1 清理移除 —— Rust 已走 WS 后台生成（任务 22），前端不再调用。
+
+    生成学习计划：驱动 LangGraph 状态图并组装统一包络（一次性返回）。
+    保留期间行为不变（wire 兼容），仅标记等待 v0.1 完成后统一清理。
+    """
     logger.info(
         "收到计划请求：goal=%r level=%s weeklyHours=%s weeks=%s",
         request.goal,
@@ -152,8 +160,13 @@ async def generate_plan(request: PlanRequest) -> PlanResponse:
 
 
 @app.post("/api/generate-plan/stream")
+@warnings.deprecated(
+    "v0.1 G1 清理 —— Rust 已走 WS 后台生成（任务 22），前端不再调用"
+)
 async def generate_plan_stream(request: PlanRequest) -> StreamingResponse:
-    """流式生成学习计划：NDJSON 逐行推送事件，每阶段完成即到达。
+    """弃用：v0.1 G1 清理移除 —— Rust 已走 WS 后台生成（任务 22），前端不再调用。
+
+    流式生成学习计划：NDJSON 逐行推送事件，每阶段完成即到达。
 
     事件序列（application/x-ndjson，每行一个 JSON 对象）：
     - {"type": "outline", "phaseCount": N, "title": "…", "overview"?: "…",
@@ -183,11 +196,16 @@ async def generate_plan_stream(request: PlanRequest) -> StreamingResponse:
     )
 
 
+@warnings.deprecated(
+    "v0.1 G1 清理 —— 仅 /api/generate-plan/stream 独占的 NDJSON 薄包装，随端点一并退役"
+)
 async def _stream_plan_events(request: PlanRequest) -> AsyncIterator[str]:
-    """NDJSON 薄包装：透传 tasks._plan_event_dicts 的 event dict（wire 不变）。
+    """弃用（v0.1 G1 清理）：仅 /api/generate-plan/stream 独占的 NDJSON 薄包装。
 
-    事件管道已降层到 app/tasks.py 供后台任务与流端点共用；本函数只负责
-    NDJSON 序列化（ensure_ascii=False + 尾行换行），字节级兼容旧线协议。
+    透传 tasks._plan_event_dicts 的 event dict（wire 不变）。事件管道本体
+    _plan_event_dicts 已降层到 app/tasks.py 供后台任务与流端点共用（后台生成
+    仍在消费，不随本端点退役）；本函数只负责 NDJSON 序列化（ensure_ascii=False
+    + 尾行换行），字节级兼容旧线协议。
     """
     async for event in tasks._plan_event_dicts(request):
         yield _ndjson_line(event)
@@ -331,6 +349,8 @@ async def _ws_send(ws: WebSocket, seq: int, event: dict[str, Any]) -> None:
     await ws.send_json({"seq": seq, "event": event})
 
 
+# _ndjson_line 为 /api/generate-plan/stream 与 /api/regenerate/stream 共用的
+# 序列化 helper（regenerate 未弃用，Rust 重生成链仍在消费），故不随弃用端点打标。
 def _ndjson_line(event: dict[str, Any]) -> str:
     """单个事件序列化为一行 NDJSON（ensure_ascii=False 保留中文原文）。"""
     return json.dumps(event, ensure_ascii=False) + "\n"

@@ -1,6 +1,7 @@
 # AGENTS.md — AI 编码代理指南
 
 本文件为 AI 编码代理（以及人类协作者）提供在本仓库工作的关键约定。动手改代码前请先读完。
+项目开发时使用中文思考和回复
 
 ## 项目概述
 
@@ -67,11 +68,13 @@ scripts/               仓库级脚本（dev / check / format / build / tauri �
 ### 3. 提示词与 LLM
 
 - 提示词只写在 `agent-service/prompts/*.yaml`，模板变量用 `{{ var }}` 渲染；**禁止把提示词硬编码进 Python**
-- LLM 配置主入口是应用「设置」页（保存即热加载）；环境变量（`OPENAI_API_KEY`、`DEEPSEEK_API_KEY`、`GLM_API_KEY`、`OPENCODE_API_KEY` 等，见 `agent-service/.env.example`）只作为设置页从未保存时的冷启动初始值
+- LLM 配置主入口是应用「设置」页（保存即热加载）；基础设施冷启动统一走
+  `config.json`（Python / Rust 共用，缺失时从 `config.example.json` 复制模板，
+  查找顺序见模板头注）；LLM API Key 不入 config.json，仅在设置页配置
 - 五家提供商的接入差异封装在 `app/llm.py`：anthropic / deepseek 走官方 SDK，glm / opencode 走 OpenAI 兼容端点（baseUrl 常量 `ZHIPU_BASE_URL` / `OPENCODE_BASE_URL`）
 - 配置热更新后必须调用 `reset_chat_model_cache()` 重建 LLM 客户端（已封装在 `/api/config` 端点内）
-- 无 Key 开发/联调：设置页勾选离线演示模式（或 `PRAXIS_ALLOW_MOCK_LLM=true`）走 mock，全链路可跑
-- `.env` / `.env.*` 不入库（.gitignore 已覆盖）；`.env.example` 是唯一可提交的模板
+- 无 Key 开发/联调：设置页勾选离线演示模式，或 `config.json` 置 `agent.mockMode=true`，走 mock 全链路可跑
+- `config.json` 不入库（.gitignore 已覆盖）；`config.example.json` 是唯一可提交的配置模板
 
 ### 4. 代码风格
 

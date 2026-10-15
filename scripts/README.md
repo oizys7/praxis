@@ -19,7 +19,8 @@
 
 ### `npm run dev` — dev.mjs
 
-1. 检查 `agent-service/.env` 是否存在（缺失仅打印提示，不阻塞）；
+1. 配置预检：仓库根无 `config.json` 时从 `config.example.json` 复制模板，
+   并提示按需编辑（LLM API Key 在应用「设置」页配置，不入 config.json）；
 2. 优先用 `agent-service/.venv` 的解释器启动 uvicorn（`.venv` 缺失时报错退出，并给出
    `uv sync` 指引）；
 3. 从仓库根启动 tauri dev，其 `beforeDevCommand` 自动带起 Vite（5173）；

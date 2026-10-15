@@ -320,6 +320,10 @@ class TaskRegistry:
 async def _plan_event_dicts(request: PlanRequest) -> AsyncIterator[dict[str, Any]]:
     """驱动图流式执行，把节点增量翻译为事件 dict（终态 done 行同 dict）。
 
+    消费面：TaskRegistry 后台任务（kind=plan，WS 主链路，不随弃用端点退役）
+    与 main.py 的 _stream_plan_events（/api/generate-plan/stream 薄包装，已标
+    弃用）双消费者共享——本函数不随弃用端点打标，待 G1 清理时仅减消费面。
+
     业务异常（AgentServiceError）在此捕获并翻译为 error 包络的 done 终态
     （与非流式通道全局 handler 的产出一致，见 app/errors.py）；意外异常
     **不在**此处捕获——由 TaskRegistry._run 统一翻译为 done(error, code=service)，
