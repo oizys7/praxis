@@ -192,7 +192,7 @@ command 抛错时前端捕获到 `{ code, message, hint }`：`code ∈ connectio
 Rust 端与 Python 端共享的启动配置文件（模板见仓库根 `config.example.json`，`config.json` 本机维护不入库）。**查找顺序**（首个命中者生效，找不到则启动报错并列出全部候选路径）：
 
 1. `--config <路径>` 命令行参数（sidecar 模式显式指定）
-2. 开发模式：仓库根 `config.json`（可执行文件路径检测到工作区标记 `tauri.conf.json` / `src-tauri` 时）
+2. 开发模式：仓库根 `config.json`（可执行文件路径检测到工作区标记时；标记要求 `src-tauri/tauri.conf.json` **文件**存在——含 `tauri.conf.json` 文件的目录或含 `src-tauri/` 子目录的根，非仅存在 `src-tauri` 目录）
 3. 应用数据目录 `config.json`（与 settings.json 同目录，如 `%APPDATA%/com.praxis.desktop/config.json`）
 
 | 字段                   | 默认值      | 说明                                                                    |

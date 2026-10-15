@@ -33,7 +33,8 @@ pub struct AppConfig {
 }
 
 // 任务 28 起 config.yaml 链不再被运行时消费（load_db_config 已切 config.json），
-// 迁移期整链保留（含配套单测），任务 30 统一清理——防御性 dead_code，非废弃半成品。
+// 迁移期整链保留（含配套单测），随 v0.1 G1 统一清理（与弃用标记任务 30 同一清理
+// 批次首发，任务 30 本身只打标不清理）——防御性 dead_code，非废弃半成品。
 #[allow(dead_code)]
 impl AppConfig {
     /// 读取配置；文件不存在 / 解析失败时返回默认值（空配置，不报错，保证可用）。

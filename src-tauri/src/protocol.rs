@@ -194,8 +194,11 @@ pub struct PlanResponse {
 }
 
 /// 保存学习计划请求（前端 -> Rust）：id 与保存时间由 Rust 端生成，不在请求内。
+///
+/// 弃用（任务 30）：save_plan 链专用请求结构（任务 11 起前端已不再调用），随 v0.1 G1 清理统一移除。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[deprecated(note = "save_plan 链专用请求结构（任务 11 起前端已不再调用）；v0.1 G1 清理")]
 pub struct SavePlanRequest {
     pub title: String,
     pub goal: String,

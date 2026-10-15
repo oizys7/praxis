@@ -14,6 +14,8 @@ use tracing::{info, warn};
 
 use crate::config::DbConfig;
 use crate::error::AgentError;
+// SavePlanRequest：弃用的 save_plan 链请求结构随落库实现保留（v0.1 G1 清理）
+#[allow(deprecated)]
 use crate::protocol::{PlanRecord, PlanSummary, SavePlanRequest};
 
 /// 单次连接/查询超时
@@ -127,6 +129,12 @@ fn parse_id(id: &str) -> Result<uuid::Uuid, AgentError> {
 }
 
 /// 保存计划（新记录），返回生成的 id
+///
+/// 弃用（任务 30）：save_plan 链落库实现（任务 11 起前端已不再调用；规范化改造后
+/// 新行不再写整串 plan_json），随 v0.1 G1 清理统一移除。生命周期内对已弃用的
+/// SavePlanRequest 的引用在本体声明处 suppress。
+#[deprecated(note = "save_plan 链落库实现（任务 11 起前端已不再调用）；v0.1 G1 清理")]
+#[allow(deprecated)]
 pub async fn save_plan(config: &DbConfig, request: &SavePlanRequest) -> Result<String, AgentError> {
     let pool = pool(config).await?;
     let id = uuid::Uuid::new_v4();
@@ -207,6 +215,10 @@ pub(crate) async fn get_plan_by_pool(pool: &PgPool, id: &str) -> Result<PlanReco
     .map_err(|e| fail("查询计划", e))?
     .ok_or_else(|| AgentError::Db(format!("计划不存在或已被删除：{id}")))?;
 
+    // plan_json 只读兼容层（任务 30）：本读取与下方 match 的 Some 分支仅服务
+    // legacy plan_json 行；规范化新行该列恒为 NULL（此读取无行为影响）。
+    // 历史 plan_json 行读完清库后（v0.1 G1 清理）删除本分支与列迁移。
+    #[allow(deprecated)]
     let plan_json: Option<sqlx::types::Json<StudyPlanAlias>> =
         row.try_get("plan_json").map_err(db_err)?;
     let record_id: uuid::Uuid = row.try_get("id").map_err(db_err)?;
@@ -248,6 +260,10 @@ pub(crate) async fn get_plan_by_pool(pool: &PgPool, id: &str) -> Result<PlanReco
 }
 
 /// StudyPlan 的类型别名（sqlx::types::Json 泛型参数需要具名类型）
+///
+/// 弃用（任务 30）：plan_json 列只读兼容层专用别名（规范化路径用 plan_store，
+/// 不经本别名），随 v0.1 G1 清理统一移除。勿误标协议层共享的 protocol::StudyPlan。
+#[deprecated(note = "plan_json 列只读兼容层专用别名（规范化路径不经此）；v0.1 G1 清理")]
 type StudyPlanAlias = crate::protocol::StudyPlan;
 
 /// 删除计划（硬删除；id 不存在视为已删除，幂等成功）

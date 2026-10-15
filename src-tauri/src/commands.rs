@@ -35,6 +35,8 @@ use crate::agent_client::{
 use crate::db;
 use crate::error::AgentError;
 use crate::plan_store::{self, PlanRequestRow};
+// SavePlanRequest：弃用的 save_plan 链请求结构随薄壳命令保留（v0.1 G1 清理）
+#[allow(deprecated)]
 use crate::protocol::{
     parse_ndjson_line, parse_ws_envelope, PlanProgressEnvelope, PlanProgressEvent, PlanRecord,
     PlanRequest, PlanResponse, PlanSummary, RegenOutline, RegenRequest, SavePlanRequest,
@@ -1303,7 +1305,12 @@ pub async fn save_settings(
 // ---------------------------------------------------------------------------
 
 /// 保存学习计划到云端（新记录），返回生成的计划 id
+///
+/// 弃用（任务 30）：任务 11 起前端已不再调用，随 v0.1 G1 清理统一移除；
+/// 生命周期内对已弃用项的引用统一在本体声明处 suppress（见文档注释）。
 #[tauri::command]
+#[deprecated(note = "任务 11 起前端已不再调用；v0.1 G1 清理")]
+#[allow(deprecated)]
 pub async fn save_plan(record: SavePlanRequest) -> Result<String, AgentError> {
     let config = load_db_config();
     db::save_plan(&config, &record).await

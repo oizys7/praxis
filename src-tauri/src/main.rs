@@ -40,6 +40,10 @@ fn main() {
         }
     }
 
+    // 弃用命令注册点（任务 30）：generate_handler! 宏展开内部无法逐项加属性，
+    // 改在整个 builder 链语句上加 #[allow(deprecated)]（实测有效），仅覆盖
+    // save_plan 的注册引用，其余命令不受影响；随 v0.1 G1 清理一并移除。
+    #[allow(deprecated)]
     tauri::Builder::default()
         // 注册前端可 invoke 的命令：
         // - generate_plan：转发学习计划生成请求到 Python Agent 服务
