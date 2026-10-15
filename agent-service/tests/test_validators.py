@@ -54,7 +54,7 @@ def _make_plan(phases: int = 3) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# 规则 1：阶段数 1-8（边界：8 过，9 拒）
+# 规则 1：阶段数 1-16（边界：16 过，17 拒）
 # ---------------------------------------------------------------------------
 
 
@@ -63,20 +63,20 @@ def test_phase_count_out_of_range_rejected():
     assert issues, "0 个阶段应产生 issue"
     assert pending == [], "无阶段可映射，索引列表应为空"
 
-    issues, pending = validate_plan(_make_plan(9), weekly_hours=10, weeks=12)
-    assert issues, "9 个阶段应产生 issue"
-    assert pending == list(range(9)), "阶段数全局失败应映射所有阶段索引"
+    issues, pending = validate_plan(_make_plan(17), weekly_hours=10, weeks=12)
+    assert issues, "17 个阶段应产生 issue"
+    assert pending == list(range(17)), "阶段数全局失败应映射所有阶段索引"
 
 
 def test_phase_count_upper_boundary_accepted():
-    """量级放宽边界：MAX_PHASES=8 应整单通过。"""
-    issues, pending = validate_plan(_make_plan(8), weekly_hours=10, weeks=12)
-    assert issues == [], "8 个阶段处于上限边界，应零 issue 通过"
+    """量级放宽边界：MAX_PHASES=16 应整单通过。"""
+    issues, pending = validate_plan(_make_plan(16), weekly_hours=10, weeks=12)
+    assert issues == [], "16 个阶段处于上限边界，应零 issue 通过"
     assert pending == []
 
 
 # ---------------------------------------------------------------------------
-# 规则 2：每阶段章节数 1-7（边界：7 过，8 拒）
+# 规则 2：每阶段章节数 1-12（边界：12 过，13 拒）
 # ---------------------------------------------------------------------------
 
 
@@ -88,18 +88,18 @@ def test_chapter_count_out_of_range_rejected():
     assert 1 in pending and 0 not in pending and 2 not in pending
 
     plan = _make_plan(2)
-    plan["phases"][0]["chapters"] = [_make_chapter(f"章节{i}") for i in range(8)]
+    plan["phases"][0]["chapters"] = [_make_chapter(f"章节{i}") for i in range(13)]
     issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
-    assert issues, "8 个章节超出上限应产生 issue"
+    assert issues, "13 个章节超出上限应产生 issue"
     assert 0 in pending and 1 not in pending
 
 
 def test_chapter_count_upper_boundary_accepted():
-    """量级放宽边界：MAX_CHAPTERS_PER_PHASE=7 应整阶段通过。"""
+    """量级放宽边界：MAX_CHAPTERS_PER_PHASE=12 应整阶段通过。"""
     plan = _make_plan(3)
-    plan["phases"][0]["chapters"] = [_make_chapter(f"章节{i}") for i in range(7)]
+    plan["phases"][0]["chapters"] = [_make_chapter(f"章节{i}") for i in range(12)]
     issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
-    assert issues == [], "单阶段 7 个章节处于上限边界，应零 issue 通过"
+    assert issues == [], "单阶段 12 个章节处于上限边界，应零 issue 通过"
     assert pending == []
 
 

@@ -17,12 +17,13 @@ from __future__ import annotations
 # 校验阈值（模块顶部常量）
 # ---------------------------------------------------------------------------
 
-# 阶段数范围（与 outline.yaml 的 3-7 阶段量级放宽对齐，上界留余量）
+# 阶段数范围（提示词已不设硬性数量：LLM 按难度/时长弹性决定，本值仅作
+# 防跑飞安全上限）
 MIN_PHASES = 1
-MAX_PHASES = 8
-# 每阶段章节数范围（与 outline.yaml 的每阶段 2-6 章量级放宽对齐，上界留余量）
+MAX_PHASES = 16
+# 每阶段章节数范围（同上：弹性生成，仅设防跑飞安全上限）
 MIN_CHAPTERS_PER_PHASE = 1
-MAX_CHAPTERS_PER_PHASE = 7
+MAX_CHAPTERS_PER_PHASE = 12
 # 每章 markdown 正文最少字数（strip 后；contentMd 空直接 failed 可重生成）
 MIN_CHAPTER_CONTENT_CHARS = 1000
 # 阶段项目最少步骤 / 验收标准条数
