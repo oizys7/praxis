@@ -1,7 +1,11 @@
 import { computed, ref } from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { fetchPlanRecord } from "@/composables/usePlanHistory";
-import type { OutlinePhasePayload, PlanProgressEnvelope } from "@/types/agent";
+import type {
+  OutlinePhasePayload,
+  PlanProgressEnvelope,
+  StudyPlan,
+} from "@/types/agent";
 
 /** 事件信封的本地别名（listen 的 payload 形状 = PlanProgressEnvelope） */
 type Envelope = PlanProgressEnvelope;
@@ -51,6 +55,29 @@ export const observations = ref<Record<string, GenerationObservation>>({});
 
 /** 当前页面跟随展示的计划 id（App.vue 提交成功后设置；新建时清空） */
 export const followedPlanId = ref<string | null>(null);
+
+// ---------------------------------------------------------------------------
+// 重生成结果落袋（修复问题②）：PhaseCard/ChapterSection 完成重生成后的
+// emit("refreshed") 依赖目标组件存活——页面已切换时目标组件已卸载，emit
+// 静默 no-op，刷新结果无人接盘，页面停留在「未生成」旧状态。这里提供
+// 模块级 store：无论组件死活，noteRegenDone 照记；PlanResult 在挂载 /
+// planId 变化时 consumeRegenDone 取袋上抛，补齐丢失的刷新链。
+// ---------------------------------------------------------------------------
+
+/** 重生成完成结果的落袋表：planId -> 刷新后的完整计划（模块级，页面切换不丢） */
+export const regenResults = ref<Record<string, StudyPlan>>({});
+
+/** 记一笔重生成完成结果（同 planId 后到覆盖先到，只保留最新一份） */
+export function noteRegenDone(planId: string, plan: StudyPlan) {
+  regenResults.value[planId] = plan;
+}
+
+/** 取走并清除该 plan 的重生成结果（读即清；无则返回 undefined） */
+export function consumeRegenDone(planId: string): StudyPlan | undefined {
+  const plan = regenResults.value[planId];
+  if (plan) delete regenResults.value[planId];
+  return plan;
+}
 
 /** 终态信号量：任一观测 plan 判定完成/消失时自增（历史列表刷新信号） */
 export const terminalCounter = ref(0);

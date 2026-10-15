@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { onMounted, watch } from "vue";
 import { Badge } from "@/components/ui/badge";
 import {
   Card,
@@ -8,6 +9,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import PhaseCard from "@/components/PhaseCard.vue";
+import { consumeRegenDone } from "@/composables/useGenerationProgress";
 import type { StudyPlan } from "@/types/agent";
 
 /**
@@ -17,7 +19,8 @@ import type { StudyPlan } from "@/types/agent";
  * - 中部：阶段列表（PhaseCard 可折叠，第一阶段默认展开）
  * - 底部：推荐资源 + Agent 评审备注
  */
-defineProps<{
+/** 响应式 props 引用：planId 变化监听（重生成落袋结果补捞）需要 */
+const props = defineProps<{
   plan: StudyPlan;
   /** 生成时的学习目标（历史列表检索字段；历史查看时不传） */
   goal?: string;
@@ -44,6 +47,23 @@ defineProps<{
 
 /** 子组件（PhaseCard → ChapterSection）重生成完成：刷新后的计划整体上抛供调用方替换 */
 const emit = defineEmits<{ refreshed: [plan: StudyPlan] }>();
+
+/**
+ * 问题②消费点：PhaseCard/ChapterSection 完成重生成时若本页已切换，emit
+ * 静默丢失（目标组件已卸载）；结果已由完成路径落袋到模块级
+ * regenResults（useGenerationProgress）。本组件挂载或 planId 变化时
+ * 取袋上抛，App.onPlanRefreshed 就地换 result，状态不再停留在「未生成」。
+ */
+function consumePendingRegen() {
+  if (!props.planId) return;
+  const plan = consumeRegenDone(props.planId);
+  if (plan) emit("refreshed", plan);
+}
+onMounted(consumePendingRegen);
+watch(
+  () => props.planId,
+  () => consumePendingRegen(),
+);
 
 /** 资源类型 -> 展示标签 */
 const resourceTypeLabels: Record<string, string> = {

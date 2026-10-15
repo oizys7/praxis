@@ -1,4 +1,4 @@
-import { ref, shallowRef } from "vue";
+import { computed, ref, shallowRef } from "vue";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   CommandError,
@@ -24,10 +24,40 @@ export function normalizeError(e: unknown): CommandError {
 }
 
 /**
- * 重生成请求在飞锁：模块级共享 ref（同一时间只允许一个重生成请求在飞），
+ * 重生成请求在飞锁（keyed 化，修复问题①）：模块级 scope 集合，
+ * key 形如 "{planId}:{phaseIndex}" / "{planId}:{phaseIndex}:{chapterIndex}"。
+ * 语义要点：scope 的 add 在模块级 regeneratePhase / regenerateChapter 启动时、
+ * delete 在同一函数的 try/finally——finally 挂在模块级 promise 上，页面切换、
+ * 组件卸载都拦不住它的执行，切走再进不会出现「锁死了根本没在飞的请求」。
  * 同一计划的阶段级 / 章节级多个「重新生成」按钮据此互斥（按钮禁用 + 入口守卫）。
  */
-export const regenInFlight = ref(false);
+export const regenScopes = ref<Set<string>>(new Set());
+
+/** 同计划任意阶段/章节 scope 在飞（PhaseCard 按钮禁用与文案判据；同 plan 互斥） */
+export function isRegenInFlight(planId: string): boolean {
+  const prefix = `${planId}:`;
+  for (const key of regenScopes.value) {
+    if (key.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+/** 指定 scope 是否在飞（阶段级 / 章节级按需精确判定） */
+export function isScopeInFlight(key: string): boolean {
+  return regenScopes.value.has(key);
+}
+
+/**
+ * @deprecated 兼容导出（ChapterSection 尚未迁移 keyed 锁，不得改动该文件）：
+ * 全局「任意重生成在飞」布尔视图。原全局互斥语义由 keyed 锁继续保证，
+ * PhaseCard 所在链路已迁移 [isRegenInFlight]，待 ChapterSection 迁移后删除。
+ */
+export const regenInFlight = computed(() => regenScopes.value.size > 0);
+
+/** 阶段级 scope key */
+function phaseScope(planId: string, phaseIndex: number): string {
+  return `${planId}:${phaseIndex}`;
+}
 
 /**
  * 重生成单个阶段：invoke('regenerate_phase') + Channel 进度推送
@@ -41,7 +71,8 @@ export async function regeneratePhase(
   phaseIndex: number,
   onProgress?: (event: PlanProgressEvent) => void,
 ): Promise<PlanResponse> {
-  regenInFlight.value = true;
+  const scope = phaseScope(planId, phaseIndex);
+  regenScopes.value.add(scope);
   try {
     const channel = new Channel<PlanProgressEvent>();
     channel.onmessage = (event) => onProgress?.(event);
@@ -52,7 +83,8 @@ export async function regeneratePhase(
       channel,
     });
   } finally {
-    regenInFlight.value = false;
+    // finally 在模块级 promise 上：页面切换 / 组件卸载后依然释放（keyed 锁关键语义）
+    regenScopes.value.delete(scope);
   }
 }
 
@@ -67,7 +99,8 @@ export async function regenerateChapter(
   chapterIndex: number,
   onProgress?: (event: PlanProgressEvent) => void,
 ): Promise<PlanResponse> {
-  regenInFlight.value = true;
+  const scope = `${planId}:${phaseIndex}:${chapterIndex}`;
+  regenScopes.value.add(scope);
   try {
     const channel = new Channel<PlanProgressEvent>();
     channel.onmessage = (event) => onProgress?.(event);
@@ -79,7 +112,8 @@ export async function regenerateChapter(
       channel,
     });
   } finally {
-    regenInFlight.value = false;
+    // 同 phaseScope 的 delete 语义：模块级 finally，页面生命周期不截断
+    regenScopes.value.delete(scope);
   }
 }
 
@@ -92,8 +126,8 @@ export async function regenerateChapter(
  *   由 useGenerationProgress 的模块级 store 观测，此处不再传 Channel。
  *   错误归一进 error 状态并返回 null（调用方判空后读 error）。
  * - regeneratePhase / regenerateChapter（模块级导出）：阶段/章节级重生成，
- *   仍走流式命令 + tauri Channel 推送进度；模块级 regenInFlight 锁保证
- *   同一时间只有一个重生成请求在飞
+ *   仍走流式命令 + tauri Channel 推送进度；模块级 keyed 锁（regenScopes）保证
+ *   同 plan 的重生成请求互斥，且锁释放不依赖页面存活（模块级 finally）
  * - pingAgent：invoke('ping_agent')，探测 Python 服务是否在线
  * - normalizeError：把 invoke 抛出的错误统一归一化为 CommandError 对象
  */

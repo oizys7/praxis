@@ -10,11 +10,12 @@ import {
 } from "@/components/ui/collapsible";
 import ChapterSection from "@/components/ChapterSection.vue";
 import {
+  isRegenInFlight,
   normalizeError,
-  regenInFlight,
   regeneratePhase,
 } from "@/composables/useAgent";
 import { fetchPlanRecord } from "@/composables/usePlanHistory";
+import { noteRegenDone } from "@/composables/useGenerationProgress";
 import type { StudyPhase, StudyPlan } from "@/types/agent";
 
 /**
@@ -64,14 +65,18 @@ const canRegenerate = computed(
     (props.phase.status === "failed" || props.phase.status === "pending"),
 );
 
-/** 本组件是否正在重生成（按钮 spinner 与禁用；全局在飞锁另有 regenInFlight） */
+/** 本组件自身是否正在重生成（spinner；在飞锁另有模块级 regenScopes） */
 const busy = ref(false);
+/** 本计划任意阶段/章节的重生成是否在飞（含非本 scope；按钮禁用与文案判据） */
+const regenBusy = computed(
+  () => busy.value || (!!props.planId && isRegenInFlight(props.planId)),
+);
 /** 重生成过程的反馈信息（入库提示 / 失败原因；null = 无） */
 const regenError = ref<string | null>(null);
 
 /** 重生成此阶段：成败都刷新详情（失败也可见最新 failed 态），刷新后整体上抛 */
 async function onRegenerate() {
-  if (!props.planId || busy.value || regenInFlight.value) return;
+  if (!props.planId || regenBusy.value) return;
   busy.value = true;
   regenError.value = null;
   try {
@@ -84,6 +89,8 @@ async function onRegenerate() {
       },
     );
     const record = await fetchPlanRecord(props.planId);
+    // 落袋无论组件死活照走：页面已切换时 emit no-op，重进后 PlanResult 从袋里补捞
+    noteRegenDone(props.planId, record.plan);
     emit("refreshed", record.plan);
     if (envelope.status !== "plan" && envelope.error) {
       regenError.value = envelope.error.message;
@@ -92,7 +99,9 @@ async function onRegenerate() {
     const err = normalizeError(e);
     try {
       // 传输错误同样刷新：Rust 收尾已把目标行翻 failed，详情可见最新状态
-      emit("refreshed", (await fetchPlanRecord(props.planId)).plan);
+      const refreshed = (await fetchPlanRecord(props.planId)).plan;
+      noteRegenDone(props.planId, refreshed);
+      emit("refreshed", refreshed);
     } catch {
       // 详情读取失败时仅展示错误，不打断原有渲染
     }
@@ -183,14 +192,14 @@ const sections = computed(() => [
             v-if="canRegenerate"
             variant="outline"
             size="sm"
-            :disabled="busy || regenInFlight"
+            :disabled="!props.planId || regenBusy"
             @click="onRegenerate"
           >
             <span
-              v-if="busy"
+              v-if="regenBusy"
               class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"
             />
-            {{ busy ? "重新生成中…" : "重新生成此阶段" }}
+            {{ regenBusy ? "重新生成中…" : "重新生成此阶段" }}
           </Button>
         </div>
       </div>
