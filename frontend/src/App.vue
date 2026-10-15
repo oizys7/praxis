@@ -65,6 +65,12 @@ const planMainRef = ref<HTMLElement | null>(null);
 function scrollPlanToTop() {
   planMainRef.value?.scrollTo({ top: 0, behavior: "smooth" });
 }
+
+/** 返回历史列表（反馈①：退出查看视图时同步复位 historyMode，回顶按钮随之清除） */
+function exitToPlanList() {
+  planView.value = "list";
+  historyMode.value = false;
+}
 /** 当前打开的历史记录 id（阶段/章节重生成入口依赖；新生成流程无 id） */
 const historyPlanId = shallowRef<string | null>(null);
 /**
@@ -295,8 +301,8 @@ function onPlanRefreshed(plan: StudyPlan) {
           >
             <Button
               variant="outline"
-              class="rounded-full border-border/70 bg-background/90 text-sm shadow-md backdrop-blur transition-colors hover:text-foreground"
-              @click="planView = 'list'"
+              class="rounded-full border-border/70 bg-background/90 text-sm shadow-md backdrop-blur transition-colors hover:border-primary/40 hover:bg-muted hover:text-primary"
+              @click="exitToPlanList"
             >
               <ArrowLeft class="h-4 w-4" />
               返回列表
@@ -585,7 +591,7 @@ function onPlanRefreshed(plan: StudyPlan) {
           v-if="historyMode"
           variant="outline"
           size="sm"
-          class="fixed bottom-6 right-8 z-30 h-9 w-9 rounded-full p-0 text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
+          class="fixed bottom-6 right-8 z-30 h-9 w-9 rounded-full p-0 text-muted-foreground transition-colors hover:border-primary/40 hover:bg-muted hover:text-primary"
           title="回到顶部"
           aria-label="回到顶部"
           @click="scrollPlanToTop"

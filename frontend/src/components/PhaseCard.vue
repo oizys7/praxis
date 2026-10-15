@@ -226,15 +226,21 @@ const sections = computed(() => [
 
           <!-- 章节化内容（新数据）：每章一个 ChapterSection（携带重生成入口参数） -->
           <div v-if="phase.chapters?.length" class="space-y-3">
-            <ChapterSection
+            <!-- 目录锚点包装层：悬浮两级目录（PlanResult）滚动定位至此 -->
+            <div
               v-for="(chapter, ci) in phase.chapters"
+              :id="`plan-phase-${index}-chapter-${ci}`"
               :key="ci"
-              :chapter="chapter"
-              :plan-id="planId"
-              :phase-index="index"
-              :chapter-index="ci"
-              @refreshed="(p) => emit('refreshed', p)"
-            />
+              class="scroll-mt-24"
+            >
+              <ChapterSection
+                :chapter="chapter"
+                :plan-id="planId"
+                :phase-index="index"
+                :chapter-index="ci"
+                @refreshed="(p) => emit('refreshed', p)"
+              />
+            </div>
           </div>
 
           <!-- @deprecated v0.1 G1 清理：理论 / 实操 / 作业（旧数据含 theory 列表；新数据 theory 为空自动跳过）—— 等 History 旧计划全走 chapters 后删除 -->

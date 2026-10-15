@@ -1,7 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, watch } from "vue";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import PhaseCard from "@/components/PhaseCard.vue";
 import { consumeRegenDone } from "@/composables/useGenerationProgress";
@@ -52,6 +51,13 @@ const chapterTotal = computed(() =>
 function scrollToPhase(index: number) {
   document
     .getElementById(`plan-phase-${index}`)
+    ?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/** 两级目录章节跳转：锚点由 PhaseCard 章节包装层提供 */
+function scrollToChapter(phaseIndex: number, chapterIndex: number) {
+  document
+    .getElementById(`plan-phase-${phaseIndex}-chapter-${chapterIndex}`)
     ?.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
@@ -157,23 +163,44 @@ const resourceTypeLabels: Record<string, string> = {
       </div>
     </Card>
 
-    <!-- 阶段目录（反馈④）：sticky 悬浮可点跳阶段，滚动中始终可用 -->
-    <nav
-      v-if="plan.phases.length > 1"
-      class="sticky top-12 z-10 flex gap-2 overflow-x-auto rounded-xl border bg-background/85 p-2 backdrop-blur"
-      aria-label="阶段目录"
+    <!-- 悬浮两级目录（反馈④本轮升级）：贴右缘垂直居中，默认只露一条细
+         竖线，悬浮展开阶段+章节面板（超长目录内部滚动），点击平滑跳转 -->
+    <div
+      v-if="plan.phases.length"
+      class="group fixed right-4 top-1/2 z-30 -translate-y-1/2 select-none"
     >
-      <Button
-        v-for="(phase, i) in plan.phases"
-        :key="i"
-        variant="ghost"
-        size="sm"
-        class="shrink-0 rounded-lg text-xs text-muted-foreground hover:text-foreground"
-        @click="scrollToPhase(i)"
+      <div
+        aria-hidden="true"
+        class="h-16 w-1 rounded-full bg-border/70 transition-colors group-hover:bg-primary/40"
+      />
+      <nav
+        class="invisible absolute right-3 top-1/2 max-h-[65vh] w-56 -translate-y-1/2 overflow-y-auto rounded-xl border bg-card/95 p-2.5 opacity-0 shadow-lg backdrop-blur transition-opacity duration-200 group-hover:visible group-hover:opacity-100"
+        aria-label="计划目录"
       >
-        第 {{ i + 1 }} 阶段 · {{ phase.name }}
-      </Button>
-    </nav>
+        <div
+          v-for="(phase, pi) in plan.phases"
+          :key="pi"
+          class="mb-2 last:mb-0"
+        >
+          <button
+            class="w-full truncate rounded-lg px-2 py-1.5 text-left text-xs font-semibold transition-colors hover:bg-muted"
+            title="跳转该阶段"
+            @click="scrollToPhase(pi)"
+          >
+            {{ pi + 1 }}. {{ phase.name }}
+          </button>
+          <button
+            v-for="(chapter, ci) in phase.chapters || []"
+            :key="ci"
+            class="w-full truncate rounded-lg px-2 py-1 pl-6 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            :title="chapter.title"
+            @click="scrollToChapter(pi, ci)"
+          >
+            {{ pi + 1 }}.{{ ci + 1 }} {{ chapter.title }}
+          </button>
+        </div>
+      </nav>
+    </div>
 
     <!-- 阶段列表（锚点包装：目录跳定位；scroll-mt 抵销 sticky 双层高度） -->
     <div class="space-y-3">
