@@ -365,13 +365,30 @@ async def _plan_event_dicts(request: PlanRequest) -> AsyncIterator[dict[str, Any
                                 for phase in outline.get("phases") or []
                             ],
                         }
-                    elif node in ("expand_phase", "expand_revision") and (
-                        "phase_drafts" in update
+                    elif node in ("expand_chapter", "expand_revision") and (
+                        "chapter_drafts" in update
                     ):
-                        for index, phase in update["phase_drafts"].items():
+                        # 章级扇出：每章实例产一条 chapter 事件（与 WS 重生成单章
+                        # 事件同构；回炉轮返回的增量仅含重扩成功的章）
+                        for key, chapter in update["chapter_drafts"].items():
+                            phase_index, chapter_index = (
+                                int(part) for part in key.split(":")
+                            )
+                            yield {
+                                "type": "chapter",
+                                "index": chapter_index,
+                                "phaseIndex": phase_index,
+                                "chapter": chapter,
+                            }
+                    elif node == "assemble" and "plan" in update:
+                        # 拼装即推完整阶段（含全章，消费方 upsert_phase 幂等覆盖）；
+                        # 回炉后第二轮 assemble 会再推一次，旧语义不变
+                        for index, phase in enumerate(
+                            update["plan"].get("phases") or []
+                        ):
                             yield {
                                 "type": "phase",
-                                "index": int(index),
+                                "index": index,
                                 "phase": phase,
                             }
             else:  # values：整图状态快照，记录最新一份作为终态

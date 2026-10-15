@@ -14,8 +14,9 @@ import pytest
 
 from app import prompts, validators
 
-# 三份叙事化提示词（本任务改写的口径）
-_STORY_PROMPTS = ("outline", "phase", "chapter")
+# 叙事化提示词（章级扇出拓扑：chapter 为主链 + 重生成共用；
+# phase_extras 为 wrap 轻量收尾；phase 仅发掘于 regen 全阶段路径）
+_STORY_PROMPTS = ("outline", "phase", "phase_extras", "chapter")
 
 # 与各提示词 human 模板占位符一一对应的填充值（无默认、全覆盖）
 _FULL_VARIABLES: dict[str, str] = {

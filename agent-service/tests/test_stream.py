@@ -1,9 +1,9 @@
 """main.py NDJSON 流式端点测试（mock 模式，httpx ASGITransport 不走网络）。
 
 用例名与实现计划简报逐字对应（test_stream_event_sequence /
-test_stream_clarification）。事件协议三行式：outline → phase×N（可乱序）
-→ done；done 必为最后一行，clarification 终态同样只走 done
-（此时无 outline / phase 事件）。
+test_stream_clarification）。事件协议章级扇出式：outline → chapter×M
+（可乱序）→ phase×N（阶段重组）→ done；done 必为最后一行，
+clarification 终态同样只走 done（此时无 outline / phase / chapter 事件）。
 """
 
 import json
@@ -45,7 +45,7 @@ async def _post_stream(payload: dict[str, Any]) -> list[dict[str, Any]]:
 
 @pytest.mark.asyncio
 async def test_stream_event_sequence(monkeypatch):
-    """合法请求：outline（phaseCount≥2）→ ≥2 条 phase（chapters 非空）→ done=plan。"""
+    """合法请求：outline → chapter×M → phase×N（重组含全章）→ done=plan。"""
     monkeypatch.setattr(settings, "allow_mock_llm", True)
 
     events = await _post_stream(VALID_REQUEST)
@@ -58,9 +58,29 @@ async def test_stream_event_sequence(monkeypatch):
     assert first["title"], "outline 事件必须携带计划标题"
     phase_count = first["phaseCount"]
 
-    # 中段：phase 事件，index 落在大纲范围内，章节非空
+    # 中段：chapter 事件（每章一条），与重生成链 chapter 事件同构
+    chapter_events = [event for event in events if event["type"] == "chapter"]
+    expected_chapters = sum(
+        len(phase["chapterTitles"]) for phase in first["phases"]
+    )
+    assert len(chapter_events) == expected_chapters, "每章恰好一条 chapter 事件"
+    for event in chapter_events:
+        assert set(event) == {"type", "index", "phaseIndex", "chapter"}, (
+            "chapter 事件键集与 WS 重生成单章链同构"
+        )
+        assert 0 <= event["phaseIndex"] < phase_count, "phaseIndex 落在大纲范围内"
+        assert event["chapter"]["title"] in first["phases"][event["phaseIndex"]][
+            "chapterTitles"
+        ], "章题与骨架一致"
+        assert len(event["chapter"]["contentMd"].strip()) >= 1000, "章正文过硬底线"
+    type_seq = [event["type"] for event in events]
+    assert type_seq.index("phase") > max(
+        i for i, t in enumerate(type_seq) if t == "chapter"
+    ), "chapter 事件应全部先于重组 phase 事件"
+
+    # 重组段：phase 事件，index 落在大纲范围内，章节非空
     phase_events = [event for event in events if event["type"] == "phase"]
-    assert len(phase_events) >= 2, "mock 大纲至少两个阶段，应推送 ≥2 条 phase 事件"
+    assert len(phase_events) == phase_count, "每阶段恰好一条重组 phase 事件"
     for event in phase_events:
         assert 0 <= event["index"] < phase_count, "phase index 必须落在大纲范围内"
         assert event["phase"]["chapters"], "每个阶段的章节列表必须非空"
@@ -70,7 +90,12 @@ async def test_stream_event_sequence(monkeypatch):
     assert done["type"] == "done"
     assert done["response"]["status"] == "plan"
     assert done["response"]["plan"], "plan 终态必须携带计划体"
-    assert {event["type"] for event in events} == {"outline", "phase", "done"}
+    assert {event["type"] for event in events} == {
+        "outline",
+        "chapter",
+        "phase",
+        "done",
+    }
 
 
 @pytest.mark.asyncio

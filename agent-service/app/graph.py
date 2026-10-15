@@ -1,14 +1,19 @@
-"""LangGraph 状态图定义：分层生成拓扑（骨架 → 并行扩展 → 拼装 → 评审/定向回炉）。
+"""LangGraph 状态图定义：章级扇出拓扑（骨架 → 章级并行扩展 → 拼装 → 评审/章级回炉）。
 
 流程：
 - clarify 发现信息缺口 → END（返回澄清问题给用户）
-- clarify 通过 → outline（骨架规划）→ 条件边 Send 并行分发 expand_phase
-  （每阶段一个实例，payload 携带 request / phase_outline / phase_index / plan_context）
-- expand_phase 各实例只写自己的索引键 → assemble（按索引拼装 + 程序化校验）
+- clarify 通过 → outline（骨架规划）→ 条件边 Send 双路分发：
+  - expand_chapter：每章一个实例（每章 1 次 LLM 调用，一次只写一章正文）
+  - expand_phase_wrap：每阶段一个实例（轻量调用，只产 practice/assignments/project）
+- 两路实例各写各键 → assemble（按 (阶段索引, 章索引) 重组 + 程序化校验）
 - assemble 未修订 → review（LLM 评审）：
-  - 有待回炉阶段 → Send expand_revision 定向重生成 → 回到 assemble
+  - 有待回炉阶段 → Send expand_revision 章级定向回炉（只重扩失败章；
+    结构性问题回炉该阶段全部章）→ 回到 assemble
   - 无待回炉阶段 → END
 - assemble 已修订过 → END（图侧条件边保证最多回炉一次，防死循环）
+
+章级扇出的动机：一次吐整阶段（2-6 章长 markdown）是 LLM 解析失败/截断
+重灾区，按章单调用保证质量；outlines 已产出每章标题，天然支持章级 Send 扇出。
 """
 
 from __future__ import annotations
@@ -24,7 +29,8 @@ from app.nodes import (
     assemble_node,
     build_plan_context,
     clarify_node,
-    expand_phase_node,
+    expand_chapter_node,
+    expand_phase_wrap_node,
     expand_revision_node,
     outline_node,
     review_node,
@@ -39,25 +45,44 @@ def _route_after_clarify(state: dict[str, Any]) -> str:
     return "end" if state.get("clarifications") else "outline"
 
 
-def _fan_out_phases(state: dict[str, Any]) -> list[Send]:
-    """outline 之后的条件边：按骨架逐阶段分发 Send（并行扩展）。
+def _fan_out_chapters(state: dict[str, Any]) -> list[Send]:
+    """outline 之后的条件边：按骨架章级分发 Send（并行扩展）。
 
-    payload 与 expand_phase_node 的入参约定一一对应；
+    双路分发：每章一个 expand_chapter 实例（payload 携带 request /
+    phase_outline / phase_index / chapter_index / plan_context），
+    加每阶段一个 expand_phase_wrap 实例（轻量收尾内容，不含章节正文）。
     plan_context 由 build_plan_context 从大纲构造（相邻阶段名 / 标题 / 概述）。
     """
     outline = state.get("outline") or {}
-    return [
-        Send(
-            "expand_phase",
-            {
-                "request": state.get("request"),
-                "phase_outline": phase,
-                "phase_index": index,
-                "plan_context": build_plan_context(outline, index),
-            },
+    request = state.get("request")
+    sends: list[Send] = []
+    for index, phase in enumerate(outline.get("phases") or []):
+        plan_context = build_plan_context(outline, index)
+        for chapter_index in range(len(phase.get("chapterTitles") or [])):
+            sends.append(
+                Send(
+                    "expand_chapter",
+                    {
+                        "request": request,
+                        "phase_outline": phase,
+                        "phase_index": index,
+                        "chapter_index": chapter_index,
+                        "plan_context": plan_context,
+                    },
+                )
+            )
+        # 阶段轻装（practice / assignments / project）与章节正文并行生成
+        sends.append(
+            Send(
+                "expand_phase_wrap",
+                {
+                    "request": request,
+                    "phase_outline": phase,
+                    "phase_index": index,
+                },
+            )
         )
-        for index, phase in enumerate(outline.get("phases") or [])
-    ]
+    return sends
 
 
 def _route_after_assemble(state: dict[str, Any]) -> str:
@@ -66,10 +91,11 @@ def _route_after_assemble(state: dict[str, Any]) -> str:
 
 
 def _route_after_review(state: dict[str, Any]) -> list[Send] | str:
-    """review 之后的条件边：有待回炉阶段 → Send 定向回炉；否则结束。
+    """review 之后的条件边：有待回炉阶段 → Send 章级定向回炉；否则结束。
 
     Send 携带全量 state 快照：expand_revision_node 需要
-    pending_phase_indexes / phase_drafts / review_notes / request / outline。
+    pending_phase_indexes / failed_chapter_keys / chapter_drafts / phase_extras /
+    review_notes / request / outline。
     """
     if not state.get("pending_phase_indexes"):
         return END
@@ -87,7 +113,8 @@ def build_graph(review: ReviewNode | None = None):
     graph.add_node("outline", outline_node)
     # Send 目标节点收 payload dict 而非全局状态，LangGraph 的节点类型签名
     # 无法表达该约定（官方支持模式），此处静态检查报参不匹配属误报
-    graph.add_node("expand_phase", expand_phase_node)  # type: ignore[arg-type]
+    graph.add_node("expand_chapter", expand_chapter_node)  # type: ignore[arg-type]
+    graph.add_node("expand_phase_wrap", expand_phase_wrap_node)  # type: ignore[arg-type]
     graph.add_node("assemble", assemble_node)
     # 注入替身与真实节点联合类型同样无法满足严格的节点签名检查
     graph.add_node("review", review or review_node)  # type: ignore[arg-type]
@@ -101,11 +128,12 @@ def build_graph(review: ReviewNode | None = None):
         {"end": END, "outline": "outline"},
     )
 
-    # outline 之后 Send 并行分发到 expand_phase
-    graph.add_conditional_edges("outline", _fan_out_phases)
+    # outline 之后 Send 双路并行分发到 expand_chapter + expand_phase_wrap
+    graph.add_conditional_edges("outline", _fan_out_chapters)
 
     # 并行扩展的各实例完成后统一进入拼装
-    graph.add_edge("expand_phase", "assemble")
+    graph.add_edge("expand_chapter", "assemble")
+    graph.add_edge("expand_phase_wrap", "assemble")
 
     # assemble：未修订 → review；已修订过（回炉后重拼）→ END
     graph.add_conditional_edges(
@@ -117,7 +145,7 @@ def build_graph(review: ReviewNode | None = None):
     # review：有待回炉阶段 → Send expand_revision；无 → END
     graph.add_conditional_edges("review", _route_after_review)
 
-    # 定向回炉完成后回到 assemble（此时 revised=True，走 END 分支）
+    # 章级定向回炉完成后回到 assemble（此时 revised=True，走 END 分支）
     graph.add_edge("expand_revision", "assemble")
 
     return graph.compile()

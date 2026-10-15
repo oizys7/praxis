@@ -141,7 +141,7 @@ async def test_generation_payload_invalid_422(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_plan_event_sequence(monkeypatch):
-    """plan 任务 finished 后：[outline, phase×N, done] 且 done.status=plan；
+    """plan 任务 finished 后：[outline, chapter×M, phase×N, done] 且 done.status=plan；
     mermaid / blob 等键集断言直接引用 mock 产物（不硬编形状）。"""
     monkeypatch.setattr(settings, "allow_mock_llm", True)
     transport = httpx.ASGITransport(app=app)
@@ -153,12 +153,22 @@ async def test_plan_event_sequence(monkeypatch):
 
     events = await _drain_until_terminal(task_id)
     types = [e["type"] for e in events]
-    # 序列形状：outline → phase×N（N==phaseCount，可乱序）→ done 必为末尾
+    # 序列形状：outline → chapter×M（每章一条，可乱序）→ phase×N → done 必为末尾
     outline = events[0]
+    chapter_events = [e for e in events if e["type"] == "chapter"]
     phase_events = [e for e in events if e["type"] == "phase"]
-    assert types == ["outline"] + ["phase"] * len(phase_events) + ["done"], types
+    assert types == (
+        ["outline"]
+        + ["chapter"] * len(chapter_events)
+        + ["phase"] * len(phase_events)
+        + ["done"]
+    ), types
     assert outline["phaseCount"] >= 2
     assert outline["title"], "outline 事件必须携带计划标题"
+    expected_chapters = sum(
+        len(p["chapterTitles"]) for p in outline["phases"]
+    )
+    assert len(chapter_events) == expected_chapters, "每章恰好一条 chapter 事件"
     assert len(phase_events) == outline["phaseCount"], "每阶段恰好一条 phase 事件"
     for e in phase_events:
         assert 0 <= e["index"] < outline["phaseCount"], "phase index 落在大纲范围内"
@@ -168,13 +178,19 @@ async def test_plan_event_sequence(monkeypatch):
     assert done["response"]["status"] == "plan", "终态必须携带 plan 包络"
     assert done["response"]["plan"], "plan 终态必须携带计划体"
 
-    # 键集断言：与既有 NDJSON 流事件同构（引用 mock 产物，不硬编形状）
+    # 键集断言：chapter 与 WS 重生成单章链同构；phase 与重组语义同构
     assert set(outline) == {"type", "phaseCount", "title", "overview", "phases"}
+    for e in chapter_events:
+        assert set(e) == {"type", "index", "phaseIndex", "chapter"}
+        chapter = e["chapter"]
+        assert set(chapter) == {"title", "summary", "contentMd"}
+        assert "```mermaid" in chapter["contentMd"], "正文必须内联 mermaid 码块"
+        assert (
+            chapter["title"]
+            in outline["phases"][e["phaseIndex"]]["chapterTitles"]
+        ), "章题与骨架一致"
     for e in phase_events:
         assert set(e) == {"type", "index", "phase"}
-    chapter = phase_events[-1]["phase"]["chapters"][0]
-    assert set(chapter) == {"title", "summary", "contentMd"}
-    assert "```mermaid" in chapter["contentMd"], "正文必须内联 mermaid 码块"
 
 
 @pytest.mark.asyncio
@@ -572,4 +588,4 @@ async def test_stream_endpoints_unaffected(monkeypatch):
     assert events, "流必须至少产出一个事件"
     assert events[-1]["type"] == "done"
     assert raw.endswith(b"\n"), "NDJSON 尾行必须带换行（字节级 wire 兼容）"
-    assert {e["type"] for e in events} == {"outline", "phase", "done"}
+    assert {e["type"] for e in events} == {"outline", "chapter", "phase", "done"}

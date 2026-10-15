@@ -7,7 +7,12 @@ build_mock_outline / build_mock_phase 均为 camelCase dict 进出（与 schemas
 章节校验规则的「零 pending」契约随 validators 重写（任务 19）同步对齐。
 """
 
-from app.mock import build_mock_chapter, build_mock_outline, build_mock_phase
+from app.mock import (
+    build_mock_chapter,
+    build_mock_extras,
+    build_mock_outline,
+    build_mock_phase,
+)
 
 # camelCase 请求，形状等同 PlanRequest.model_dump(by_alias=True)
 REQUEST = {
@@ -102,6 +107,18 @@ def test_mock_markdown_extreme_inputs_still_long():
     phase = build_mock_phase(extreme, outline["phases"][0], 0)
     for chapter in phase["chapters"]:
         assert len(chapter["contentMd"].strip()) >= _MIN_CHARS
+
+
+def test_mock_extras_compose_phase():
+    """轻装重组一致性：build_mock_phase 的三键与 build_mock_extras 完全一致。"""
+    outline = build_mock_outline(REQUEST)
+    for index, phase_outline in enumerate(outline["phases"]):
+        extras = build_mock_extras(REQUEST, phase_outline, index)
+        assert set(extras) == {"practice", "assignments", "project"}
+        assert extras["project"]["acceptanceCriteria"], "验收标准非空"
+        phase = build_mock_phase(REQUEST, phase_outline, index)
+        for key, value in extras.items():
+            assert phase[key] == value, f"带装轻装重组应一致：{key}"
 
 
 def test_project_templates_complete():

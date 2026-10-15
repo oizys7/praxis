@@ -191,6 +191,18 @@ class PhaseOutline(CamelModel):
     project_brief: str = Field(default="", description="阶段项目一句话简介")
 
 
+class PhaseExtrasOutput(BaseModel):
+    """expand_phase_wrap 轻量调用的 LLM 输出（仅图内流转，不入响应协议）。
+
+    章级扇出拓扑下阶段收尾内容（practice / assignments / project）由每阶段
+    一次轻量调用单独产出，章节正文不在此模型内。
+    """
+
+    practice: list[str] = Field(default_factory=list, description="动手实操任务")
+    assignments: list[str] = Field(default_factory=list, description="课后作业")
+    project: PhaseProject = Field(..., description="阶段项目")
+
+
 class PlanOutline(CamelModel):
     """计划总大纲：先产出骨架，再逐阶段展开（仅图内流转，不入响应协议）。"""
 

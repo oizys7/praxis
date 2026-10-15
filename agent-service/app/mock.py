@@ -4,10 +4,11 @@
 便于开发调试 UI 与通信协议。生产使用请关闭该开关（config.json 不设
 mockMode，并在设置页关闭离线演示开关）。
 
-两级生成（与 outline_node / expand_phase_node 节点一一对应）：
+两级生成（与 outline_node / expand_chapter_node / expand_phase_wrap_node 节点对应）：
 - build_mock_outline：先产出 PlanOutline 骨架（阶段大纲，不含章节正文）；
-- build_mock_phase：再按阶段大纲逐个扩展为 StudyPhase（markdown 章节 + 项目）；
-- build_mock_chapter：仅重生成单个章节（Chapter 形状），供 regen 端点单章路径。
+- build_mock_chapter：按章节标题出单章 mock 数据（Chapter 形状，供章级扇出主链）；
+- build_mock_extras：按阶段出轻装（practice / assignments / project，供 wrap 节点）；
+- build_mock_phase：整阶段组装（章节 + 轻装，仅供 regen_phase 端点复用）。
 
 约定：camelCase dict 进出（与 schemas 模型 model_dump(by_alias=True) 形状
 一致），但本模块不 import schemas、纯字典构造；每章产出单个 contentMd
@@ -306,8 +307,8 @@ def build_mock_chapter(
 
     参数 request 是 PlanRequest.model_dump(by_alias=True) 的结果，
     phase_outline 是 build_mock_outline 输出 phases 中的元素。
-    章节正交给 build_mock_phase 复用的同一 _chapter 构造器，保证
-    全阶段重生成与单章重生成产出的章节目内容一致。
+    章级扇出主链与单章重生成路径共用本构造器，保证两条路径产出的
+    同一章节目内容一致。
     """
     goal: str = request.get("goal", "你的学习目标")
     chapter_titles: list[str] = phase_outline.get("chapterTitles") or []
@@ -315,14 +316,14 @@ def build_mock_chapter(
     return _chapter(title, goal)
 
 
-def build_mock_phase(
+def build_mock_extras(
     request: dict[str, Any], phase_outline: dict[str, Any], index: int
 ) -> dict[str, Any]:
-    """按阶段大纲扩展出完整阶段（StudyPhase 形状，camelCase dict）。
+    """按阶段大纲生成阶段轻装：practice / assignments / project（camelCase dict）。
 
     参数 request 是 PlanRequest.model_dump(by_alias=True) 的结果，
     phase_outline 是 build_mock_outline 输出 phases 中的元素。
-    index ≥ 项目模板数时循环取模板（防御，正常调用 0-2）。
+    index ≥ 项目模板数时循环取模板（防御，正常调用 0-2）。不产出章节正文。
     """
     goal: str = request.get("goal", "你的学习目标")
     chapter_titles: list[str] = phase_outline.get("chapterTitles") or []
@@ -338,10 +339,6 @@ def build_mock_phase(
     }
 
     return {
-        "name": phase_outline.get("name", ""),
-        "weekRange": phase_outline.get("weekRange", ""),
-        "objectives": list(phase_outline.get("objectives") or []),
-        "chapters": [_chapter(title, goal) for title in chapter_titles],
         "practice": [
             f"跟随章节完成「{title}」的配套动手练习" for title in chapter_titles
         ],
@@ -350,4 +347,28 @@ def build_mock_phase(
             "独立完成一个迷你练习并写 200 字左右的实现说明",
         ],
         "project": project,
+    }
+
+
+def build_mock_phase(
+    request: dict[str, Any], phase_outline: dict[str, Any], index: int
+) -> dict[str, Any]:
+    """按阶段大纲组装完整阶段（StudyPhase 形状，camelCase dict）。
+
+    章节由 build_mock_chapter 逐章生成、轻装由 build_mock_extras 生成，
+    本函数只做拼装（仅供 regen_phase 端点全阶段重生成复用）。
+    参数 request 是 PlanRequest.model_dump(by_alias=True) 的结果，
+    phase_outline 是 build_mock_outline 输出 phases 中的元素。
+    """
+    chapter_titles: list[str] = phase_outline.get("chapterTitles") or []
+
+    return {
+        "name": phase_outline.get("name", ""),
+        "weekRange": phase_outline.get("weekRange", ""),
+        "objectives": list(phase_outline.get("objectives") or []),
+        "chapters": [
+            build_mock_chapter(request, phase_outline, chapter_index)
+            for chapter_index in range(len(chapter_titles))
+        ],
+        **build_mock_extras(request, phase_outline, index),
     }
