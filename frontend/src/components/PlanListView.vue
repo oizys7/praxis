@@ -177,9 +177,11 @@ function formatTime(iso: string): string {
       <Card
         v-for="item in list"
         :key="item.id"
-        class="animate-fade-in-up transition-shadow hover:shadow-md"
+        class="animate-fade-in-up cursor-pointer transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-lg"
       >
-        <CardContent class="space-y-3">
+        <!-- 反馈①：Card 首行文字此前吃不到内边距（CardContent 默认 p-6 pt-0，
+             该卡无 CardHeader 补顶距），显式 p-6 拉回四边对称 -->
+        <CardContent class="p-6">
           <div class="flex items-start justify-between gap-2">
             <div class="min-w-0">
               <div class="flex items-center gap-1.5">
