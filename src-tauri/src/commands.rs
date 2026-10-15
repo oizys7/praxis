@@ -875,7 +875,7 @@ fn build_regen_body(
 
 /// regenerate 流事件分派：全阶段路径（chapter_index=None）处理 phase 事件
 /// （upsert_phase → PhaseDone{index, total=阶段总数}）；单章路径处理 chapter
-/// 事件（upsert_chapter → PhaseDone{index=章节索引, total=1}，阶段联动由
+/// 事件（upsert_chapter → ChapterDone{phaseIndex, chapterIndex}，阶段联动由
 /// upsert_chapter 事务内推进）；对侧路径事件 warn 忽略防错；done 终态包络
 /// 直接回传（计划行收尾由 run_regen 统一做）。
 struct RegenSink<'a> {
@@ -887,7 +887,7 @@ struct RegenSink<'a> {
     phase_index: u32,
     /// Some=单章重生成（目标章节索引）；None=全阶段重生成
     chapter_index: Option<u32>,
-    /// PhaseDone 的 total：全阶段=计划阶段总数；单章=1
+    /// PhaseDone 的 total：全阶段=计划阶段总数（单章路径不发 PhaseDone）
     total: u32,
 }
 
@@ -924,7 +924,7 @@ impl StreamEventSink for RegenSink<'_> {
                     chapter,
                 } if self.chapter_index.is_some() => {
                     // 守卫已确保单章路径；目标索引以命令入口校验后的值为准
-                    // （事件值由 Python 原样回显，仅作 PhaseDone 显示）
+                    // （事件值由 Python 原样回显，仅作日志显示）
                     let Some(ci) = self.chapter_index else {
                         return Ok(None);
                     };
@@ -944,11 +944,17 @@ impl StreamEventSink for RegenSink<'_> {
                                 message: format!("重生成章节未能自动保存：{e}"),
                             },
                         );
+                    } else {
+                        // 章行确已落库才发章级进度（与 upsert_phase 失败不发
+                        // PhaseDone 的既有语义对齐；失败只发 StorageIssue）
+                        notify(
+                            self.progress,
+                            PlanProgressEvent::ChapterDone {
+                                phase_index: self.phase_index,
+                                chapter_index: ci,
+                            },
+                        );
                     }
-                    notify(
-                        self.progress,
-                        PlanProgressEvent::PhaseDone { index, total: 1 },
-                    );
                     Ok(None)
                 }
                 StreamEvent::Phase { index, .. } => {

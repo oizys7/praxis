@@ -304,6 +304,12 @@ pub enum PlanProgressEvent {
     },
     /// 单个阶段扩展完成
     PhaseDone { index: u32, total: u32 },
+    /// 单章重生成完成：章级一等公民进度事件（阶段联动由 upsert_chapter
+    /// 事务内推进；旧 PhaseDone{total:1} 变体保留，前端计数依赖它）
+    ChapterDone {
+        phase_index: u32,
+        chapter_index: u32,
+    },
     /// 存储层异常提示（生成不中断，前端降级提示）
     StorageIssue { message: String },
 }
@@ -784,6 +790,29 @@ mod tests {
             serde_json::to_value(&issue).unwrap(),
             serde_json::json!({"type": "storageIssue", "message": "存储不可用"})
         );
+    }
+
+    /// 章级进度事件 wire 形态（task-B）：与 PhaseDone 同构 camelCase 变体，
+    /// 序列化字段名 / 反序列化回旋双锚定
+    #[test]
+    fn chapter_done_progress_event_wire_form() {
+        let chapter_done = PlanProgressEvent::ChapterDone {
+            phase_index: 2,
+            chapter_index: 3,
+        };
+        assert_eq!(
+            serde_json::to_value(&chapter_done).unwrap(),
+            serde_json::json!({"type": "chapterDone", "phaseIndex": 2, "chapterIndex": 3})
+        );
+        let parsed: PlanProgressEvent =
+            serde_json::from_value(serde_json::to_value(&chapter_done).unwrap()).unwrap();
+        assert!(matches!(
+            parsed,
+            PlanProgressEvent::ChapterDone {
+                phase_index: 2,
+                chapter_index: 3,
+            }
+        ));
     }
 
     /// WS 信封解析（任务 22）：{"seq": n, "event": {...}}，event 与 NDJSON 同构；

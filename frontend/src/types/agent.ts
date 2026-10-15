@@ -103,6 +103,8 @@ export type PlanProgressEvent =
       phases?: OutlinePhasePayload[];
     }
   | { type: "phaseDone"; index: number; total: number }
+  /** 单章重生成完成（task-B）：与 protocol.rs ChapterDone 变体逐字对齐 */
+  | { type: "chapterDone"; phaseIndex: number; chapterIndex: number }
   | { type: "storageIssue"; message: string };
 
 /**
@@ -116,7 +118,7 @@ export type PlanProgressEnvelope = {
   planId: string;
   /** 链路种类：generate 恒 "plan" */
   kind: string;
-  /** 进度事件本体（outline / phaseDone / storageIssue 三变体） */
+  /** 进度事件本体（outline / phaseDone / chapterDone / storageIssue 四变体） */
   payload: PlanProgressEvent;
 };
 
