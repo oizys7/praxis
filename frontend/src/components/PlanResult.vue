@@ -47,20 +47,6 @@ const chapterTotal = computed(() =>
   props.plan.phases.reduce((n, p) => n + (p.chapters?.length ?? 0), 0),
 );
 
-/** 反馈④阶段目录跳转：主滚动容器内平滑定位到目标阶段锚点 */
-function scrollToPhase(index: number) {
-  document
-    .getElementById(`plan-phase-${index}`)
-    ?.scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
-/** 两级目录章节跳转：锚点由 PhaseCard 章节包装层提供 */
-function scrollToChapter(phaseIndex: number, chapterIndex: number) {
-  document
-    .getElementById(`plan-phase-${phaseIndex}-chapter-${chapterIndex}`)
-    ?.scrollIntoView({ behavior: "smooth", block: "start" });
-}
-
 /**
  * 问题②消费点：PhaseCard/ChapterSection 完成重生成时若本页已切换，emit
  * 静默丢失（目标组件已卸载）；结果已由完成路径落袋到模块级
@@ -162,47 +148,6 @@ const resourceTypeLabels: Record<string, string> = {
         </div>
       </div>
     </Card>
-
-    <!-- 悬浮两级目录（反馈④本轮升级）：贴右缘垂直居中，默认只露一条细
-         竖线，悬浮展开阶段+章节面板（超长目录内部滚动），点击平滑跳转 -->
-    <div
-      v-if="plan.phases.length"
-      class="group fixed right-2 top-1/2 z-30 -translate-y-1/2 select-none py-6 pr-1"
-    >
-      <!-- 线段热区随 wrapper 扩大（py-6/pr-1），hover 不丢；面板贴 wrapper 右沿
-           （right-0）消除线-板间 hover 死区，否则鼠标移向面板的瞬间会断开 -->
-      <div
-        aria-hidden="true"
-        class="h-16 w-1 rounded-full bg-border/70 transition-colors group-hover:bg-primary/40"
-      />
-      <nav
-        class="invisible absolute right-0 top-1/2 max-h-[65vh] w-56 -translate-y-1/2 overflow-y-auto rounded-xl border bg-card/95 p-2.5 opacity-0 shadow-lg backdrop-blur transition-opacity duration-200 group-hover:visible group-hover:opacity-100"
-        aria-label="计划目录"
-      >
-        <div
-          v-for="(phase, pi) in plan.phases"
-          :key="pi"
-          class="mb-2 last:mb-0"
-        >
-          <button
-            class="w-full truncate rounded-lg px-2 py-1.5 text-left text-xs font-semibold transition-colors hover:bg-muted"
-            title="跳转该阶段"
-            @click="scrollToPhase(pi)"
-          >
-            {{ pi + 1 }}. {{ phase.name }}
-          </button>
-          <button
-            v-for="(chapter, ci) in phase.chapters || []"
-            :key="ci"
-            class="w-full truncate rounded-lg px-2 py-1 pl-6 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            :title="chapter.title"
-            @click="scrollToChapter(pi, ci)"
-          >
-            {{ pi + 1 }}.{{ ci + 1 }} {{ chapter.title }}
-          </button>
-        </div>
-      </nav>
-    </div>
 
     <!-- 阶段列表（锚点包装：目录跳定位；scroll-mt 抵销 sticky 双层高度） -->
     <div class="space-y-3">

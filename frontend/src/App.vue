@@ -71,6 +71,20 @@ function exitToPlanList() {
   planView.value = "list";
   historyMode.value = false;
 }
+
+/** 目录跳转（悬浮两级目录，与回顶同层 fixed）：平滑定位到阶段/章节锚点 */
+function scrollToPhase(index: number) {
+  document
+    .getElementById(`plan-phase-${index}`)
+    ?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/** 两级目录章节跳转：章节锚点包装层在 PhaseCard 内 */
+function scrollToChapter(phaseIndex: number, chapterIndex: number) {
+  document
+    .getElementById(`plan-phase-${phaseIndex}-chapter-${chapterIndex}`)
+    ?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
 /** 当前打开的历史记录 id（阶段/章节重生成入口依赖；新生成流程无 id） */
 const historyPlanId = shallowRef<string | null>(null);
 /**
@@ -598,6 +612,46 @@ function onPlanRefreshed(plan: StudyPlan) {
         >
           <ArrowUp class="h-4 w-4" />
         </Button>
+
+        <!-- 悬浮两级目录（用户裁定与回顶同层同文件）：贴右缘垂直居中，默认只露
+             一条细竖线，悬浮展开阶段+章节面板，点击平滑跳转；与回顶共用同一
+             fixed 定位层——脱离 PlanResult 文本流，彻底与内容滚动解耦 -->
+        <div
+          v-if="result?.status === 'plan'"
+          class="group fixed right-2 top-1/2 z-30 -translate-y-1/2 select-none py-6 pr-1"
+        >
+          <div
+            aria-hidden="true"
+            class="h-16 w-1 rounded-full bg-border/70 transition-colors group-hover:bg-primary/40"
+          />
+          <nav
+            class="invisible absolute right-0 top-1/2 max-h-[65vh] w-56 -translate-y-1/2 overflow-y-auto rounded-xl border bg-card/95 p-2.5 opacity-0 shadow-lg backdrop-blur transition-opacity duration-200 group-hover:visible group-hover:opacity-100"
+            aria-label="计划目录"
+          >
+            <div
+              v-for="(phase, pi) in result.plan.phases"
+              :key="pi"
+              class="mb-2 last:mb-0"
+            >
+              <button
+                class="w-full truncate rounded-lg px-2 py-1.5 text-left text-xs font-semibold transition-colors hover:bg-muted"
+                title="跳转该阶段"
+                @click="scrollToPhase(pi)"
+              >
+                {{ pi + 1 }}. {{ phase.name }}
+              </button>
+              <button
+                v-for="(chapter, ci) in phase.chapters || []"
+                :key="ci"
+                class="w-full truncate rounded-lg px-2 py-1 pl-6 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                :title="chapter.title"
+                @click="scrollToChapter(pi, ci)"
+              >
+                {{ pi + 1 }}.{{ ci + 1 }} {{ chapter.title }}
+              </button>
+            </div>
+          </nav>
+        </div>
       </main>
 
       <!-- 设置页：Agent 运行配置（保存即写盘 + 热加载） -->
