@@ -167,14 +167,16 @@ const resourceTypeLabels: Record<string, string> = {
          竖线，悬浮展开阶段+章节面板（超长目录内部滚动），点击平滑跳转 -->
     <div
       v-if="plan.phases.length"
-      class="group fixed right-4 top-1/2 z-30 -translate-y-1/2 select-none"
+      class="group fixed right-2 top-1/2 z-30 -translate-y-1/2 select-none py-6 pr-1"
     >
+      <!-- 线段热区随 wrapper 扩大（py-6/pr-1），hover 不丢；面板贴 wrapper 右沿
+           （right-0）消除线-板间 hover 死区，否则鼠标移向面板的瞬间会断开 -->
       <div
         aria-hidden="true"
         class="h-16 w-1 rounded-full bg-border/70 transition-colors group-hover:bg-primary/40"
       />
       <nav
-        class="invisible absolute right-3 top-1/2 max-h-[65vh] w-56 -translate-y-1/2 overflow-y-auto rounded-xl border bg-card/95 p-2.5 opacity-0 shadow-lg backdrop-blur transition-opacity duration-200 group-hover:visible group-hover:opacity-100"
+        class="invisible absolute right-0 top-1/2 max-h-[65vh] w-56 -translate-y-1/2 overflow-y-auto rounded-xl border bg-card/95 p-2.5 opacity-0 shadow-lg backdrop-blur transition-opacity duration-200 group-hover:visible group-hover:opacity-100"
         aria-label="计划目录"
       >
         <div
