@@ -212,13 +212,37 @@ async def invoke_structured(
     )
 
     last_parse_error: ValidationError | None = None
+    # 空工具调用（GLM 实测，2026-10-15：响应 200 但 tool_call 参数为空 →
+    # with_structured_output 返回 None）不走 ValidationError，需单独入重试链，
+    # 否则 None 经 cast 穿透后调用点 model_dump 空引用崩溃
+    empty_tool_call = False
     # 重试消息：初始为原始 messages；一旦失败，追加校验错误反馈后重发
     attempt_messages = messages
     try:
         for attempt in range(1, _PARSE_ATTEMPTS + 1):
             try:
+                result = await structured.ainvoke(attempt_messages)
+                if result is None:
+                    empty_tool_call = True
+                    logger.warning(
+                        "结构化输出为空 tool_call（第 %d/%d 次，model=%s）",
+                        attempt,
+                        _PARSE_ATTEMPTS,
+                        model_cls.__name__,
+                    )
+                    attempt_messages = [
+                        *messages,
+                        HumanMessage(
+                            content=(
+                                "你上一次的工具调用未提供任何参数（结果为空）。"
+                                "请重新调用并按 schema 完整填写全部必填字段；"
+                                "其余要求保持不变。"
+                            )
+                        ),
+                    ]
+                    continue
                 # ainvoke 静态签名宽泛（dict | BaseModel），运行时必为 model_cls
-                return cast(TModel, await structured.ainvoke(attempt_messages))
+                return cast(TModel, result)
             except ValidationError as exc:
                 last_parse_error = exc
                 summary = _validation_summary(exc)
@@ -248,6 +272,10 @@ async def invoke_structured(
             "模型响应超时或网络异常，请稍后重试，或在设置页更换模型"
         ) from exc
 
+    if empty_tool_call:
+        raise AgentServiceError(
+            "模型连续返回空参数的工具调用，请重新生成或在设置页更换模型"
+        ) from None
     raise AgentServiceError(
         "模型返回内容无法解析为结构化数据，请重新生成"
     ) from last_parse_error
