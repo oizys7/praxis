@@ -358,6 +358,28 @@ pub(crate) async fn settle_terminal_with_hours(
     }
 }
 
+/// chapter 事件的入库结局 → 章级进度事件（纯函数，单测快照）：Ok →
+/// ChapterDone（章行确已落库才发，与 RegenSink 单章路径语义对齐）；
+/// Err → StorageIssue（生成不中断，前端降级提示）。章级事件的进度约定：
+/// PhaseDone 保持只随 phase 事件推送——章分支产不出 PhaseDone，前端
+/// phaseStatuses 索引集齐的终态口径与骨架 done-bit 不被章级流扰动。
+pub(crate) fn chapter_progress_from_outcome(
+    outcome: Result<(), AgentError>,
+    phase_index: u32,
+    chapter_index: u32,
+    chapter_title: &str,
+) -> PlanProgressEvent {
+    match outcome {
+        Ok(()) => PlanProgressEvent::ChapterDone {
+            phase_index,
+            chapter_index,
+        },
+        Err(e) => PlanProgressEvent::StorageIssue {
+            message: format!("章节「{chapter_title}」未能自动保存：{e}"),
+        },
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 共享流消费骨架（generate_plan / regenerate 双命令同源，防双份漂移）
 // ---------------------------------------------------------------------------
@@ -743,15 +765,41 @@ impl WsEventSink for GenerationConsumer {
                     }
                     Ok(false)
                 }
-                // 初生链路不应出现 chapter 事件（单章重生成专属，任务 14）；
-                // 出现即协议异常，忽略防错
+                // D1 章级扇出：初生链路每章完成产一条 chapter 事件（此前仅
+                // 单章重生成路径出现，任务 14 时按协议异常 warn 忽略；旧
+                // Python 端已退役，忽略分支随之升级为真处理）。入库与推送
+                // 解耦：upsert 失败不中断生成（对齐 RegenSink 单章路径口径）。
                 StreamEvent::Chapter {
-                    index, phase_index, ..
+                    index,
+                    phase_index,
+                    ref chapter,
                 } => {
-                    warn!(
-                        req_id = %self.req_id,
-                        seq, index, phase_index,
-                        "初生链路出现非预期 chapter 事件，已忽略"
+                    let outcome = if let Some(s) = &self.storage {
+                        plan_store::upsert_chapter(
+                            &s.pool,
+                            self.plan_id,
+                            phase_index,
+                            index,
+                            chapter,
+                        )
+                        .await
+                    } else {
+                        // 无云端入库句柄（库不可用降级）：无落库语义可判，
+                        // 进度推送照常（与 phase 事件 storage=None 直通同构）
+                        Ok(())
+                    };
+                    if let Err(e) = &outcome {
+                        warn!(
+                            req_id = %self.req_id,
+                            seq, index, phase_index,
+                            error = %e,
+                            "生成章节入库失败，不中断生成"
+                        );
+                    }
+                    emit_progress(
+                        &self.app,
+                        self.plan_id,
+                        chapter_progress_from_outcome(outcome, phase_index, index, &chapter.title),
                     );
                     Ok(false)
                 }
@@ -1553,6 +1601,44 @@ mod tests {
         let _ = ws.close(None).await;
     }
 
+    /// 章级真处理决策快照（R4）：upsert Ok → ChapterDone wire 形态；
+    /// upsert Err → StorageIssue；产出永不 PhaseDone（章事件仅推章级
+    /// 进度，PhaseDone 时序保持 phase 事件专属，终态集齐口径不扰动）。
+    #[test]
+    fn chapter_progress_from_outcome_snapshots() {
+        // Ok → ChapterDone（wire：tag + camelCase 字段逐字对齐）
+        let event = chapter_progress_from_outcome(Ok(()), 2, 1, "乙章");
+        assert!(matches!(
+            event,
+            PlanProgressEvent::ChapterDone {
+                phase_index: 2,
+                chapter_index: 1
+            }
+        ));
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["type"], "chapterDone");
+        assert_eq!(value["phaseIndex"], 2);
+        assert_eq!(value["chapterIndex"], 1);
+
+        // Err → StorageIssue（生成不中断，前端降级提示）
+        let event = chapter_progress_from_outcome(
+            Err(AgentError::Service("连接失败".into())),
+            0,
+            3,
+            "丁章",
+        );
+        assert!(matches!(event, PlanProgressEvent::StorageIssue { .. }));
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["type"], "storageIssue");
+        assert_eq!(value["message"], "章节「丁章」未能自动保存：连接失败");
+
+        // 章事件产出永不 PhaseDone（守卫终态计数链）
+        assert!(!matches!(
+            chapter_progress_from_outcome(Ok(()), 0, 0, "甲"),
+            PlanProgressEvent::PhaseDone { .. }
+        ));
+    }
+
     /// WS 事件消费 capture sink：记录 (seq, 事件种类) 序列与终态标记
     #[derive(Default)]
     struct CaptureSink {
@@ -1618,6 +1704,60 @@ mod tests {
             "信封按序分派，坏消息应被跳过"
         );
         assert!(sink.terminal, "done 分派后 sink 应标记终态");
+    }
+
+    /// D1 章级扇出后的混合事件流（chapter×N + phase×N + done）消费循环
+    /// 验证（R2，只验证不重写）：WS 信封逐条按序分派、章/阶段事件共存
+    /// 不中断消费、done 收束——generate 链新线序对消费基础设施是纯增量
+    ///（章事件与重生成单章事件同构）。RegenSink 侧分派维持现状：Python
+    /// 全阶段重生成仍只产 phase 事件（见 task-d2-report 需裁定）。
+    #[tokio::test]
+    async fn read_ws_events_handles_mixed_chapter_phase_stream() {
+        let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        std_listener.set_nonblocking(true).unwrap();
+        let listener = tokio::net::TcpListener::from_std(std_listener).unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        let server = tokio::spawn(async move {
+            mini_ws_server(
+                listener,
+                &[
+                    r#"{"seq":1,"event":{"type":"outline","phaseCount":2,"title":"T","phases":[{"name":"甲","chapterTitles":["甲章","乙章"]}]}}"#,
+                    r#"{"seq":2,"event":{"type":"chapter","index":0,"phaseIndex":0,"chapter":{"title":"甲章"}}}"#,
+                    r#"{"seq":3,"event":{"type":"chapter","index":1,"phaseIndex":0,"chapter":{"title":"乙章"}}}"#,
+                    r#"{"seq":4,"event":{"type":"phase","index":0,"phase":{"name":"甲"}}}"#,
+                    r#"{"seq":5,"event":{"type":"chapter","index":0,"phaseIndex":1,"chapter":{"title":"丙章"}}}"#,
+                    r#"{"seq":6,"event":{"type":"phase","index":1,"phase":{"name":"乙"}}}"#,
+                    r#"{"seq":7,"event":{"type":"done","response":{"status":"plan"}}}"#,
+                ],
+            )
+            .await;
+        });
+
+        let url = format!("ws://127.0.0.1:{port}/api/generations/t/events?cursor=0");
+        let (stream, _) = tokio_tungstenite::connect_async(url.as_str())
+            .await
+            .expect("connect");
+        let mut sink = CaptureSink::default();
+        let (last_seq, err) = read_ws_events(stream, "test-req", &mut sink).await;
+        assert!(err.is_none(), "混合流应正常收束：{err:?}");
+        server.await.expect("server task");
+
+        assert_eq!(last_seq, 7);
+        assert_eq!(
+            sink.events,
+            vec![
+                (1, "outline"),
+                (2, "chapter"),
+                (3, "chapter"),
+                (4, "phase"),
+                (5, "chapter"),
+                (6, "phase"),
+                (7, "done"),
+            ],
+            "混合流全事件按序分派，章事件不挤丢阶段事件"
+        );
+        assert!(sink.terminal);
     }
 
     /// WS 连接提前断开（未收 done）：返回已消费 seq 且不标记终态，由消费方

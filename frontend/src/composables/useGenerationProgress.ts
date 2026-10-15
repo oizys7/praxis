@@ -36,6 +36,12 @@ export interface GenerationObservation {
   phases: OutlinePhasePayload[];
   /** 阶段索引 -> 状态：PhaseDone 记 complete；详情对账可补 failed */
   phaseStatuses: Record<number, "complete" | "failed">;
+  /**
+   * 已完成章节点集合（key "<phaseIndex>:<chapterIndex>"）：chapterDone 事件
+   * 记账（task-D2）。仅骨架树章级打点用：不进 PhaseDone 计数链与终态
+   * 判定（isObservationTerminal 依旧只看 phaseStatuses 覆盖）。
+   */
+  chapterDone: Record<string, true>;
   /** 最近一次 storageIssue 提示（云端入库异常，不中断生成） */
   storageIssue: string | null;
   /** 最近一次进度事件到达时间戳（静默判定与对账节奏依据） */
@@ -100,6 +106,7 @@ function newObservation(planId: string): GenerationObservation {
     outlinePhaseCount: 0,
     phases: [],
     phaseStatuses: {},
+    chapterDone: {},
     storageIssue: null,
     lastEventAt: Date.now(),
     lastPollAt: 0,
@@ -166,6 +173,12 @@ function applyProgressEvent(
       // index 为 0-based 阶段索引，total=outline.phaseCount（generate 链路）；
       // 同 index 重复推送（重连回放）幂等：Set 语义按索引状态记账
       obs.phaseStatuses[payload.index] = "complete";
+      break;
+    }
+    case "chapterDone": {
+      // D1 章级扇出：初生链路逐章产 chapterDone。仅点亮骨架树章级打点，
+      // 不触碰 phaseStatuses（PhaseDone 计数时序与终态判定保持不变）。
+      obs.chapterDone[`${payload.phaseIndex}:${payload.chapterIndex}`] = true;
       break;
     }
     case "storageIssue": {

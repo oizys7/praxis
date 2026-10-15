@@ -529,10 +529,12 @@ function onPlanRefreshed(plan: StudyPlan) {
                           :key="ci"
                           class="flex items-center gap-2 text-sm text-muted-foreground"
                         >
-                          <!-- 章节点随本阶段位：完成绿，失败红，生成中灰 -->
+                          <!-- 章节点：chapterDone 事件点亮章级真完成（emerald，
+                               task-D2）；阶段整段完成同为绿；failed 红；进行中灰 -->
                           <span
                             class="h-1.5 w-1.5 shrink-0 rounded-full"
                             :class="
+                              genState?.chapterDone?.[`${i}:${ci}`] ||
                               genState?.phaseStatuses[i] === 'complete'
                                 ? 'bg-emerald-500'
                                 : genState?.phaseStatuses[i] === 'failed'
@@ -542,6 +544,7 @@ function onPlanRefreshed(plan: StudyPlan) {
                           /><span class="truncate"
                             >{{ chapterTitle
                             }}{{
+                              genState?.chapterDone?.[`${i}:${ci}`] ||
                               genState?.phaseStatuses[i] === "complete"
                                 ? ""
                                 : "（待生成）"

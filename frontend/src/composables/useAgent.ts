@@ -1,4 +1,4 @@
-import { computed, ref, shallowRef } from "vue";
+import { ref, shallowRef } from "vue";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import type {
   CommandError,
@@ -46,13 +46,6 @@ export function isRegenInFlight(planId: string): boolean {
 export function isScopeInFlight(key: string): boolean {
   return regenScopes.value.has(key);
 }
-
-/**
- * @deprecated 兼容导出（ChapterSection 尚未迁移 keyed 锁，不得改动该文件）：
- * 全局「任意重生成在飞」布尔视图。原全局互斥语义由 keyed 锁继续保证，
- * PhaseCard 所在链路已迁移 [isRegenInFlight]，待 ChapterSection 迁移后删除。
- */
-export const regenInFlight = computed(() => regenScopes.value.size > 0);
 
 /** 阶段级 scope key */
 function phaseScope(planId: string, phaseIndex: number): string {

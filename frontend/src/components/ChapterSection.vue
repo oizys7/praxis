@@ -4,8 +4,8 @@ import MarkdownContent from "@/components/MarkdownContent.vue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  isScopeInFlight,
   normalizeError,
-  regenInFlight,
   regenerateChapter,
 } from "@/composables/useAgent";
 import { fetchPlanRecord } from "@/composables/usePlanHistory";
@@ -53,7 +53,17 @@ const canRegenerate = computed(
     (props.chapter.status === "failed" || props.chapter.status === "pending"),
 );
 
-/** 本组件是否正在重生成（按钮 spinner 与禁用；全局在飞锁另有 regenInFlight） */
+/**
+ * 本章节 scope 是否在飞（keyed 锁判据，task-D2 迁移：key 形态与
+ * regenerateChapter 模块级 scope "{planId}:{phaseIndex}:{chapterIndex}"
+ * 逐字一致）。同一会话页面上一定会锁住同章节的目标位，同计划其它章
+ * 互不影响（原全局布尔 regenInFlight 的偏严互斥已退役）。
+ */
+const regenScopeInFlight = computed(() =>
+  isScopeInFlight(`${props.planId}:${props.phaseIndex}:${props.chapterIndex}`),
+);
+
+/** 本组件自身点击发起的在飞标志（供 finally 与守卫双保险） */
 const busy = ref(false);
 /** 重生成过程的反馈信息（入库提示 / 失败原因；null = 无） */
 const regenError = ref<string | null>(null);
@@ -63,7 +73,7 @@ async function onRegenerate() {
   if (
     !props.planId ||
     busy.value ||
-    regenInFlight.value ||
+    regenScopeInFlight.value ||
     props.phaseIndex === undefined ||
     props.chapterIndex === undefined
   ) {
@@ -147,7 +157,7 @@ const collapsed = ref(false);
           v-if="canRegenerate"
           variant="outline"
           size="sm"
-          :disabled="busy || regenInFlight"
+          :disabled="busy || regenScopeInFlight"
           @click="onRegenerate"
         >
           <span
