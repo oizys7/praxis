@@ -7,7 +7,9 @@
 //! 2. settings.json 的读写（文件不存在 / 损坏时回退默认值，保证可用性）
 //!    - 敏感字段（各提供商 API Key）落盘自动加密（见 crate::secret），
 //!      读取时解密；历史明文在加载时自动迁移为密文（明文不留盘）
-//! 3. 生成注入 sidecar 子进程的环境变量（冷启动即生效；运行中由 /api/config 热更）
+//! 3. 运行时热链：保存后经 POST /api/config 热推给 Python
+//!    （审查 F1 收尾：原冷启动环境变量注入已退役——Python 任务 29 起
+//!    零环境变量读取，冷启动只读 config.json，本模块不再注入子进程）
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -58,28 +60,8 @@ impl AgentSettings {
         }
     }
 
-    /// 注入 sidecar 子进程的环境变量（只注入非空值，避免清掉 dev 环境已有的配置）
-    pub fn sidecar_envs(&self) -> Vec<(String, String)> {
-        let mock = if self.allow_mock_llm { "1" } else { "0" };
-        let mut vars = vec![
-            ("LLM_PROVIDER", self.llm_provider.as_str()),
-            ("OPENAI_API_KEY", self.openai_api_key.as_str()),
-            ("OPENAI_MODEL", self.openai_model.as_str()),
-            ("ANTHROPIC_API_KEY", self.anthropic_api_key.as_str()),
-            ("ANTHROPIC_MODEL", self.anthropic_model.as_str()),
-            ("DEEPSEEK_API_KEY", self.deepseek_api_key.as_str()),
-            ("DEEPSEEK_MODEL", self.deepseek_model.as_str()),
-            ("GLM_API_KEY", self.glm_api_key.as_str()),
-            ("GLM_MODEL", self.glm_model.as_str()),
-            ("OPENCODE_API_KEY", self.opencode_api_key.as_str()),
-            ("OPENCODE_MODEL", self.opencode_model.as_str()),
-            ("PRAXIS_ALLOW_MOCK_LLM", mock),
-        ];
-        vars.retain(|(_, value)| !value.is_empty());
-        vars.into_iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
-    }
+    // 审查 F1 收尾：sidecar_envs() 已删除——LLM 配置冷启动走 config.json
+    // （或设置页首次保存后的 /api/config 热链），不再注入选程 env
 }
 
 /// settings.json 与主密钥目录（Tauri app_data_dir 统一管理，全平台一致）

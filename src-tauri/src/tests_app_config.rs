@@ -132,6 +132,14 @@ fn port_out_of_range_is_an_error() {
 }
 
 #[test]
+fn port_zero_is_an_error() {
+    // 任务 29 审查 F4：0 为预留端口，与 Python _port（1-65535）对齐；
+    // 归入本轮任务 28 审查收尾修复
+    let err = parse_config(r#"{ "service": { "port": 0 } }"#).unwrap_err();
+    assert!(err.contains("service.port"), "实际错误：{err}");
+}
+
+#[test]
 fn port_float_is_an_error() {
     let err = parse_config(r#"{ "service": { "port": 8000.5 } }"#).unwrap_err();
     assert!(err.contains("service.port"), "实际错误：{err}");

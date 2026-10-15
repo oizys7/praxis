@@ -60,7 +60,24 @@ fn main() {
         ])
         .setup(|app| {
             use tauri::Manager;
-            // 配置装载失败的延迟提示（main() 已 eprintln；setup 阶段弹窗链补 UI 可见性，
+            // 日志在 setup 钩子初始化（审查 F2：先建 logger，后报配置装载失败，
+            // 使错误日志可被接收）：目录由 Tauri app_log_dir() 统一管理，与设置
+            // （app_data_dir）同属应用 identifier 目录；Python 端日志目录由 config.json
+            // logging.dir/默认推导对齐（审查 F1：PRAXIS_LOG_DIR 注入已退役）。
+            // 级别取 config.json logging.level（未装载/非法/空串均回退 info）。
+            // guard 挂到应用状态，进程退出时随 state 释放并触发异步刷盘。
+            let log_dir = app
+                .path()
+                .app_log_dir()
+                .map_err(|e| format!("无法定位日志目录：{e}"))?;
+            let level = app_config::global()
+                .map(|(_, config)| config.logging.level.trim().to_string())
+                .filter(|level| !level.is_empty())
+                .unwrap_or_else(|| "info".to_string());
+            let guard = logging::init(&log_dir, &level);
+            app.manage(guard);
+
+            // 配置装载失败的延迟提示（main() 已 eprintln；setup 阶段日志+弹窗链补可见性，
             // 文案含三候选路径）。降级策略：不阻断启动，logging/secret 用默认值。
             if let Some(message) = app_config::load_error() {
                 tracing::error!("{message}");
@@ -76,22 +93,6 @@ fn main() {
                     let _ = main_window.eval(&script);
                 }
             }
-
-            // 日志在 setup 钩子初始化：目录由 Tauri app_log_dir() 统一管理，
-            // 与设置（app_data_dir）同属应用 identifier 目录；并经 PRAXIS_LOG_DIR
-            // 注入 sidecar，Python 端写同一目录。级别取 config.json logging.level
-            // （任务 28 弃用 PRAXIS_LOG_LEVEL；未装载/非法/空串均回退 info）。
-            // guard 挂到应用状态，进程退出时随 state 释放并触发异步刷盘。
-            let log_dir = app
-                .path()
-                .app_log_dir()
-                .map_err(|e| format!("无法定位日志目录：{e}"))?;
-            let level = app_config::global()
-                .map(|(_, config)| config.logging.level.trim().to_string())
-                .filter(|level| !level.is_empty())
-                .unwrap_or_else(|| "info".to_string());
-            let guard = logging::init(&log_dir, &level);
-            app.manage(guard);
             tracing::info!("Praxis 桌面壳启动");
 
             // 启动清扫（任务 22）：sidecar 重启后后台生成任务已随 Python 进程

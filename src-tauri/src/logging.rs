@@ -8,9 +8,10 @@
 //! ```
 //!
 //! - 级别：config.json `logging.level`（任务 28 起弃用 PRAXIS_LOG_LEVEL 环境变量，
-//!   默认 info，非法值回退 info；任务 28/29 联调窗口前 Python 仍读旧环境变量）
-//! - 文件：`<app_log_dir>/praxis.log`（Tauri app_log_dir 统一管理，Python 端经
-//!   PRAXIS_LOG_DIR 环境变量写同一目录）大小轮转——单文件上限 10MB、
+//!   默认 info，非法值回退 info）
+//! - 文件：`<app_log_dir>/praxis.log`（Tauri app_log_dir 统一管理；Python 端
+//!   日志目录由 config.json logging.dir 供给，审查 F1 收尾后 PRAXIS_LOG_DIR
+//!   注入已退役，两端目录为同构推导非共享注入）大小轮转——单文件上限 10MB、
 //!   保留 3 个滚动备份（.1/.2/.3），总占用上限 40MB
 //! - debug 构建额外输出 stderr（scripts/dev.mjs 终端实时可见）；release 仅写文件
 //! - 时间戳与 Python `datetime.isoformat(timespec="milliseconds")` 输出逐字符一致
@@ -61,8 +62,9 @@ where
 }
 
 /// 初始化全局日志；返回的 WorkerGuard 需由调用方持有到进程结束（异步刷盘线程）。
-/// 目录由调用方传入（Tauri `app_log_dir()` 统一管理，Python 端经 PRAXIS_LOG_DIR 对齐，
-/// logging.dir 迁移在任务 29 联调）；级别由调用方传 config.json 的 `logging.level`。
+/// 目录由调用方传入（Tauri `app_log_dir()`；Python 端由 config.json logging.dir
+/// 同构推导，审查 F1 收尾后 PRAXIS_LOG_DIR 注入已退役）；
+/// 级别由调用方传 config.json 的 `logging.level`。
 pub fn init(dir: &std::path::Path, level: &str) -> WorkerGuard {
     std::fs::create_dir_all(dir).expect("无法创建日志目录");
     let rotating = SizeRotatingWriter::new(dir.to_path_buf(), "praxis.log");

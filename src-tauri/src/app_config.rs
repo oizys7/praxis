@@ -397,9 +397,13 @@ fn field_u16(
     match field_value(map, key) {
         None => Ok(None),
         Some(n @ serde_json::Value::Number(num)) if num.is_u64() => {
-            u16::try_from(num.as_u64().expect("已断言 u64"))
-                .map(Some)
-                .map_err(|_| format!("{dot_path}：超出 u16 范围（0-65535），实际是 {n}"))
+            let port = u16::try_from(num.as_u64().expect("已断言 u64"))
+                .map_err(|_| format!("{dot_path}：超出端口范围（1-65535），实际是 {n}"))?;
+            // 端口语义禁止 0（预留端口；与 Python _port 1-65535 拒 0 对齐，审查 F4）
+            if port == 0 {
+                return Err(format!("{dot_path}：0 不是有效端口（1-65535），实际是 {n}"));
+            }
+            Ok(Some(port))
         }
         Some(other) => Err(type_error(dot_path, "非负整数", other)),
     }

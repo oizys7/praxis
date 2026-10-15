@@ -55,6 +55,11 @@ pub(crate) fn load_db_config() -> crate::config::DbConfig {
         tracing::debug!("config.json 未装载，云端数据库视为未配置");
         return crate::config::DbConfig::default();
     };
+    // 审查 F3：空串是常态「未配置」，不产生 warn 噪音（仅非空且解析失败才 warn）
+    if config.database.url.trim().is_empty() {
+        tracing::debug!("database.url 未填写，云端数据库视为未配置");
+        return crate::config::DbConfig::default();
+    }
     db_config_from_url(&config.database.url)
 }
 

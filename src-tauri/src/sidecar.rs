@@ -1,15 +1,13 @@
 //! 内置 Agent sidecar 的生命周期管理（release 构建生效；debug 由 scripts/dev.mjs 管理）。
 //!
 //! - 动态端口：向系统申请 127.0.0.1 随机空闲端口，避免固定端口冲突与防火墙提示；
-//! - 子进程引导（任务 28）：端口与 config 路径经 `--port N --config <路径>` 参数传递
-//!   （agent_entry 承接在任务 29；任务 28–29 联调窗口内 dev 侧 Python 需手动带 --port 起服务）；
-//! - 冷启动配置：settings.json 的 LLM 配置经环境变量注入子进程（空值跳过，
-//!   避免覆盖 dev 环境 .env 中已有的配置）；
+//! - 子进程引导（任务 28）：端口与 config 路径经 `--port N --config <路径>` 参数传递，
+//!   Python 端冷启动/运行时配置全由 config.json 与 /api/config 供给
+//!   （任务 28 审查 F1 收尾：环境变量注入链已完全退役）；
 //! - 就绪探测：轮询 /health 直到服务可响应；应用退出时收割子进程。
 
 use std::{process::Stdio, sync::OnceLock, time::Duration};
 
-use tauri::Manager;
 use tokio::{process::Child, sync::Mutex};
 use tracing::{debug, error, info};
 
@@ -43,7 +41,9 @@ pub fn agent_service_url() -> String {
 /// - release 构建：拉起安装目录 agent/praxis-agent.exe，
 ///   用 127.0.0.1 随机空闲端口避免冲突，经 --port/--config 参数传给子进程
 ///   （agent_entry 承接在任务 29，正式联调同轮）
-pub async fn ensure_agent_running(app: &tauri::AppHandle) -> Result<(), AgentError> {
+// app 参数保留调用签名（调用方经 Manager 取句柄传入）：审查 F1 收尾后
+// 本函数不再取 settings/日志目录，参数暂无消费，前缀 _app 防警告
+pub async fn ensure_agent_running(_app: &tauri::AppHandle) -> Result<(), AgentError> {
     if cfg!(debug_assertions) {
         debug!("debug 构建：跳过 sidecar 管理（服务由 scripts/dev.mjs 管理）");
         return Ok(());
@@ -84,8 +84,6 @@ pub async fn ensure_agent_running(app: &tauri::AppHandle) -> Result<(), AgentErr
     }
 
     let started = std::time::Instant::now();
-    // 冷启动即生效：把 settings.json 的 LLM 配置注入子进程环境变量
-    let app_settings = crate::settings::load_settings(app);
     let mut cmd = tokio::process::Command::new(&sidecar);
     // 端口与 config 路径经命令行参数传递（任务 28；agent_entry 承接在任务 29）。
     // arg 逐项传路径：含空格安全（OS 参数边界由 std 处理，不拼字符串）。
@@ -95,15 +93,9 @@ pub async fn ensure_agent_running(app: &tauri::AppHandle) -> Result<(), AgentErr
     if let Some((config_path, _)) = crate::app_config::global() {
         cmd.arg("--config").arg(config_path);
     }
-    // 日志目录统一由 Tauri 管理（app_log_dir），经环境变量对齐 Python 端写同一目录
-    let log_dir = app
-        .path()
-        .app_log_dir()
-        .unwrap_or_else(|_| std::env::temp_dir());
-    cmd.envs(app_settings.sidecar_envs())
-        .env("PRAXIS_LOG_DIR", log_dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
+    // 审查 F1：LLM Key/PRAXIS_LOG_DIR 环境变量注入已删除（Python 任务 29 起零
+    // 环境变量读取，冷启动全走 --config 指定的 config.json；运行时走 /api/config 热链）
+    cmd.stdout(Stdio::null()).stderr(Stdio::null());
     // CREATE_NO_WINDOW：防御性禁止为子进程分配终端窗口
     // （sidecar 已用 --noconsole 打包为 GUI 子系统，此标志兜底任何残留控制台行为）
     #[cfg(windows)]
