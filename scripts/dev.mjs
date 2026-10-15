@@ -104,6 +104,8 @@ launch(
   `"${venvPython}"`,
   [
     "agent_entry.py",
+    // dev 固定 --port 8000（审查 F6）：config.service.port 仅在无 --port
+    // 营载路径（release sidecar/独立直跑）生效，此处传参由设计非遗漏
     "--port",
     "8000",
     "--config",

@@ -38,6 +38,10 @@ from typing import Any
 # 等 OS 约定变量（配置文件化后 Python 侧零环境变量读取）
 # --------------------------------------------------------------------------
 if os.name == "nt":
+    # 已申报的平台分歧（任务 29 审查 F3）：Rust config.json 兜底候选用
+    # dirs::data_dir()（Windows = Roaming），Python 这里 = Local
+    # （与 Tauri app_log_dir 日志目录同构）；主链路 sidecar 显式传
+    # --config 不受影响，兜底候选两端可能不同文件，仅注释申报
     RUNTIME_DATA_DIR = Path.home() / "AppData/Local/com.praxis.desktop"
 else:
     RUNTIME_DATA_DIR = Path.home() / ".local/share/com.praxis.desktop"
@@ -202,9 +206,16 @@ def extract_cli_config_path(argv: Sequence[str]) -> Path | None:
     """
     for index, arg in enumerate(argv):
         if arg == "--config" and index + 1 < len(argv):
-            return Path(argv[index + 1])
+            # 审查 F5 对齐：空值视为未指定（与 Rust config_cli_override
+            # 同构——Path("") 会变成候选路径 "."，偏离文案同构）
+            if argv[index + 1]:
+                return Path(argv[index + 1])
+            return None
         if arg.startswith("--config="):
-            return Path(arg[len("--config=") :])
+            value = arg[len("--config=") :]
+            if value:
+                return Path(value)
+            return None
     return None
 
 
@@ -363,7 +374,11 @@ def bootstrap_runtime(argv: Sequence[str]) -> PraxisRuntimeConfig:
     try:
         cfg = load_runtime_config(extract_cli_config_path(argv))
     except (ConfigNotFoundError, ConfigParseError) as exc:
-        print(exc, file=sys.stderr)
+        # 审查 F2：PyInstaller --noconsole 下标准流为 None，print 会
+        # AttributeError 坏掉 exit(2) 契约——守护后静默退出（错误信息
+        # 由 Rust 壳的提示弹窗兜底，见任务 28 弹窗链）
+        if sys.stderr is not None:
+            print(exc, file=sys.stderr)
         sys.exit(2)
     runtime_config = cfg
     # 监听与 mock 冷启动注入；LLM 十二字段仍走设置页 → /api/config 热链

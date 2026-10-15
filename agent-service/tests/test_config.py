@@ -155,6 +155,17 @@ def test_cli_scan_absent():
     assert extract_cli_config_path(["python", "-m", "uvicorn"]) is None
 
 
+def test_cli_scan_empty_value_is_unspecified():
+    """审查 F5 回归：--config='' / --config= 空值视为未指定（与 Rust 同构）。"""
+    assert extract_cli_config_path(["x", "--config", ""]) is None
+    assert extract_cli_config_path(["x", "--config="]) is None
+    # 首中即决语义（Rust config_cli_override 同构）：首个 --config 命中空值
+    # 即判未指定返回 None，不再向后扫描
+    assert (
+        extract_cli_config_path(["x", "--config", "", "--config=C:/y.json"]) is None
+    )
+
+
 # ---------------------------------------------------------------------------
 # 查找顺序
 # ---------------------------------------------------------------------------
@@ -211,6 +222,22 @@ def test_bootstrap_exit_2_when_not_found(tmp_path, monkeypatch, capsys):
         bootstrap_runtime(sys.argv)
     assert excinfo.value.code == 2
     assert "config.example.json" in capsys.readouterr().err
+
+
+def test_bootstrap_exit_2_with_null_streams(tmp_path, monkeypatch):
+    """审查 F2 回归：PyInstaller --noconsole 下标准流为 None，
+
+    bootstrap 仍须保持 exit(2) 契约且不得 AttributeError（打印
+    静默化由 Rust 壳弹窗兑底）。
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["app.main"])
+    monkeypatch.setattr(sys, "stderr", None)
+    monkeypatch.setattr(sys, "stdout", None)
+
+    with pytest.raises(SystemExit) as excinfo:
+        bootstrap_runtime(sys.argv)
+    assert excinfo.value.code == 2
 
 
 # ---------------------------------------------------------------------------
