@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, shallowRef, watch } from "vue";
-import { BookOpen, Settings } from "lucide-vue-next";
+// task-C: 仅在既有 lucide-vue-next import 行追加 ArrowLeft（返回按钮前置箭头），script 业务逻辑未动
+import { ArrowLeft, BookOpen, Settings } from "lucide-vue-next";
 import { useAgent } from "@/composables/useAgent";
 import {
   completedPhaseCount,
@@ -238,20 +239,34 @@ function onPlanRefreshed(plan: StudyPlan) {
             </p>
           </div>
         </div>
-        <Badge
-          :variant="
-            agentOnline === null
-              ? 'secondary'
-              : agentOnline
-                ? 'success'
-                : 'destructive'
-          "
-        >
-          <span class="mr-1">●</span>
-          Agent 服务{{
-            agentOnline === null ? "检测中…" : agentOnline ? "在线" : "离线"
-          }}
-        </Badge>
+        <!-- task-C: 「返回列表」自内容滚动区上移至固定 header 右侧（不随内容滚动）。
+             显示条件沿用原按钮位置所在的 planView === 'create' 分支，与原行为完全等价
+             （新建页与历史查看页均可见，historyMode 属其子集）。 -->
+        <div class="flex items-center gap-3">
+          <Button
+            v-if="planView === 'create'"
+            variant="ghost"
+            size="sm"
+            @click="planView = 'list'"
+          >
+            <ArrowLeft class="h-4 w-4" />
+            返回列表
+          </Button>
+          <Badge
+            :variant="
+              agentOnline === null
+                ? 'secondary'
+                : agentOnline
+                  ? 'success'
+                  : 'destructive'
+            "
+          >
+            <span class="mr-1">●</span>
+            Agent 服务{{
+              agentOnline === null ? "检测中…" : agentOnline ? "在线" : "离线"
+            }}
+          </Badge>
+        </div>
       </div>
     </header>
 
@@ -272,11 +287,6 @@ function onPlanRefreshed(plan: StudyPlan) {
         />
 
         <div v-else class="mx-auto w-full max-w-6xl px-6 py-8">
-          <div class="mb-4">
-            <Button variant="ghost" size="sm" @click="planView = 'list'">
-              ← 返回列表
-            </Button>
-          </div>
           <div
             class="grid w-full items-start gap-6"
             :class="historyMode ? 'lg:grid-cols-1' : 'lg:grid-cols-[400px,1fr]'"
@@ -466,7 +476,9 @@ function onPlanRefreshed(plan: StudyPlan) {
                 class="animate-fade-in-up"
                 aria-live="polite"
               >
-                <CardContent class="space-y-4 py-6">
+                <!-- task-C: p-6 使首内边距与左 PlanForm 卡 CardHeader 的 p-6 对齐
+                     （默认 CardContent 是 p-6 pt-0，首元素贴卡顶，曾导致两栏顶部不齐） -->
+                <CardContent class="space-y-4 p-6">
                   <div>
                     <h3 class="text-sm font-semibold">
                       {{ genState?.title }}
