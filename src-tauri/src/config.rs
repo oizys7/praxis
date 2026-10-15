@@ -13,8 +13,8 @@ use serde::Deserialize;
 
 use crate::secret;
 
-/// 云端 PostgreSQL 连接配置（学习计划持久化）
-#[derive(Debug, Clone, Default, Deserialize)]
+/// 云端 PostgreSQL 连接配置（学习计划持久化；PartialEq 供测试断言用）
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DbConfig {
     pub host: String,
@@ -32,6 +32,9 @@ pub struct AppConfig {
     pub db: DbConfig,
 }
 
+// 任务 28 起 config.yaml 链不再被运行时消费（load_db_config 已切 config.json），
+// 迁移期整链保留（含配套单测），任务 30 统一清理——防御性 dead_code，非废弃半成品。
+#[allow(dead_code)]
 impl AppConfig {
     /// 读取配置；文件不存在 / 解析失败时返回默认值（空配置，不报错，保证可用）。
     /// key_dir：主密钥目录（app_data_dir），用于 db.password 解密。
@@ -68,6 +71,8 @@ impl AppConfig {
 }
 
 /// 候选路径：exe 同目录优先（release 分发随包携带），其次源码目录（cargo dev）
+/// （任务 28 起运行时不再消费，随 AppConfig 链迁移期保留）
+#[allow(dead_code)]
 fn config_paths() -> Vec<std::path::PathBuf> {
     let mut paths = Vec::new();
     if let Ok(exe) = std::env::current_exe() {

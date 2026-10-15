@@ -92,11 +92,6 @@ fn paths(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
     Ok((dir.join("settings.json"), dir))
 }
 
-/// 主密钥目录（app_data_dir）：供 config.yaml 的 db.password 加解密使用
-pub fn key_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    Ok(paths(app)?.1)
-}
-
 /// 读取设置；文件不存在或损坏时返回默认值（不报错，保证应用可用）。
 /// 敏感字段解密为内存明文（IPC / sidecar 使用）；发现历史明文则立即回写密文。
 pub fn load_settings(app: &tauri::AppHandle) -> AgentSettings {

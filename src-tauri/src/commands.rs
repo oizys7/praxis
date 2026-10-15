@@ -43,13 +43,138 @@ use crate::protocol::{
 use crate::settings::{load_settings, save_settings_to_disk, AgentSettings};
 use crate::sidecar::ensure_agent_running;
 
-/// 读取云端数据库配置（config.yaml）；密码经主密钥解密为内存明文，
-/// 手写明文会在加载时自动加密回写（见 config::AppConfig::load_from）。
+/// 读取云端数据库配置（任务 28 起连 config.json `database.url`，config.yaml 链退居
+/// 迁移期保留——见 config.rs 与计划「环境变量 → 去向表」）。
+/// - 装载成功：把单条连接串解析为 DbConfig 字段（见 db_config_from_url）；
+/// - config 无 url / 未装载 / 解析失败：空配置（host 为空）——沿用既有
+///   「DB 不可用直通」语义：generate_plan 只提示不改主流程，regenerate 系列直接 Err。
+///
 /// pub(crate)：main.rs setup 钩子的启动清扫同样需要读库配置。
-pub(crate) fn load_db_config(app: &tauri::AppHandle) -> crate::config::DbConfig {
-    match crate::settings::key_dir(app) {
-        Ok(dir) => crate::config::AppConfig::load(&dir).db,
-        Err(_) => crate::config::DbConfig::default(),
+pub(crate) fn load_db_config() -> crate::config::DbConfig {
+    let Some((_, config)) = crate::app_config::global() else {
+        tracing::debug!("config.json 未装载，云端数据库视为未配置");
+        return crate::config::DbConfig::default();
+    };
+    db_config_from_url(&config.database.url)
+}
+
+/// 把 postgres 连接串（`database.url`）解析为 DbConfig 字段。
+///
+/// 形如 `postgres://user:password@host:port/dbname`；亦接受 `postgresql://`
+/// 与 IPv6 主机（`[::1]`）。缺省：port=5432，user/password/database 空串（与
+/// config.yaml 字段语义一致，密码不以任何形式解密/加密——config.json 中明文）。
+/// `%` 百分号编码按 UTF-8 解码（password 含保留字符时）：非法序列原样保留。
+/// URL 查询参数（如 ?sslmode=...）不支持：本层不透传，db.rs 显式关闭 TLS 并
+/// 自行注入 statement_timeout，不受影响。
+/// 解析失败（非 postgres scheme / 空串）→ 空配置 + warn 日志，交上层走直通语义。
+fn db_config_from_url(raw: &str) -> crate::config::DbConfig {
+    use crate::config::DbConfig;
+
+    let fail = |message: String| -> DbConfig {
+        tracing::warn!(url = %raw, "{message}，云端数据库视为未配置");
+        DbConfig::default()
+    };
+
+    let Some((scheme, rest)) = raw.split_once("://") else {
+        return fail("连接串缺少 `://`（scheme 前缀）".to_string());
+    };
+    if scheme != "postgres" && scheme != "postgresql" {
+        return fail(format!(
+            "连接串 scheme 是 `{scheme}`，期望 postgres/postgresql"
+        ));
+    }
+
+    // userinfo 部分（user[:password]@）：从右找 '@'，宿主名不含 '@'
+    let (user, password) = match rest.rsplit_once('@') {
+        Some((userinfo, _hostpath)) => match userinfo.split_once(':') {
+            Some((user, password)) => (percent_decode(user), percent_decode(password)),
+            None => (percent_decode(userinfo), String::new()),
+        },
+        None => (String::new(), String::new()),
+    };
+
+    // host[:port]/database：无 userinfo 时才是完整起点（rsplit 已把 userinfo 剥掉）
+    let rest = rest
+        .rsplit_once('@')
+        .map(|(_, hostpath)| hostpath)
+        .unwrap_or(rest);
+    let (hostport, database_raw) = match rest.split_once('/') {
+        Some((hostport, db)) => (hostport.to_string(), percent_decode(db)),
+        None => (rest.to_string(), String::new()),
+    };
+    // dbname 之后的查询参数不参与连接语义（见函数文档），直接剥离
+    let database = database_raw
+        .split_once('?')
+        .map(|(db, _)| db)
+        .unwrap_or(&database_raw)
+        .to_string();
+
+    // host[:port]：IPv6 用 '[::1]:5432' 形态，'[' 到 ']' 之间是主机
+    let (host, port_raw) = if let Some(stripped) = hostport.strip_prefix('[') {
+        match stripped.split_once(']') {
+            Some((host, after)) => (
+                host.to_string(),
+                after.strip_prefix(':').map(str::to_string),
+            ),
+            None => return fail("IPv6 主机缺少闭合 ']'".to_string()),
+        }
+    } else if let Some((host, port)) = hostport.split_once(':') {
+        (host.to_string(), Some(port.to_string()))
+    } else {
+        (hostport.clone(), None)
+    };
+
+    let port = match port_raw {
+        None => 5432,
+        Some(port) => match port.parse::<u16>() {
+            Ok(port) => port,
+            Err(_) => return fail(format!("端口 `{port}` 不是 0-65535 的整数")),
+        },
+    };
+
+    if host.is_empty() {
+        return fail("主机为空".to_string());
+    }
+    DbConfig {
+        host,
+        port,
+        database,
+        user,
+        password,
+    }
+}
+
+/// `%percent` 编码 → UTF-8 文本（非法序列按字面保留，避免一条坏编码毁掉整串）
+fn percent_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut decoded: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        let hex = bytes
+            .get(index + 1)
+            .and_then(|h| bytes.get(index + 2).map(|l| (*h, *l)))
+            .filter(|(h, l)| {
+                bytes[index] == b'%' && h.is_ascii_hexdigit() && l.is_ascii_hexdigit()
+            });
+        match hex {
+            Some((high, low)) => {
+                decoded.push((hex_value(high) << 4) | hex_value(low));
+                index += 3;
+            }
+            None => {
+                decoded.push(bytes[index]);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}
+
+/// ASCII 十六进制字符 → 数值（调用方已保证合法性）
+fn hex_value(byte: u8) -> u8 {
+    match byte {
+        b'0'..=b'9' => byte - b'0',
+        _ => (byte | 0x20) - b'a' + 10,
     }
 }
 
@@ -117,7 +242,7 @@ pub async fn generate_plan(
     // 1. 入库前置：预置 generating 行（plan_id 无论入库与否都先定死，
     //    事件信封 planId 必须与命令返回值一致）；不可入库只提示不阻塞主流程
     let plan_id = Uuid::new_v4();
-    let config = load_db_config(&app);
+    let config = load_db_config();
     let storage = match db::pool(&config).await {
         Ok(pool) => match plan_store::create_generating_plan(&pool, plan_id, &request).await {
             Ok(()) => Some(Storage { pool, plan_id }),
@@ -876,7 +1001,7 @@ async fn run_regen(
 
     // 云端库必经（上下文在库里），不可用直接 Err——与 generate_plan 的
     // 「入库可降级」不同，重生成没有库就没有上下文
-    let config = load_db_config(&app);
+    let config = load_db_config();
     let pool = db::pool(&config).await?;
 
     // ① 上下文重建：plans 七字段 + 大纲骨架（计划不存在即 Err）
@@ -1174,42 +1299,36 @@ pub async fn save_settings(
 
 /// 保存学习计划到云端（新记录），返回生成的计划 id
 #[tauri::command]
-pub async fn save_plan(
-    app: tauri::AppHandle,
-    record: SavePlanRequest,
-) -> Result<String, AgentError> {
-    let config = load_db_config(&app);
+pub async fn save_plan(record: SavePlanRequest) -> Result<String, AgentError> {
+    let config = load_db_config();
     db::save_plan(&config, &record).await
 }
 
 /// 计划列表（不含整份计划）：收藏置顶 + 创建时间倒序；query 非空时模糊过滤标题/目标
 #[tauri::command]
-pub async fn list_plans(
-    app: tauri::AppHandle,
-    query: Option<String>,
-) -> Result<Vec<PlanSummary>, AgentError> {
-    let config = load_db_config(&app);
+pub async fn list_plans(query: Option<String>) -> Result<Vec<PlanSummary>, AgentError> {
+    let config = load_db_config();
     db::list_plans(&config, query.as_deref().unwrap_or("")).await
 }
 
 /// 读取完整计划记录（含整份计划）
 #[tauri::command]
-pub async fn get_plan(app: tauri::AppHandle, id: String) -> Result<PlanRecord, AgentError> {
-    let config = load_db_config(&app);
+pub async fn get_plan(id: String) -> Result<PlanRecord, AgentError> {
+    let config = load_db_config();
     db::get_plan(&config, &id).await
 }
 
 /// 删除计划（幂等）
 #[tauri::command]
-pub async fn delete_plan(app: tauri::AppHandle, id: String) -> Result<(), AgentError> {
-    let config = load_db_config(&app);
+pub async fn delete_plan(id: String) -> Result<(), AgentError> {
+    let config = load_db_config();
     db::delete_plan(&config, &id).await
 }
 
 /// 切换收藏状态，返回切换后的值
 #[tauri::command]
-pub async fn toggle_favorite(app: tauri::AppHandle, id: String) -> Result<bool, AgentError> {
-    let config = load_db_config(&app);
+pub async fn toggle_favorite(id: String) -> Result<bool, AgentError> {
+    let config = load_db_config();
     db::toggle_favorite(&config, &id).await
 }
 
@@ -1476,5 +1595,87 @@ mod tests {
 
         assert_eq!(last_seq, 1);
         assert!(!sink.terminal, "未收 done 不应标记终态（重连后补齐）");
+    }
+}
+
+/// `db_config_from_url`：`database.url` → DbConfig 字段（任务 28 语义测试）
+#[cfg(test)]
+mod tests_db_config_from_url {
+    use super::*;
+    use crate::config::DbConfig;
+
+    fn config_from(url: &str) -> DbConfig {
+        db_config_from_url(url)
+    }
+
+    #[test]
+    fn full_url_splits_all_fields() {
+        let config = config_from("postgres://alice:secret@db.example.com:5433/praxis_prod");
+        assert_eq!(config.host, "db.example.com");
+        assert_eq!(config.port, 5433);
+        assert_eq!(config.database, "praxis_prod");
+        assert_eq!(config.user, "alice");
+        assert_eq!(config.password, "secret");
+    }
+
+    /// config.example.json 模板形态（缺省端口 5432；无密码）
+    #[test]
+    fn defaults_apply_for_missing_parts() {
+        let config = config_from("postgres://postgres@127.0.0.1/praxis");
+        assert_eq!(config.host, "127.0.0.1");
+        assert_eq!(config.port, 5432);
+        assert_eq!(config.database, "praxis");
+        assert_eq!(config.user, "postgres");
+        assert_eq!(config.password, "");
+
+        // 无 dbname：database 空串（同 config.yaml 字段语义）
+        let minimal = config_from("postgres://db.local");
+        assert_eq!(minimal.host, "db.local");
+        assert_eq!(minimal.database, "");
+        assert_eq!(minimal.user, "");
+    }
+
+    /// 百分号编码（密码含保留字符 `@/:` 等场景）按 UTF-8 解码
+    #[test]
+    fn percent_encoded_credentials_are_decoded() {
+        let config = config_from("postgres://u:p%40ss%3Aword@h/db");
+        assert_eq!(config.password, "p@ss:word");
+
+        // 非法 % 序列按字面保留，不毁掉整串
+        let rawish = config_from("postgres://u:100%@h/db");
+        assert_eq!(rawish.password, "100%");
+    }
+
+    /// IPv6 主机（[::1]）不与端口分隔符冲突
+    #[test]
+    fn ipv6_host_is_supported() {
+        let config = config_from("postgres://u:p@[::1]:5432/db");
+        assert_eq!(config.host, "::1");
+        assert_eq!(config.port, 5432);
+        assert_eq!(config.database, "db");
+    }
+
+    /// 无 url → 空配置直通（「云端库未配置」StorageIssue 语义保持）；非 postgres scheme → 同样直通
+    #[test]
+    fn unparseable_urls_fall_back_to_default() {
+        assert_eq!(config_from(""), DbConfig::default());
+        assert_eq!(config_from("mysql://u:p@h/db"), DbConfig::default());
+
+        let degraded = config_from("postgres://h:99999/db");
+        assert_eq!(degraded.host, "", "解析失败应收口为空配置");
+    }
+
+    /// 数据库存文件的查询参数剥离（本层不透传；TLS/超时由 db.rs 显式控制）
+    #[test]
+    fn query_params_are_stripped() {
+        let config = config_from("postgres://u:p@h/db?sslmode=require&connect_timeout=3");
+        assert_eq!(config.database, "db");
+        assert_eq!(config.host, "h", "查询参数不影响主机解析");
+    }
+
+    /// 缺省值字段语义：解析成功但 url 只有 scheme 无任何字段——空主机即直通
+    #[test]
+    fn bare_postgres_url_maps_to_empty_host() {
+        assert_eq!(config_from("postgres://"), DbConfig::default());
     }
 }

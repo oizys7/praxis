@@ -12,9 +12,40 @@
 //! 3. 应用数据目录 `config.json`（与 settings.json 同目录，identifier 目录）
 //!
 //! 找不到文件：错误信息按顺序列出全部候选路径；JSON 坏：错误信息带文件路径 + JSON 点路径。
-#![allow(dead_code)] // load_config / config_cli_override 是任务 28 的接线点（logging/secret/db/sidecar），接线后移除
+//!
+//! 全局缓存（任务 28 接线）：main() 在 Builder 启动前调用 load_config()，成功则把
+//! (路径, PraxisConfig) 存入进程级 OnceLock，四个消费点（logging/secret/db/sidecar）
+//! 统一经 global() 取值；失败则 store_load_error 暂存文案供 setup 钩子弹窗链提示，
+//! 应用按「无配置降级」继续运行（绝不 panic——桌面应用不能起不来）。
 
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
+
+/// 进程级配置缓存：main() 装载成功后 set 一次，此后只读
+static GLOBAL_CONFIG: OnceLock<(PathBuf, PraxisConfig)> = OnceLock::new();
+
+/// 进程级装载失败文案：main() 装载失败时暂存，供 setup 钩子读走提示
+static LOAD_ERROR: OnceLock<String> = OnceLock::new();
+
+/// 存入进程级配置缓存（仅 main() 装载成功后调用一次；重复 set 忽略）
+pub(crate) fn store_global_config(config: (PathBuf, PraxisConfig)) {
+    let _ = GLOBAL_CONFIG.set(config);
+}
+
+/// 读取装载好的全局配置；setup 前（未装载）返回 None
+pub fn global() -> Option<&'static (PathBuf, PraxisConfig)> {
+    GLOBAL_CONFIG.get()
+}
+
+/// 暂存装载失败文案（仅 main() 用；文案含三候选路径，面向用户）
+pub(crate) fn store_load_error(message: String) {
+    let _ = LOAD_ERROR.set(message);
+}
+
+/// 装载失败文案；setup 钩子读走后经弹窗链提示（eprintln 已在 main() 做过）
+pub fn load_error() -> Option<&'static String> {
+    LOAD_ERROR.get()
+}
 
 /// config.json 文件名（各候选目录下同名）
 pub(crate) const FILE_NAME: &str = "config.json";

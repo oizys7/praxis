@@ -7,7 +7,8 @@
 //! 2026-10-03T15:04:05.123+08:00 [INFO] [praxis.commands] 内置 Agent 已就绪 port=8123
 //! ```
 //!
-//! - 级别：`PRAXIS_LOG_LEVEL` 环境变量（双端读同一变量，默认 info）
+//! - 级别：config.json `logging.level`（任务 28 起弃用 PRAXIS_LOG_LEVEL 环境变量，
+//!   默认 info，非法值回退 info；任务 28/29 联调窗口前 Python 仍读旧环境变量）
 //! - 文件：`<app_log_dir>/praxis.log`（Tauri app_log_dir 统一管理，Python 端经
 //!   PRAXIS_LOG_DIR 环境变量写同一目录）大小轮转——单文件上限 10MB、
 //!   保留 3 个滚动备份（.1/.2/.3），总占用上限 40MB
@@ -60,8 +61,9 @@ where
 }
 
 /// 初始化全局日志；返回的 WorkerGuard 需由调用方持有到进程结束（异步刷盘线程）。
-/// 目录由调用方传入（Tauri `app_log_dir()` 统一管理，Python 端经 PRAXIS_LOG_DIR 对齐）。
-pub fn init(dir: &std::path::Path) -> WorkerGuard {
+/// 目录由调用方传入（Tauri `app_log_dir()` 统一管理，Python 端经 PRAXIS_LOG_DIR 对齐，
+/// logging.dir 迁移在任务 29 联调）；级别由调用方传 config.json 的 `logging.level`。
+pub fn init(dir: &std::path::Path, level: &str) -> WorkerGuard {
     std::fs::create_dir_all(dir).expect("无法创建日志目录");
     let rotating = SizeRotatingWriter::new(dir.to_path_buf(), "praxis.log");
     let (file_writer, guard) = tracing_appender::non_blocking(rotating);
@@ -79,11 +81,8 @@ pub fn init(dir: &std::path::Path) -> WorkerGuard {
             .with_ansi(false)
     });
 
-    // 级别由 PRAXIS_LOG_LEVEL 控制（Python 端读同一变量），非法值回退 info
-    let filter = EnvFilter::try_new(
-        std::env::var("PRAXIS_LOG_LEVEL").unwrap_or_else(|_| "info".to_string()),
-    )
-    .unwrap_or_else(|_| EnvFilter::new("info"));
+    // 级别由 config.json logging.level 控制（Python 同源），非法值回退 info
+    let filter = EnvFilter::try_new(level).unwrap_or_else(|_| EnvFilter::new("info"));
 
     tracing_subscriber::registry()
         .with(filter)

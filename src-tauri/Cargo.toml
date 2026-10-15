@@ -53,6 +53,11 @@ dirs = "7"
 tokio-tungstenite = "0.30.0"
 futures-util = "0.3.34"
 
+[dev-dependencies]
+# 测试进程启动钩子：tests_support 在进程启动时把 config.json 的 database.testUrl
+# 灌入 DATABASE_URL（#[sqlx::test] 宏框架强制读 env，唯一豁免桥接点）
+ctor = "0.4"
+
 [profile.release]
 # 减小产物体积的常见配置
 codegen-units = 1

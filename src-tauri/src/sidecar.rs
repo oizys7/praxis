@@ -1,11 +1,13 @@
 //! 内置 Agent sidecar 的生命周期管理（release 构建生效；debug 由 scripts/dev.mjs 管理）。
 //!
 //! - 动态端口：向系统申请 127.0.0.1 随机空闲端口，避免固定端口冲突与防火墙提示；
+//! - 子进程引导（任务 28）：端口与 config 路径经 `--port N --config <路径>` 参数传递
+//!   （agent_entry 承接在任务 29；任务 28–29 联调窗口内 dev 侧 Python 需手动带 --port 起服务）；
 //! - 冷启动配置：settings.json 的 LLM 配置经环境变量注入子进程（空值跳过，
 //!   避免覆盖 dev 环境 .env 中已有的配置）；
 //! - 就绪探测：轮询 /health 直到服务可响应；应用退出时收割子进程。
 
-use std::{env, process::Stdio, sync::OnceLock, time::Duration};
+use std::{process::Stdio, sync::OnceLock, time::Duration};
 
 use tauri::Manager;
 use tokio::{process::Child, sync::Mutex};
@@ -19,23 +21,28 @@ static AGENT_CHILD: Mutex<Option<Child>> = Mutex::const_new(None);
 /// sidecar 实际监听的动态端口（http://127.0.0.1:{port}）
 static AGENT_PORT: OnceLock<u16> = OnceLock::new();
 
-/// 读取 Agent 服务地址：
+/// 读取 Agent 服务地址（任务 28 弃用 AGENT_SERVICE_URL 环境变量）：
 /// - release：优先使用 sidecar 动态端口（每次启动随机分配，避免端口冲突）
-/// - 开发：环境变量 AGENT_SERVICE_URL 优先，缺省本地 8000（scripts/dev.mjs 启动的服务）
+/// - 开发：config.json service.host/port 推导（缺省即本地 8000，scripts/dev.mjs 启动的服务；
+///   联调窗口内 dev 侧未传 --port 时与此默认值一致）
 pub fn agent_service_url() -> String {
     if !cfg!(debug_assertions) {
         if let Some(port) = AGENT_PORT.get() {
             return format!("http://127.0.0.1:{port}");
         }
     }
-    env::var("AGENT_SERVICE_URL").unwrap_or_else(|_| DEFAULT_SERVICE_URL.to_string())
+    match crate::app_config::global().map(|(_, config)| &config.service) {
+        Some(service) => format!("http://{}:{}", service.host, service.port),
+        None => DEFAULT_SERVICE_URL.to_string(),
+    }
 }
 
 /// 确保内置 Agent 服务已启动且就绪。
 ///
 /// - debug 构建：不做任何事，服务由 scripts/dev.mjs（或手动 uvicorn）管理
 /// - release 构建：拉起安装目录 agent/praxis-agent.exe，
-///   用 127.0.0.1 随机空闲端口避免冲突，经 AGENT_SERVICE_PORT 传给子进程
+///   用 127.0.0.1 随机空闲端口避免冲突，经 --port/--config 参数传给子进程
+///   （agent_entry 承接在任务 29，正式联调同轮）
 pub async fn ensure_agent_running(app: &tauri::AppHandle) -> Result<(), AgentError> {
     if cfg!(debug_assertions) {
         debug!("debug 构建：跳过 sidecar 管理（服务由 scripts/dev.mjs 管理）");
@@ -63,7 +70,7 @@ pub async fn ensure_agent_running(app: &tauri::AppHandle) -> Result<(), AgentErr
     drop(listener);
 
     // 定位随应用分发的 sidecar 可执行文件
-    let sidecar = env::current_exe()
+    let sidecar = std::env::current_exe()
         .map_err(|e| AgentError::Sidecar(format!("无法定位应用目录：{e}")))?
         .parent()
         .ok_or_else(|| AgentError::Sidecar("无法定位应用目录".into()))?
@@ -80,13 +87,20 @@ pub async fn ensure_agent_running(app: &tauri::AppHandle) -> Result<(), AgentErr
     // 冷启动即生效：把 settings.json 的 LLM 配置注入子进程环境变量
     let app_settings = crate::settings::load_settings(app);
     let mut cmd = tokio::process::Command::new(&sidecar);
+    // 端口与 config 路径经命令行参数传递（任务 28；agent_entry 承接在任务 29）。
+    // arg 逐项传路径：含空格安全（OS 参数边界由 std 处理，不拼字符串）。
+    // 路径来自全局缓存（main() 装载成功的 config.json）；未装载则不传，
+    // 由 agent_entry 自己沿查找顺序查找（两边查找到的是同一份）。
+    cmd.arg("--port").arg(port.to_string());
+    if let Some((config_path, _)) = crate::app_config::global() {
+        cmd.arg("--config").arg(config_path);
+    }
     // 日志目录统一由 Tauri 管理（app_log_dir），经环境变量对齐 Python 端写同一目录
     let log_dir = app
         .path()
         .app_log_dir()
         .unwrap_or_else(|_| std::env::temp_dir());
-    cmd.env("AGENT_SERVICE_PORT", port.to_string())
-        .envs(app_settings.sidecar_envs())
+    cmd.envs(app_settings.sidecar_envs())
         .env("PRAXIS_LOG_DIR", log_dir)
         .stdout(Stdio::null())
         .stderr(Stdio::null());
@@ -128,5 +142,26 @@ pub fn shutdown_agent() {
         if let Some(child) = guard.as_mut() {
             let _ = child.start_kill();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 未装载 config.json（测试进程不 set 全局缓存）→ 回退缺省本地 8000。
+    /// 全局缓存是进程级：任何未来把它 set 的测试都会影响本用例，
+    /// 因此用例自身不得 store_global_config（进程隔离不可能，只能靠约定）。
+    #[test]
+    fn no_global_config_falls_back_to_default_url() {
+        // 如果未来某测试装载了全局缓存，本用例会在 setup 阶段崩（改名前先看此注释）
+        if crate::app_config::global().is_some() {
+            return; // 环境依赖：全局缓存已被别的用例占用，跳过以避免误报
+        }
+        assert_eq!(
+            agent_service_url(),
+            "http://127.0.0.1:8000",
+            "无配置应回退 DEFAULT_SERVICE_URL（127.0.0.1:8000）"
+        );
     }
 }

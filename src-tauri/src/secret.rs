@@ -149,21 +149,32 @@ mod tests {
         let _ = std::fs::remove_dir_all(&b);
     }
 
-    /// 手动工具（不进常规测试流）：为 config.yaml 生成 db.password 密文。
+    /// 手动工具（不进常规测试流）：生成密文密码供 config.yaml db.password 兼容层使用
+    /// （config.json 敏感项是明文，不需要本工具；仅迁移期兼容旧 yaml 链时可能用到）。
+    /// 任务 28 弃用 PRAXIS_KEY_DIR / PRAXIS_SEAL_PASSWORD 环境变量，参数改从 config.json
+    /// 的 secrets 节供给（keyDir 空 = 应用数据目录默认；sealPassword 空 = 未填）。
     /// 用法：
-    ///   PRAXIS_KEY_DIR=<应用数据目录> PRAXIS_SEAL_PASSWORD=<明文密码> \
-    ///     cargo test manual_seal_password -- --ignored --nocapture
+    ///   1. config.json 填好 secrets.keyDir / secrets.sealPassword
+    ///   2. cargo test manual_seal_password -- --ignored --nocapture
+    ///
     /// 输出的 `password: enc:v1:…` 行直接粘贴到 config.yaml。
     #[test]
-    #[ignore = "手动工具：需 PRAXIS_KEY_DIR / PRAXIS_SEAL_PASSWORD 环境变量"]
+    #[ignore = "手动工具：需 config.json secrets.keyDir / secrets.sealPassword 已填写"]
     fn manual_seal_password() {
-        let (Ok(key_dir), Ok(plain)) = (
-            std::env::var("PRAXIS_KEY_DIR"),
-            std::env::var("PRAXIS_SEAL_PASSWORD"),
-        ) else {
-            panic!("请设置 PRAXIS_KEY_DIR 与 PRAXIS_SEAL_PASSWORD");
+        let (_, config) = crate::app_config::load_config()
+            .expect("config.json 装载失败：请先在查找路径之一放好配置（见模块/API 文档）");
+        let key_dir = if config.secrets.key_dir.trim().is_empty() {
+            crate::app_config::app_data_dir()
+                .expect("无法定位应用数据目录：请改在 config.json secrets.keyDir 显式填写")
+        } else {
+            PathBuf::from(&config.secrets.key_dir)
         };
-        let sealed = seal(Path::new(&key_dir), &plain).expect("加密失败");
+        let plain = if config.secrets.seal_password.is_empty() {
+            panic!("请在 config.json secrets.sealPassword 填入手动封存密码");
+        } else {
+            config.secrets.seal_password.clone()
+        };
+        let sealed = seal(&key_dir, &plain).expect("加密失败");
         println!("password: {sealed}");
     }
 }

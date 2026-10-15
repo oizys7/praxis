@@ -2,7 +2,7 @@
 //! 为每个用例创建独立临时库（用例结束自动删除），验证规范化多表存储的真实行为。
 //!
 //! 运行方式（需本机可连的 PostgreSQL，连接用户需有建库权限；用例已标 #[ignore]，
-//!   DATABASE_URL=postgres://postgres:postgres@127.0.0.1:5432/postgres cargo test -- --ignored
+//!   在 config.json 填好 database.testUrl 后 cargo test -- --ignored（tests_support 在测试进程启动时桥接 DATABASE_URL，不再手工 export）
 //! 临时库不承载业务数据，与设置页配置的云端库互不相干。
 //!
 //! 任务 18 markdown 化：chapters 只剩 {title, summary, content_md, status}，
@@ -73,7 +73,7 @@ fn sample_phase(name: &str, chapter_titles: &[&str]) -> StudyPhase {
 /// 阶段级定价（审查 P2 修复）：upsert_phase 含空正文章节 → 阶段 status 保持
 /// pending（重生成入口不丢失）；整阶段正文齐备 → 阶段 complete 联动翻牌
 #[sqlx::test]
-#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
 async fn test_upsert_phase_status_derived_from_chapter_content(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
@@ -233,7 +233,7 @@ async fn count(pool: &PgPool, table: &str) -> i64 {
 /// 同 (plan_id, idx) 两次 upsert：phases 行不翻倍，章节整体替换，阶段名更新，
 /// markdown 正文跟随最新一次写入
 #[sqlx::test]
-#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
 async fn test_upsert_phase_idempotent(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
@@ -276,7 +276,7 @@ async fn test_upsert_phase_idempotent(pool: PgPool) {
 
 /// 回炉重写：upsert 覆盖后旧章节行与 project 不残留
 #[sqlx::test]
-#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
 async fn test_rework_replaces_children(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
@@ -318,7 +318,7 @@ async fn test_rework_replaces_children(pool: PgPool) {
 /// 乱序扩展 idx 2,0,1：get_plan 多表重组后 phases 按 idx 升序、markdown 正文
 /// 等值读回；update_outline_meta / finalize_plan 的元信息覆写生效
 #[sqlx::test]
-#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
 async fn test_get_plan_reassembles_sorted(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
@@ -392,7 +392,7 @@ async fn test_get_plan_reassembles_sorted(pool: PgPool) {
 /// 旧行带 plan_json：get_plan 走旧反序列化路径，行为与规范化改造前一致
 /// （plan_json legacy 读路径属上一代兼容层，任务 18 表结构直改不触及）
 #[sqlx::test]
-#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
 async fn test_legacy_plan_json_still_reads(pool: PgPool) {
     prepare_schema(&pool).await;
     let id = Uuid::new_v4();
@@ -450,7 +450,7 @@ async fn test_legacy_plan_json_still_reads(pool: PgPool) {
 /// 删 plans 行：五表（plans + 阶段/项目/章节/资源）全级联清空；
 /// 四张内容子表已在 markdown 化中 DROP（表不存在即断言终态）
 #[sqlx::test]
-#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
 async fn test_delete_plan_cascades(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
@@ -498,7 +498,7 @@ async fn test_delete_plan_cascades(pool: PgPool) {
 /// seed_outline：phases/chapters 建骨架行（status=pending，content_md=''），
 /// resources 入库，project 无行
 #[sqlx::test]
-#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
 async fn test_seed_outline_creates_skeleton(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
@@ -560,7 +560,7 @@ async fn test_seed_outline_creates_skeleton(pool: PgPool) {
 
 /// seed_outline 幂等：二次调用不重复播种
 #[sqlx::test]
-#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
 async fn test_seed_outline_idempotent(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
@@ -581,7 +581,7 @@ async fn test_seed_outline_idempotent(pool: PgPool) {
 /// done 包络资源补写（任务 24，审查 Finding-1）：upsert_resources
 /// DELETE+INSERT 幂等覆写（重发 done 不重复、可减可增），get_plan 回读有值
 #[sqlx::test]
-#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
 async fn test_upsert_resources_overwrites_and_reads_back(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
@@ -613,7 +613,7 @@ async fn test_upsert_resources_overwrites_and_reads_back(pool: PgPool) {
 /// 状态机主链：seed → upsert idx=0 → complete；失败收尾后 idx=1（含章节）变 failed，
 /// idx=0（complete）不受影响——失败收尾只动 pending
 #[sqlx::test]
-#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
 async fn test_upsert_marks_complete_and_failure_marks_pending_failed(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
@@ -685,7 +685,7 @@ async fn test_upsert_marks_complete_and_failure_marks_pending_failed(pool: PgPoo
 /// 空正文定价（任务 18 裁定）：upsert_chapter 写入空 contentMd → 章节行 failed、
 /// 阶段不置 complete；补写正文后 complete + 阶段联动翻牌
 #[sqlx::test]
-#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
 async fn test_upsert_chapter_empty_content_failed_then_complete(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
@@ -742,7 +742,7 @@ async fn test_upsert_chapter_empty_content_failed_then_complete(pool: PgPool) {
 
 /// 单章回炉：覆盖写后旧章内容不残留；complete 章不被失败收尾覆盖
 #[sqlx::test]
-#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
 async fn test_upsert_chapter_replaces_content_without_residue(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
@@ -785,7 +785,7 @@ async fn test_upsert_chapter_replaces_content_without_residue(pool: PgPool) {
 
 /// 重生成上下文读回：create_generating_plan 写入的七字段经 load_plan_request_meta 一致读回
 #[sqlx::test]
-#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
 async fn test_plan_request_meta_roundtrip(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
@@ -816,7 +816,7 @@ async fn test_plan_request_meta_roundtrip(pool: PgPool) {
 
 /// PlanOutline 骨架读回：phases 按 idx 升序 + chapterTitles 顺序与播种一致（任务 15 依赖）
 #[sqlx::test]
-#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
 async fn test_plan_outline_roundtrip(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
@@ -853,7 +853,7 @@ async fn test_plan_outline_roundtrip(pool: PgPool) {
 /// 协议安全（审查重点 2）：ensure_schema 在「历史建过四子表的 DB」与「全新 DB」
 /// 两形态下都收敛到同一终态——四张退役子表不存在，chapters 保留且新增 content_md 列
 #[sqlx::test]
-#[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
 async fn test_ensure_schema_converges_child_tables_dropped(pool: PgPool) {
     prepare_schema(&pool).await;
 
@@ -906,7 +906,7 @@ async fn test_ensure_schema_converges_child_tables_dropped(pool: PgPool) {
     /// 收尾语义修订：done(error) 但行内已有任何 phase 行 → plans 置 complete
     /// （后续可重生成/重看，观测丢失不吞已入库内容）
     #[sqlx::test]
-    #[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+    #[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
     async fn test_settle_terminal_error_with_phase_rows_completes(pool: PgPool) {
         prepare_schema(&pool).await;
         let plan_id = new_generating_plan(&pool).await;
@@ -938,7 +938,7 @@ async fn test_ensure_schema_converges_child_tables_dropped(pool: PgPool) {
     /// 零内容收尾：未播种也未扩展任何阶段 → plans 置 failed（plan/error 终态同口径；
     /// clarification 仍删 generating 行，既有三态语义防回归）
     #[sqlx::test]
-    #[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+    #[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
     async fn test_settle_terminal_zero_content_fails(pool: PgPool) {
         prepare_schema(&pool).await;
         let plan_id = new_generating_plan(&pool).await;
@@ -956,7 +956,7 @@ async fn test_ensure_schema_converges_child_tables_dropped(pool: PgPool) {
 
     /// clarification 终态：删 generating 行（既有语义防回归）
     #[sqlx::test]
-    #[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+    #[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
     async fn test_settle_terminal_clarification_deletes_row(pool: PgPool) {
         prepare_schema(&pool).await;
         let plan_id = new_generating_plan(&pool).await;
@@ -974,7 +974,7 @@ async fn test_ensure_schema_converges_child_tables_dropped(pool: PgPool) {
     /// 启动清扫：status='generating' 存量行翻 failed + pending 子行翻 failed，
     /// complete 行不受影响；二次清扫恒为空集（幂等）
     #[sqlx::test]
-    #[ignore = "需要 DATABASE_URL 指向本机 PostgreSQL（见文件头运行方式），无库环境下跳过"]
+    #[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
     async fn test_sweep_stale_generating_only_touches_generating(pool: PgPool) {
         prepare_schema(&pool).await;
         let stale_id = new_generating_plan(&pool).await;
