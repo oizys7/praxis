@@ -1,13 +1,8 @@
 <script setup lang="ts">
-import { onMounted, watch } from "vue";
+import { computed, onMounted, watch } from "vue";
 import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import PhaseCard from "@/components/PhaseCard.vue";
 import { consumeRegenDone } from "@/composables/useGenerationProgress";
 import type { StudyPlan } from "@/types/agent";
@@ -47,6 +42,18 @@ const props = defineProps<{
 
 /** 子组件（PhaseCard → ChapterSection）重生成完成：刷新后的计划整体上抛供调用方替换 */
 const emit = defineEmits<{ refreshed: [plan: StudyPlan] }>();
+
+/** 章节总数（反馈③：hero 元信息行展示「共 N 阶段 / M 章节」） */
+const chapterTotal = computed(() =>
+  props.plan.phases.reduce((n, p) => n + (p.chapters?.length ?? 0), 0),
+);
+
+/** 反馈④阶段目录跳转：主滚动容器内平滑定位到目标阶段锚点 */
+function scrollToPhase(index: number) {
+  document
+    .getElementById(`plan-phase-${index}`)
+    ?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
 
 /**
  * 问题②消费点：PhaseCard/ChapterSection 完成重生成时若本页已切换，emit
@@ -108,19 +115,30 @@ const resourceTypeLabels: Record<string, string> = {
       该计划生成未完成，可对下方标记为失败的部分点「重新生成」补齐，或稍后在历史记录中重试。
     </div>
 
-    <!-- 计划概览 -->
-    <Card>
-      <CardHeader>
-        <div class="flex flex-wrap items-start justify-between gap-2">
-          <CardTitle class="text-lg">{{ plan.title }}</CardTitle>
-          <Badge v-if="plan.estimatedTotalHours" variant="secondary">
-            预计总学时 ≈ {{ plan.estimatedTotalHours }}h
-          </Badge>
+    <!-- 计划概览（反馈③整卡一体化：渐变 hero + 元信息行 + 概要同层，
+         与下方目录/阶段卡共用一套节奏） -->
+    <Card class="overflow-hidden">
+      <div
+        class="border-b bg-gradient-to-br from-primary/[0.07] via-transparent to-primary/[0.05] p-6"
+      >
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <h1 class="text-xl font-bold tracking-tight">{{ plan.title }}</h1>
+          <div class="flex flex-wrap items-center gap-2">
+            <Badge variant="secondary">
+              共 {{ plan.phases.length }} 阶段 / {{ chapterTotal }} 章节
+            </Badge>
+            <Badge v-if="plan.estimatedTotalHours" variant="secondary">
+              预计总学时 ≈ {{ plan.estimatedTotalHours }}h
+            </Badge>
+          </div>
         </div>
         <!-- 概要段落：空串（旧数据未写 overview）隐藏整行 -->
-        <CardDescription v-if="plan.overview" class="leading-relaxed">{{
-          plan.overview
-        }}</CardDescription>
+        <p
+          v-if="plan.overview"
+          class="mt-3 leading-relaxed text-muted-foreground"
+        >
+          {{ plan.overview }}
+        </p>
         <!-- 云端自动保存状态（历史查看模式下隐藏：计划本就已入库） -->
         <div
           v-if="!historyMode"
@@ -136,20 +154,43 @@ const resourceTypeLabels: Record<string, string> = {
             <Badge variant="success">✓ 已自动保存到云端</Badge>
           </template>
         </div>
-      </CardHeader>
+      </div>
     </Card>
 
-    <!-- 阶段列表 -->
-    <div class="space-y-3">
-      <PhaseCard
+    <!-- 阶段目录（反馈④）：sticky 悬浮可点跳阶段，滚动中始终可用 -->
+    <nav
+      v-if="plan.phases.length > 1"
+      class="sticky top-12 z-10 flex gap-2 overflow-x-auto rounded-xl border bg-background/85 p-2 backdrop-blur"
+      aria-label="阶段目录"
+    >
+      <Button
         v-for="(phase, i) in plan.phases"
         :key="i"
-        :phase="phase"
-        :index="i"
-        :plan-id="planId"
-        :default-open="i === 0"
-        @refreshed="(p) => emit('refreshed', p)"
-      />
+        variant="ghost"
+        size="sm"
+        class="shrink-0 rounded-lg text-xs text-muted-foreground hover:text-foreground"
+        @click="scrollToPhase(i)"
+      >
+        第 {{ i + 1 }} 阶段 · {{ phase.name }}
+      </Button>
+    </nav>
+
+    <!-- 阶段列表（锚点包装：目录跳定位；scroll-mt 抵销 sticky 双层高度） -->
+    <div class="space-y-3">
+      <div
+        v-for="(phase, i) in plan.phases"
+        :id="`plan-phase-${i}`"
+        :key="i"
+        class="scroll-mt-28"
+      >
+        <PhaseCard
+          :phase="phase"
+          :index="i"
+          :plan-id="planId"
+          :default-open="i === 0"
+          @refreshed="(p) => emit('refreshed', p)"
+        />
+      </div>
     </div>
 
     <!-- 推荐资源 -->

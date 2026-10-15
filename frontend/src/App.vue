@@ -287,6 +287,21 @@ function onPlanRefreshed(plan: StudyPlan) {
         />
 
         <div v-else class="mx-auto w-full max-w-6xl px-6 py-8">
+          <!-- 返回列表：跨两栏顶部（反馈⑥改位，grid 外层）；sticky 不随滚动；
+               反馈⑤：加大字号与圆角胶囊、叠压时阴影/描边/毛玻璃更明显 -->
+          <div
+            v-if="planView === 'create'"
+            class="sticky top-0 z-20 -mt-2 mb-3"
+          >
+            <Button
+              variant="outline"
+              class="rounded-full border-border/70 bg-background/90 text-sm shadow-md backdrop-blur transition-colors hover:text-foreground"
+              @click="planView = 'list'"
+            >
+              <ArrowLeft class="h-4 w-4" />
+              返回列表
+            </Button>
+          </div>
           <div
             class="grid w-full items-start gap-6"
             :class="historyMode ? 'lg:grid-cols-1' : 'lg:grid-cols-[400px,1fr]'"
@@ -298,23 +313,13 @@ function onPlanRefreshed(plan: StudyPlan) {
             />
 
             <section class="min-w-0 space-y-4">
-              <!-- 返回列表：仅固定（sticky）在内容区顶部，不随内容滚走，与原
-                   位置语义一致（task-F） -->
-              <Button
-                v-if="planView === 'create'"
-                variant="ghost"
-                size="sm"
-                class="sticky top-0 z-10 self-start rounded-lg bg-background/85 px-2 py-1 backdrop-blur transition-colors hover:text-foreground"
-                @click="planView = 'list'"
-              >
-                <ArrowLeft class="h-4 w-4" />
-                返回列表
-              </Button>
-
               <!-- 后台生成进行中（提交即返后的过程页：outline 铺骨架，phaseDone 推进；
                    task-F: 骨架就绪后本卡退场——继续转圈属反词; 右栏首卡内边距
                    p-6 与左侧 PlanForm 卡 p-6 基准一致（task-F 对齐） -->
-              <Card v-if="generatingNow && !outlineReady" class="animate-fade-in-up">
+              <Card
+                v-if="generatingNow && !outlineReady"
+                class="animate-fade-in-up"
+              >
                 <CardContent
                   class="flex flex-col items-center gap-4 p-6 text-center"
                 >
