@@ -11,7 +11,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def to_camel(name: str) -> str:
@@ -50,6 +50,37 @@ class PlanRequest(CamelModel):
         default_factory=list, description="偏好方向（多选标签）"
     )
     background: str = Field(default="", description="已有基础描述")
+    # 每周学习日（需求 5）：1=周一..7=周日，默认全周；仅作为日历分配的
+    # request 元数据，不走 LLM 提示词
+    study_days: list[int] = Field(
+        default_factory=lambda: [1, 2, 3, 4, 5, 6, 7],
+        description="每周学习日（1=周一..7=周日，默认全周）",
+    )
+
+    @field_validator("study_days", mode="before")
+    @classmethod
+    def _normalize_study_days(cls, v: Any) -> list[int]:
+        """归一化：null 回退全周默认；去重升序；非空且取值 1..=7。"""
+        if v is None:
+            return [1, 2, 3, 4, 5, 6, 7]
+        if not isinstance(v, list):
+            # Pydantic validator 约定必须抛 ValueError（包装为 ValidationError），
+            # TypeError 不会被 Pydantic 捕获——禁用 ruff TRY004 的 TypeError 建议
+            raise ValueError("studyDays 必须是数组")  # noqa: TRY004
+        if not v:
+            raise ValueError("studyDays 不能为空（至少选择一个学习日）")
+        for item in v:
+            if not isinstance(item, int) or isinstance(item, bool):
+                raise ValueError(  # noqa: TRY004
+                    f"studyDays 每项须为整数，实际含 {item!r}"
+                )
+        days = sorted(set(v))
+        for d in days:
+            if not 1 <= d <= 7:
+                raise ValueError(
+                    f"studyDays 取值须为 1（周一）..7（周日），实际含 {d}"
+                )
+        return days
 
 
 class RegenRequest(CamelModel):

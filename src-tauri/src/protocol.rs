@@ -75,6 +75,39 @@ pub struct PlanRequest {
     /// 已有基础描述
     #[serde(default)]
     pub background: String,
+    /// 每周学习日（1=周一..7=周日，需求 5）：None = 全周（缺字段/显式 null），
+    /// 仅作日历分配元数据，不进 LLM 提示词；取值校验（1..=7 去重非空）
+    /// 由 Python 校验层与 DB 层负责，serde 层只做缺省归一
+    #[serde(default, with = "study_days_serde")]
+    pub study_days: Option<Vec<u8>>,
+}
+
+/// studyDays 的 serde 双向语义（Task E）：反序列化缺字段/null → None（旧载荷
+/// 兼容）；序列化 None 归一为全周显式数组——转发给 Python 的 wire 恒为数组，
+/// CamelModel 校验层不再需要兑底 null。
+mod study_days_serde {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    /// 全周默认（周一..周日）
+    fn full_week() -> [u8; 7] {
+        [1, 2, 3, 4, 5, 6, 7]
+    }
+
+    pub(super) fn serialize<S: Serializer>(
+        days: &Option<Vec<u8>>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        match days {
+            Some(v) => serializer.serialize_some(v),
+            None => serializer.serialize_some(&full_week()),
+        }
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Option<Vec<u8>>, D::Error> {
+        Option::<Vec<u8>>::deserialize(deserializer)
+    }
 }
 
 /// 阶段内的学习章节：完整 markdown 正文（图示内联 ```mermaid 码块）。
@@ -212,6 +245,13 @@ pub struct PlanRecord {
     pub level: String,
     #[serde(default)]
     pub weeks: u32,
+    /// 每周学习日（1=周一..7=周日；Task E）。旧行列默认全周，读回恒为数组；
+    /// serde default 兼容旧 wire 载荷（缺省空数组，前端按全周兑底）
+    #[serde(default)]
+    pub study_days: Vec<u8>,
+    /// 已打卡日（当日已学，'YYYY-MM-DD' 升序；Task E，仅 PlanRecord）
+    #[serde(default)]
+    pub day_marks: Vec<String>,
     #[serde(default)]
     pub favorite: bool,
     /// 保存时间（ISO 8601）
@@ -236,6 +276,9 @@ pub struct PlanSummary {
     pub level: String,
     #[serde(default)]
     pub weeks: u32,
+    /// 每周学习日（1=周一..7=周日；Task E，同 PlanRecord.study_days）
+    #[serde(default)]
+    pub study_days: Vec<u8>,
     #[serde(default)]
     pub favorite: bool,
     pub created_at: String,
@@ -629,6 +672,7 @@ mod tests {
                 weeks: 8,
                 interests: vec!["并发".into()],
                 background: "写过 Go".into(),
+                study_days: Some(vec![1, 3, 5]),
             },
             outline: RegenOutline {
                 title: "T".into(),
@@ -857,6 +901,7 @@ mod tests {
                 weeks: 8,
                 interests: vec!["并发".into()],
                 background: "写过 Go".into(),
+                study_days: None,
             },
         };
         let value = serde_json::to_value(&body).unwrap();
@@ -869,6 +914,11 @@ mod tests {
             "plan 提交不带 regenRequest"
         );
         assert_eq!(value["planRequest"]["weeklyHours"], 12);
+        // studyDays None 序列化归一为全周显式数组（study_days_serde）
+        assert_eq!(
+            value["planRequest"]["studyDays"],
+            serde_json::json!([1, 2, 3, 4, 5, 6, 7])
+        );
         assert_eq!(
             value["planRequest"]["interests"],
             serde_json::json!(["并发"])
@@ -929,11 +979,17 @@ mod tests {
             overview: "O".into(),
             level: "beginner".into(),
             weeks: 8,
+            study_days: vec![2, 4, 6],
             favorite: false,
             created_at: "2026-01-01T00:00:00Z".into(),
         })
         .unwrap();
         assert_eq!(value["status"], "failed", "status 字面量透传不改写");
+        assert_eq!(
+            value["studyDays"],
+            serde_json::json!([2, 4, 6]),
+            "studyDays camelCase wire（Task E）"
+        );
 
         // 旧 wire：无 status 字段（经验库/旧前端快照）缺省反序列化为空串不炸
         let legacy: PlanSummary =
@@ -955,11 +1011,23 @@ mod tests {
             overview: "O".into(),
             level: "beginner".into(),
             weeks: 8,
+            study_days: vec![1, 2, 3, 4, 5, 6, 7],
+            day_marks: vec!["2026-10-16".into()],
             favorite: false,
             created_at: "2026-01-01T00:00:00Z".into(),
             plan: StudyPlan::default(),
         })
         .unwrap();
         assert_eq!(plan_record_value["status"], "generating");
+        assert_eq!(
+            plan_record_value["studyDays"],
+            serde_json::json!([1, 2, 3, 4, 5, 6, 7]),
+            "PlanRecord.studyDays camelCase wire（Task E）"
+        );
+        assert_eq!(
+            plan_record_value["dayMarks"],
+            serde_json::json!(["2026-10-16"]),
+            "PlanRecord.dayMarks camelCase wire（Task E）"
+        );
     }
 }

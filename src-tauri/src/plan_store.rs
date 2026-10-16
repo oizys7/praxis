@@ -12,6 +12,7 @@
 //! （status、chapters.content_md）逐字定义在 db_ddl，首连幂等执行。
 
 use sqlx::{PgPool, Row, Transaction};
+use std::collections::HashMap;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -36,9 +37,11 @@ pub async fn create_generating_plan(
     request: &PlanRequest,
 ) -> Result<(), AgentError> {
     let title: String = request.goal.chars().take(200).collect();
+    // studyDays 请求侧 None = 全周（serde 层转发 Python 时已归一，这里兑底同一语义）
+    let study_days = request.study_days.clone().unwrap_or_else(vec_full_week);
     sqlx::query(
-        "INSERT INTO plans (id, title, goal, level, weeks, weekly_hours, interests, background, status)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'generating')",
+        "INSERT INTO plans (id, title, goal, level, weeks, weekly_hours, interests, background, study_days, status)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'generating')",
     )
     .bind(plan_id)
     .bind(&title)
@@ -48,11 +51,103 @@ pub async fn create_generating_plan(
     .bind(i32::try_from(request.weekly_hours).unwrap_or(0))
     .bind(sqlx::types::Json(&request.interests))
     .bind(&request.background)
+    .bind(sqlx::types::Json(&study_days))
     .execute(pool)
     .await
     .map_err(|e| fail("创建生成中计划", e))?;
     info!(%plan_id, "规范化计划行已创建（status=generating）");
     Ok(())
+}
+
+/// 全周学习日（周一..周日）：None 请求侧的归一终值，与 protocol::study_days_serde
+/// 的序列化兑底同语义（两侧各自展开，由 wire 单测锁定一致）
+fn vec_full_week() -> Vec<u8> {
+    vec![1, 2, 3, 4, 5, 6, 7]
+}
+
+/// 更新计划的每周学习日（Task E 需求 5）：校验非空、取值 1..=7，
+/// 去重升序后 UPDATE；计划不存在报错（不静默成功）。
+/// 消费方：commands::set_plan_study_days（前端日抽屉「编辑学习日」）。
+/// 更新计划的每周学习日（Task E 需求 5）：校验非空、取值 1..=7，去重升序
+/// 后 UPDATE，返回归一化结果（前端直接采用，无需重拉）；
+/// 校验失败 / 计划不存在归一为 AgentError::Db 中文文案。
+pub async fn set_study_days(
+    pool: &PgPool,
+    plan_id: Uuid,
+    days: &[u8],
+) -> Result<Vec<u8>, AgentError> {
+    if days.is_empty() {
+        return Err(AgentError::Db("每周学习日不能为空（至少选择一天）".into()));
+    }
+    let mut normalized = days.to_vec();
+    normalized.sort_unstable();
+    normalized.dedup();
+    if let Some(bad) = normalized.iter().find(|d| !(1u8..=7).contains(*d)) {
+        return Err(AgentError::Db(format!(
+            "每周学习日取值须为 1（周一）..7（周日），实际含 {bad}"
+        )));
+    }
+    let updated = sqlx::query("UPDATE plans SET study_days = $2, updated_at = now() WHERE id = $1")
+        .bind(plan_id)
+        .bind(sqlx::types::Json(&normalized))
+        .execute(pool)
+        .await
+        .map_err(|e| fail("更新每周学习日", e))?;
+    if updated.rows_affected() == 0 {
+        return Err(AgentError::Db(format!("计划不存在或已被删除：{plan_id}")));
+    }
+    info!(%plan_id, count = normalized.len(), "每周学习日已更新");
+    Ok(normalized)
+}
+
+/// 当日已学打卡开关（Task E）：done → INSERT ON CONFLICT DO NOTHING；
+/// undone → DELETE；两路均幂等（重复调用终态一致）。
+/// 计划不存在时 INSERT 触发外键约束报错（打卡不凭空建行）。
+/// 消费方：commands::set_study_day_mark（日抽屉「当日已学」勾选）。
+pub async fn set_day_mark(
+    pool: &PgPool,
+    plan_id: Uuid,
+    day: chrono::NaiveDate,
+    done: bool,
+) -> Result<(), AgentError> {
+    if done {
+        sqlx::query(
+            "INSERT INTO study_day_marks (plan_id, day) VALUES ($1, $2)
+             ON CONFLICT (plan_id, day) DO NOTHING",
+        )
+        .bind(plan_id)
+        .bind(day)
+        .execute(pool)
+        .await
+        .map_err(|e| fail("写入当日已学打卡", e))?;
+    } else {
+        sqlx::query("DELETE FROM study_day_marks WHERE plan_id = $1 AND day = $2")
+            .bind(plan_id)
+            .bind(day)
+            .execute(pool)
+            .await
+            .map_err(|e| fail("撤销当日已学打卡", e))?;
+    }
+    info!(%plan_id, %day, done, "当日已学打卡已更新");
+    Ok(())
+}
+
+/// 读取计划的全部已打卡日（Task E）：get_plan 拼装 dayMarks wire 用；
+/// 无打卡行返回空 map。
+pub async fn load_plan_marks(
+    pool: &PgPool,
+    plan_id: Uuid,
+) -> Result<HashMap<chrono::NaiveDate, ()>, AgentError> {
+    let rows = sqlx::query("SELECT day FROM study_day_marks WHERE plan_id = $1")
+        .bind(plan_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| fail("查询当日已学打卡", e))?;
+    let mut marks = HashMap::with_capacity(rows.len());
+    for row in rows {
+        marks.insert(row.try_get("day").map_err(db_err)?, ());
+    }
+    Ok(marks)
 }
 
 /// 大纲就绪：覆写计划标题、概述与预计总学时（title 暂为 goal 截断的占位时由
@@ -542,7 +637,8 @@ pub async fn delete_plan_full(pool: &PgPool, plan_id: Uuid) -> Result<(), AgentE
 // ---------------------------------------------------------------------------
 
 /// 重建 PlanRequest 所需的轻量行结构：与 protocol::PlanRequest 逐字段对应，
-/// 但由本模块自持（字段拼接回 PlanRequest 由任务 15 做，本任务只提供元数据读取）
+/// 但由本模块自持（字段拼接回 PlanRequest 由任务 15 做，本任务只提供元数据读取）；
+/// study_days（Task E）：None = 全周（旧行缺省语义）
 #[derive(Debug, Clone, PartialEq)]
 pub struct PlanRequestRow {
     pub goal: String,
@@ -551,6 +647,7 @@ pub struct PlanRequestRow {
     pub weekly_hours: u32,
     pub interests: Vec<String>,
     pub background: String,
+    pub study_days: Option<Vec<u8>>,
 }
 
 /// 重建 PlanOutline 所需的轻量行结构：plans 元信息 + 阶段骨架
@@ -571,7 +668,7 @@ pub async fn load_plan_request_meta(
     plan_id: Uuid,
 ) -> Result<Option<PlanRequestRow>, AgentError> {
     let row = sqlx::query(
-        "SELECT goal, level, weeks, weekly_hours, interests, background FROM plans WHERE id = $1",
+        "SELECT goal, level, weeks, weekly_hours, interests, background, study_days FROM plans WHERE id = $1",
     )
     .bind(plan_id)
     .fetch_optional(pool)
@@ -583,6 +680,9 @@ pub async fn load_plan_request_meta(
     let weeks: i32 = row.try_get("weeks").map_err(db_err)?;
     let weekly_hours: i32 = row.try_get("weekly_hours").map_err(db_err)?;
     let interests: sqlx::types::Json<Vec<String>> = row.try_get("interests").map_err(db_err)?;
+    // 旧行列默认全周 JSONB 数组（DDL DEFAULT '[1..7]'），读回恒为合法数组；
+    // 空数组不兑底（校验层已拒绝空学习日）
+    let study_days: sqlx::types::Json<Vec<u8>> = row.try_get("study_days").map_err(db_err)?;
     Ok(Some(PlanRequestRow {
         goal: row.try_get("goal").map_err(db_err)?,
         level: row.try_get("level").map_err(db_err)?,
@@ -590,6 +690,7 @@ pub async fn load_plan_request_meta(
         weekly_hours: weekly_hours.max(0) as u32,
         interests: interests.0,
         background: row.try_get("background").map_err(db_err)?,
+        study_days: Some(study_days.0),
     }))
 }
 

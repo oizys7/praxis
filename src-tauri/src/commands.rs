@@ -915,6 +915,7 @@ fn build_regen_body(
             weeks: meta.weeks,
             interests: meta.interests,
             background: meta.background,
+            study_days: meta.study_days,
         },
         outline,
         phase_index,
@@ -1422,6 +1423,27 @@ pub async fn toggle_favorite(id: String) -> Result<bool, AgentError> {
     db::toggle_favorite(&config, &id).await
 }
 
+/// 更新计划的每周学习日（Task E 需求 5）：非空、取值 1..=7、去重排序落库，
+/// 返回归一化数组（前端直接采用）；校验失败 / 计划不走 DB 均归一为
+/// AgentError 中文文案透传。
+#[tauri::command]
+pub async fn set_plan_study_days(id: String, days: Vec<u8>) -> Result<Vec<u8>, AgentError> {
+    let config = load_db_config();
+    let pool = db::pool(&config).await?;
+    plan_store::set_study_days(&pool, db::parse_id(&id)?, &days).await
+}
+
+/// 当日已学打卡开关（Task E）：done → 写入，undone → 撤销，两路幂等；
+/// day 为本地日期 'YYYY-MM-DD'，解析失败归一 Db 中文文案。
+#[tauri::command]
+pub async fn set_study_day_mark(id: String, day: String, done: bool) -> Result<(), AgentError> {
+    let parsed_day = chrono::NaiveDate::parse_from_str(day.trim(), "%Y-%m-%d")
+        .map_err(|_| AgentError::Db(format!("无效的日期：{day}（应为 YYYY-MM-DD）")));
+    let config = load_db_config();
+    let pool = db::pool(&config).await?;
+    plan_store::set_day_mark(&pool, db::parse_id(&id)?, parsed_day?, done).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1488,6 +1510,38 @@ mod tests {
         assert!(matches!(events[2], StreamEvent::Done { .. }));
     }
 
+    /// Task E：PlanRequest.studyDays serde 语义——缺字段/显式 null 反序列化为
+    /// None（serde default 兼容旧载荷）；序列化时 None 归一为全周显式数组
+    /// （Python 端 CamelModel 不再兑底 null），Some 透传指定值（wire 名 studyDays）
+    #[test]
+    fn plan_request_study_days_serde_defaults_full_week() {
+        // 1. 缺字段 → None
+        let req: PlanRequest = serde_json::from_str(
+            r#"{"goal":"学 Rust","level":"beginner","weeklyHours":10,"weeks":8}"#,
+        )
+        .unwrap();
+        assert_eq!(req.study_days, None);
+        // 2. None 序列化 → 全周显式数组（转发 Python 的 wire 恒为数组）
+        let value = serde_json::to_value(&req).unwrap();
+        assert_eq!(
+            value["studyDays"],
+            serde_json::json!([1, 2, 3, 4, 5, 6, 7]),
+            "None 序列化应归一为全周数组"
+        );
+        // 3. 显式 null → None；指定值透传（去重排序由 Python 校验层/DB 层负责）
+        let req: PlanRequest = serde_json::from_str(
+            r#"{"goal":"g","level":"beginner","weeklyHours":10,"weeks":8,"studyDays":null}"#,
+        )
+        .unwrap();
+        assert_eq!(req.study_days, None);
+        let req = PlanRequest {
+            study_days: Some(vec![1, 3, 5]),
+            ..req
+        };
+        let value = serde_json::to_value(&req).unwrap();
+        assert_eq!(value["studyDays"], serde_json::json!([1, 3, 5]));
+    }
+
     /// 重生成请求体重建（任务 15）：PlanRequestRow 七字段逐值回填，
     /// 序列化 wire 走 camelCase（phaseIndex / chapterIndex）
     #[test]
@@ -1499,6 +1553,7 @@ mod tests {
             weekly_hours: 12,
             interests: vec!["异步".into(), "线程池".into()],
             background: "写过 Go".into(),
+            study_days: Some(vec![1, 3, 5]),
         };
         let outline = RegenOutline {
             title: "Rust 并发计划".into(),
@@ -1523,6 +1578,11 @@ mod tests {
             vec!["异步".to_string(), "线程池".to_string()]
         );
         assert_eq!(body.request.background, "写过 Go");
+        assert_eq!(
+            body.request.study_days,
+            Some(vec![1, 3, 5]),
+            "studyDays 逐值回填（重生成保持原学习日）"
+        );
         assert_eq!(body.phase_index, 0);
         assert_eq!(body.chapter_index, None);
         assert_eq!(body.outline, outline);

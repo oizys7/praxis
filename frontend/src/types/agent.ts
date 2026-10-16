@@ -23,6 +23,11 @@ export interface PlanRequest {
   interests: string[];
   /** 已有基础描述 */
   background: string;
+  /**
+   * 每周学习日（1=周一..7=周日，需求 5）：缺省 = 全周；仅作日历分配元数据，
+   * 不走 LLM 提示词。Rust 侧缺省/ null 归一为全周数组转发 Python。
+   */
+  studyDays?: number[];
 }
 
 /** 阶段收尾项目及其验收标准 */
@@ -306,6 +311,13 @@ export interface PlanRecord {
   overview: string;
   level: string;
   weeks: number;
+  /**
+   * 每周学习日（1=周一..7=周日，Task E）：列默认全周，读回恒为数组；
+   * 旧 wire 缺省空数组（前端按全周兑底）
+   */
+  studyDays: number[];
+  /** 已打卡日（当日已学，'YYYY-MM-DD' 升序，Task E）；旧 wire 缺省空数组 */
+  dayMarks: string[];
   favorite: boolean;
   createdAt: string;
   plan: StudyPlan;
@@ -321,6 +333,8 @@ export interface PlanSummary {
   overview: string;
   level: string;
   weeks: number;
+  /** 每周学习日（1=周一..7=周日，Task E，同 PlanRecord.studyDays） */
+  studyDays: number[];
   favorite: boolean;
   createdAt: string;
 }

@@ -121,8 +121,9 @@ pub(crate) fn db_err(e: sqlx::Error) -> AgentError {
     fail("读取数据", e)
 }
 
-/// 字符串 id 解析为 UUID（防御非法输入直落 SQL 参数）
-fn parse_id(id: &str) -> Result<uuid::Uuid, AgentError> {
+/// 字符串 id 解析为 UUID（防御非法输入直落 SQL 参数；pub(crate) 供
+/// commands 的 Task E 新命令复用，避免双份解析漂移）
+pub(crate) fn parse_id(id: &str) -> Result<uuid::Uuid, AgentError> {
     uuid::Uuid::parse_str(id).map_err(|_| AgentError::Db(format!("无效的计划 id：{id}")))
 }
 
@@ -130,9 +131,18 @@ fn parse_id(id: &str) -> Result<uuid::Uuid, AgentError> {
 /// query 非空时对标题/目标做大小写不敏感的模糊过滤（空串匹配全部）。
 pub async fn list_plans(config: &DbConfig, query: &str) -> Result<Vec<PlanSummary>, AgentError> {
     let pool = pool(config).await?;
+    list_plans_by_pool(&pool, query).await
+}
+
+/// list_plans 的 pool 版核心（pub(crate) 供集成测试直连临时库复用，
+/// 与 get_plan_by_pool 同款 motif）
+pub(crate) async fn list_plans_by_pool(
+    pool: &PgPool,
+    query: &str,
+) -> Result<Vec<PlanSummary>, AgentError> {
     let pattern = format!("%{}%", query.trim());
     let rows = sqlx::query(
-        "SELECT id, title, goal, overview, level, weeks, favorite, created_at, status
+        "SELECT id, title, goal, overview, level, weeks, favorite, created_at, status, study_days
          FROM plans
          WHERE title ILIKE $1 OR goal ILIKE $1
          ORDER BY favorite DESC, created_at DESC
@@ -140,7 +150,7 @@ pub async fn list_plans(config: &DbConfig, query: &str) -> Result<Vec<PlanSummar
     )
     .bind(&pattern)
     .bind(LIST_LIMIT)
-    .fetch_all(&pool)
+    .fetch_all(pool)
     .await
     .map_err(|e| fail("查询计划列表", e))?;
 
@@ -149,6 +159,8 @@ pub async fn list_plans(config: &DbConfig, query: &str) -> Result<Vec<PlanSummar
         let id: uuid::Uuid = row.try_get("id").map_err(db_err)?;
         let created: chrono::DateTime<chrono::Utc> = row.try_get("created_at").map_err(db_err)?;
         let weeks: i32 = row.try_get("weeks").map_err(db_err)?;
+        // 每周学习日（Task E）：列默认全周，读回恒为数组
+        let study_days: sqlx::types::Json<Vec<u8>> = row.try_get("study_days").map_err(db_err)?;
         result.push(PlanSummary {
             id: id.to_string(),
             title: row.try_get("title").map_err(db_err)?,
@@ -159,6 +171,7 @@ pub async fn list_plans(config: &DbConfig, query: &str) -> Result<Vec<PlanSummar
             overview: row.try_get("overview").map_err(db_err)?,
             level: row.try_get("level").map_err(db_err)?,
             weeks: weeks.max(0) as u32,
+            study_days: study_days.0,
             favorite: row.try_get("favorite").map_err(db_err)?,
             created_at: created.to_rfc3339(),
         });
@@ -176,7 +189,7 @@ pub async fn get_plan(config: &DbConfig, id: &str) -> Result<PlanRecord, AgentEr
 /// get_plan 的 pool 版核心（pub(crate) 供集成测试直连临时库复用）
 pub(crate) async fn get_plan_by_pool(pool: &PgPool, id: &str) -> Result<PlanRecord, AgentError> {
     let row = sqlx::query(
-        "SELECT id, title, goal, overview, level, weeks, favorite, created_at, status, estimated_total_hours
+        "SELECT id, title, goal, overview, level, weeks, favorite, created_at, status, estimated_total_hours, study_days
          FROM plans WHERE id = $1",
     )
     .bind(parse_id(id)?)
@@ -193,6 +206,15 @@ pub(crate) async fn get_plan_by_pool(pool: &PgPool, id: &str) -> Result<PlanReco
     let status: String = row.try_get("status").map_err(db_err)?;
     let title: String = row.try_get("title").map_err(db_err)?;
     let overview: String = row.try_get("overview").map_err(db_err)?;
+    // 每周学习日（Task E）：列默认全周，读回恒为数组
+    let study_days: sqlx::types::Json<Vec<u8>> = row.try_get("study_days").map_err(db_err)?;
+    // 已打卡日（Task E）：'YYYY-MM-DD' 升序序列（前端 Set 化查询）
+    let marks = crate::plan_store::load_plan_marks(pool, record_id).await?;
+    let mut day_marks: Vec<String> = marks
+        .keys()
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .collect();
+    day_marks.sort();
     let plan = crate::plan_store::load_study_plan(
         pool,
         record_id,
@@ -209,6 +231,8 @@ pub(crate) async fn get_plan_by_pool(pool: &PgPool, id: &str) -> Result<PlanReco
         overview,
         level: row.try_get("level").map_err(db_err)?,
         weeks: weeks.max(0) as u32,
+        study_days: study_days.0,
+        day_marks,
         favorite: row.try_get("favorite").map_err(db_err)?,
         created_at: created.to_rfc3339(),
         plan,

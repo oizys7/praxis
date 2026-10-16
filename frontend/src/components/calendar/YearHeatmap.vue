@@ -4,16 +4,27 @@
  * - 12 行（1 月..12 月）× 7 列（周一起始）：每格代表一天，空缺以占位补齐
  * - 每格五档色阶（语义令牌阶梯）：无安排/未学 bg-success/5 → 低 /20 →
  *   中 /45 → 高 /70 → 当日全满 bg-success，档位语义唯一来源是
- *   calendarMocks.intensityLevel
+ *   useStudyAllocation.intensityLevel
  * - 每格是 button：点击钻取当天（title + aria-label 双通道，不只靠颜色
  *   编码传达强度——色弱用户可从文字获得同等信息）
+ * - 数据由宿主注入（dayKey → DayStat，Task E 真数据分配聚合）
  */
 import { computed } from "vue";
-import { dayKey, dayStat, intensityLevel } from "@/calendarMocks";
+import {
+  dayKey,
+  intensityLevel,
+  type DayStat,
+} from "@/composables/useStudyAllocation";
 
-const props = defineProps<{ year: number }>();
+const props = defineProps<{
+  year: number;
+  /** 日子键 → 当日统计（宿主聚合自真计划分配） */
+  stats: Map<string, DayStat>;
+}>();
 
 const emit = defineEmits<{ (e: "select-day", date: Date): void }>();
+
+const EMPTY_STAT: DayStat = { total: 0, done: 0 };
 
 /** 五档色阶 class（与图例共用；索引 = IntensityLevel） */
 const LEVEL_CLASSES = [
@@ -48,7 +59,7 @@ const rows = computed<{ month: number; cells: (HeatCell | null)[] }[]>(() => {
     for (let i = 0; i < firstWeekday; i++) cells.push(null);
     for (let d = 1; d <= daysInMonth; d++) {
       const date = new Date(props.year, m, d);
-      const stat = dayStat(date);
+      const stat = props.stats.get(dayKey(date)) ?? EMPTY_STAT;
       cells.push({
         date,
         level: intensityLevel(stat),

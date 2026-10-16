@@ -46,3 +46,27 @@ export async function switchFavorite(id: string): Promise<boolean> {
     throw normalizeError(e);
   }
 }
+
+/**
+ * 更新计划的每周学习日（Task E）：传 1..=7 的整数数组，Rust 侧归一
+ * （去重升序）后落库，返回归一化结果（调用方直接采用，无需重拉详情）。
+ */
+export async function savePlanStudyDays(id: string, days: number[]): Promise<number[]> {
+  try {
+    return await invoke<number[]>("set_plan_study_days", { id, days });
+  } catch (e) {
+    throw normalizeError(e);
+  }
+}
+
+/**
+ * 当日已学打卡开关（Task E）：幂等；day 为本地日期 'YYYY-MM-DD'（dayKey）。
+ * 失败抛 CommandError（中文文案）。
+ */
+export async function saveStudyDayMark(id: string, day: string, done: boolean): Promise<void> {
+  try {
+    await invoke("set_study_day_mark", { id, day, done });
+  } catch (e) {
+    throw normalizeError(e);
+  }
+}

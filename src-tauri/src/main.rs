@@ -45,6 +45,7 @@ fn main() {
         // - generate_plan：转发学习计划生成请求到 Python Agent 服务
         // - regenerate_phase / regenerate_chapter：阶段/章节级重生成（任务 15）
         // - ping_agent：健康检查，用于前端展示服务在线状态
+        // - set_plan_study_days / set_study_day_mark：每周学习日 + 当日已学打卡（Task E）
         .invoke_handler(tauri::generate_handler![
             commands::generate_plan,
             commands::regenerate_phase,
@@ -56,6 +57,8 @@ fn main() {
             commands::get_plan,
             commands::delete_plan,
             commands::toggle_favorite,
+            commands::set_plan_study_days,
+            commands::set_study_day_mark,
         ])
         .setup(|app| {
             use tauri::Manager;

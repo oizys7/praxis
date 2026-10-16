@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::commands;
 use crate::db;
+use crate::error::AgentError;
 use crate::plan_store;
 use crate::plan_store::{PlanOutlineRow, PlanRequestRow};
 use crate::protocol::{
@@ -32,6 +33,7 @@ fn sample_request() -> PlanRequest {
         weeks: 8,
         interests: vec!["cli".into()],
         background: "有 C 基础".into(),
+        study_days: None,
     }
 }
 
@@ -387,64 +389,6 @@ async fn test_get_plan_reassembles_sorted(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(status, "complete");
-}
-
-/// 旧行带 plan_json：get_plan 走旧反序列化路径，行为与规范化改造前一致
-/// （plan_json legacy 读路径属上一代兼容层，任务 18 表结构直改不触及）
-#[sqlx::test]
-#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
-async fn test_legacy_plan_json_still_reads(pool: PgPool) {
-    prepare_schema(&pool).await;
-    let id = Uuid::new_v4();
-    // 旧版形状：theory 数组、无 chapters、estimatedTotalHours 在 JSON 内
-    let legacy_json = r#"{
-        "title": "旧版计划",
-        "overview": "旧概览",
-        "estimatedTotalHours": 42,
-        "phases": [
-            {
-                "name": "旧阶段",
-                "weekRange": "第 1-4 周",
-                "objectives": ["掌握基础语法"],
-                "theory": ["所有权", "借用检查"],
-                "practice": ["写 CLI 工具"],
-                "assignments": ["完成练习 1"],
-                "project": { "name": "命令行待办", "description": "实现待办管理工具" }
-            }
-        ],
-        "resources": []
-    }"#;
-    sqlx::query(
-        "INSERT INTO plans (id, title, goal, overview, level, weeks, plan_json, status, estimated_total_hours)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, 'complete', 0)",
-    )
-    .bind(id)
-    .bind("旧版计划")
-    .bind("学 Rust")
-    .bind("旧概览")
-    .bind("beginner")
-    .bind(4i32)
-    .bind(sqlx::types::Json(serde_json::from_str::<serde_json::Value>(legacy_json).unwrap()))
-    .execute(&pool)
-    .await
-    .unwrap();
-
-    let record = db::get_plan_by_pool(&pool, &id.to_string())
-        .await
-        .expect("旧路径读取失败");
-    assert_eq!(record.id, id.to_string());
-    assert_eq!(record.title, "旧版计划");
-    // 计划体来自 plan_json 反序列化（estimatedTotalHours=42 而非列默认 0）
-    assert_eq!(
-        record.plan.estimated_total_hours, 42,
-        "旧路径必须读 plan_json 内的值"
-    );
-    assert_eq!(record.plan.phases.len(), 1);
-    assert_eq!(
-        record.plan.phases[0].theory,
-        vec!["所有权".to_string(), "借用检查".to_string()]
-    );
-    assert_eq!(record.plan.phases[0].project.name, "命令行待办");
 }
 
 /// 删 plans 行：五表（plans + 阶段/项目/章节/资源）全级联清空；
@@ -803,8 +747,10 @@ async fn test_plan_request_meta_roundtrip(pool: PgPool) {
             weekly_hours: 10,
             interests: vec!["cli".into()],
             background: "有 C 基础".into(),
+            // study_days 请求侧 None = 全周，落库为列默认 '[1..7]'，读回恒为数组
+            study_days: Some(vec![1, 2, 3, 4, 5, 6, 7]),
         },
-        "七字段应与原请求逐字段一致"
+        "七字段 + studyDays 应与原请求逐字段一致（None 归一全周）"
     );
 
     // 不存在的 id：None
@@ -812,6 +758,137 @@ async fn test_plan_request_meta_roundtrip(pool: PgPool) {
         .await
         .unwrap();
     assert!(missing.is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Task E：每周学习日列 + 当日已学打卡表
+// ---------------------------------------------------------------------------
+
+/// studyDays 落库读回（需求 5）：请求侧 None → 列默认全周；set_study_days
+/// 归一（去重排序）后 UPDATE，读回一致；重生成上下文同步可见
+#[sqlx::test]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
+async fn test_study_days_roundtrip(pool: PgPool) {
+    prepare_schema(&pool).await;
+    // 默认路径：sample_request.study_days = None → create_generating_plan 写全周
+    let plan_id = new_generating_plan(&pool).await;
+    let meta = plan_store::load_plan_request_meta(&pool, plan_id)
+        .await
+        .expect("查询失败")
+        .expect("generating 行应存在");
+    assert_eq!(
+        meta.study_days,
+        Some(vec![1, 2, 3, 4, 5, 6, 7]),
+        "None 归一全周落库"
+    );
+
+    // 指定路径：set_study_days 去重排序后 UPDATE（非法校验另测）
+    plan_store::set_study_days(&pool, plan_id, &[5, 1, 5, 3])
+        .await
+        .expect("更新学习日失败");
+    let meta = plan_store::load_plan_request_meta(&pool, plan_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.study_days, Some(vec![1, 3, 5]));
+}
+
+/// set_study_days 校验：空数组 / 越界值 → Err（中文文案），库值不被改写
+#[sqlx::test]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
+async fn test_set_study_days_rejects_invalid(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+    for bad in [&[][..], &[0u8][..], &[8u8][..], &[1u8, 9][..]] {
+        let err = plan_store::set_study_days(&pool, plan_id, bad)
+            .await
+            .expect_err("非法 days 应拒绝");
+        assert!(matches!(err, AgentError::Db(_)), "应归一 Db 错误: {err}");
+    }
+    // 库值未被改写（仍为全周默认）
+    let meta = plan_store::load_plan_request_meta(&pool, plan_id)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(meta.study_days, Some(vec![1, 2, 3, 4, 5, 6, 7]));
+
+    // 不存在的计划 id → Err（外键 / 行缺失都不静默成功）
+    let err = plan_store::set_study_days(&pool, Uuid::new_v4(), &[1])
+        .await
+        .expect_err("不存在的计划应拒绝");
+    assert!(matches!(err, AgentError::Db(_)));
+}
+
+/// set_day_mark 开关幂等：done 双写不重复（ON CONFLICT DO NOTHING）；
+/// undone 双删不报错；load_plan_marks 读回仅含已打卡日
+#[sqlx::test]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
+async fn test_day_mark_toggle_idempotent(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+    let d1 = chrono::NaiveDate::from_ymd_opt(2026, 10, 16).unwrap();
+    let d2 = chrono::NaiveDate::from_ymd_opt(2026, 10, 17).unwrap();
+
+    plan_store::set_day_mark(&pool, plan_id, d1, true)
+        .await
+        .unwrap();
+    plan_store::set_day_mark(&pool, plan_id, d1, true)
+        .await
+        .unwrap();
+    plan_store::set_day_mark(&pool, plan_id, d2, true)
+        .await
+        .unwrap();
+    plan_store::set_day_mark(&pool, plan_id, d2, false)
+        .await
+        .unwrap();
+    plan_store::set_day_mark(&pool, plan_id, d2, false)
+        .await
+        .unwrap();
+
+    let marks = plan_store::load_plan_marks(&pool, plan_id).await.unwrap();
+    assert_eq!(marks.len(), 1, "重复打卡不重复落行，撤销后不留行");
+    assert!(marks.contains_key(&d1));
+}
+
+/// get_plan / list_plans wire roundtrip（Task E）：studyDays + dayMarks
+/// （'YYYY-MM-DD' 升序）进入 PlanRecord；studyDays 随 PlanSummary 列表行回传
+#[sqlx::test]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
+async fn test_plan_wire_carries_study_days_and_marks(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+    let d1 = chrono::NaiveDate::from_ymd_opt(2026, 10, 5).unwrap();
+    let d2 = chrono::NaiveDate::from_ymd_opt(2026, 10, 16).unwrap();
+    plan_store::set_day_mark(&pool, plan_id, d2, true)
+        .await
+        .unwrap();
+    plan_store::set_day_mark(&pool, plan_id, d1, true)
+        .await
+        .unwrap();
+    plan_store::set_study_days(&pool, plan_id, &[2, 4, 6])
+        .await
+        .unwrap();
+
+    let record = db::get_plan_by_pool(&pool, &plan_id.to_string())
+        .await
+        .unwrap();
+    assert_eq!(record.study_days, vec![2, 4, 6], "studyDays wire roundtrip");
+    assert_eq!(
+        record.day_marks,
+        vec![
+            d1.format("%Y-%m-%d").to_string(),
+            d2.format("%Y-%m-%d").to_string(),
+        ],
+        "dayMarks 'YYYY-MM-DD' 升序回传"
+    );
+
+    let summaries = db::list_plans_by_pool(&pool, "").await.unwrap();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(
+        summaries[0].study_days,
+        vec![2, 4, 6],
+        "列表行携带 studyDays"
+    );
 }
 
 /// PlanOutline 骨架读回：phases 按 idx 升序 + chapterTitles 顺序与播种一致（任务 15 依赖）

@@ -6,13 +6,21 @@
  *   今日 = 墨蓝描边圈（ring-primary）
  * - 每格是 button：点击钻取当天；aria-label 形如
  *   「10 月 14 日，共 3 章，已完成 2」——状态不只靠颜色传达
+ * - 数据由宿主注入（dayKey → DayStat，Task E 真数据分配聚合），本组件无数据源依赖
  */
 import { computed } from "vue";
-import { dayKey, dayStat } from "@/calendarMocks";
+import { dayKey, type DayStat } from "@/composables/useStudyAllocation";
 
-const props = defineProps<{ year: number; month: number }>();
+const props = defineProps<{
+  year: number;
+  month: number;
+  /** 日子键 → 当日统计（宿主聚合自真计划分配） */
+  stats: Map<string, DayStat>;
+}>();
 
 const emit = defineEmits<{ (e: "select-day", date: Date): void }>();
+
+const EMPTY_STAT: DayStat = { total: 0, done: 0 };
 
 /** 星期表头（周一起始） */
 const WEEK_LABELS = ["一", "二", "三", "四", "五", "六", "日"];
@@ -43,7 +51,7 @@ const cells = computed<CalendarCell[]>(() => {
   }
   for (let d = 1; d <= daysInMonth; d++) {
     const date = new Date(props.year, props.month, d);
-    const stat = dayStat(date);
+    const stat = props.stats.get(dayKey(date)) ?? EMPTY_STAT;
     list.push({
       day: d,
       date,

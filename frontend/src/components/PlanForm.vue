@@ -37,7 +37,12 @@ const form = reactive({
   weeks: 12,
   interests: [] as string[],
   background: "",
+  // 每周学习日（1=周一..7=周日，需求 5）：默认全选
+  studyDays: [1, 2, 3, 4, 5, 6, 7] as number[],
 });
+
+/** 学习日 chip 标签（列序即 1..7，周一起始） */
+const STUDY_DAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"] as const;
 
 /** 行内校验错误 */
 const errors = reactive({ goal: "", weeklyHours: "", weeks: "" });
@@ -52,6 +57,18 @@ function toggleInterest(tag: string) {
     form.interests.splice(idx, 1);
   } else {
     form.interests.push(tag);
+  }
+}
+
+/** 切换每周学习日（至少保留一天；取消最后一天时静默拒绝） */
+function toggleStudyDay(day: number) {
+  const idx = form.studyDays.indexOf(day);
+  if (idx >= 0) {
+    if (form.studyDays.length === 1) return;
+    form.studyDays.splice(idx, 1);
+  } else {
+    form.studyDays.push(day);
+    form.studyDays.sort((a, b) => a - b);
   }
 }
 
@@ -82,6 +99,7 @@ function onSubmit() {
     weeks: Math.round(Number(form.weeks)),
     interests: [...form.interests],
     background: form.background.trim(),
+    studyDays: [...form.studyDays],
   });
 }
 </script>
@@ -152,6 +170,35 @@ function onSubmit() {
             {{ errors.weeks }}
           </p>
         </div>
+      </div>
+
+      <!-- 每周学习日（需求 5：默认全选，至少保留一天） -->
+      <div class="space-y-1.5">
+        <Label>每周学习日</Label>
+        <div class="flex flex-wrap gap-1.5">
+          <button
+            v-for="(label, i) in STUDY_DAY_LABELS"
+            :key="label"
+            type="button"
+            class="rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            :aria-pressed="form.studyDays.includes(i + 1)"
+            :aria-label="`每周${label}${form.studyDays.includes(i + 1) ? '（已选）' : ''}`"
+            :disabled="props.loading"
+            @click="toggleStudyDay(i + 1)"
+          >
+            <Badge
+              :variant="
+                form.studyDays.includes(i + 1) ? 'default' : 'outline'
+              "
+              class="cursor-pointer select-none px-2.5 transition-opacity hover:opacity-80"
+            >
+              周{{ label }}
+            </Badge>
+          </button>
+        </div>
+        <p class="text-xs text-muted-foreground">
+          计划章节将按所选日子排布到日历（至少保留一天）
+        </p>
       </div>
 
       <!-- 偏好方向（多选标签） -->

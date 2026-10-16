@@ -75,6 +75,20 @@ pub(crate) const DDL_PLANS_INTERESTS_COL: &str =
 pub(crate) const DDL_PLANS_BACKGROUND_COL: &str =
     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS background TEXT NOT NULL DEFAULT ''";
 
+// ---- Task E 演进：每周学习日 + 当日已学打卡（幂等）----
+
+/// plans 每周学习日列（JSONB 数组，1=周一..7=周日；默认全周，旧行语义不变）
+pub(crate) const DDL_PLANS_STUDY_DAYS_COL: &str =
+    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS study_days JSONB NOT NULL DEFAULT '[1,2,3,4,5,6,7]'";
+
+/// 当日已学打卡表：主键即 (plan_id, day)，存在即已学，无需时间戳；
+/// 经外键 ON DELETE CASCADE 随 plans 行级联清理
+pub(crate) const DDL_STUDY_DAY_MARKS_TABLE: &str = "CREATE TABLE IF NOT EXISTS study_day_marks (
+          plan_id UUID NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+          day DATE NOT NULL,
+          PRIMARY KEY (plan_id, day)
+        )";
+
 // ---- markdown 化演进（任务 18，幂等）----
 
 /// 章节正文列：完整 markdown 全文（NOT NULL DEFAULT ''：行存在即含此列，
@@ -151,8 +165,11 @@ pub(crate) const DDL_STATEMENTS: &[&str] = &[
     DDL_PLANS_WEEKLY_HOURS_COL,
     DDL_PLANS_INTERESTS_COL,
     DDL_PLANS_BACKGROUND_COL,
+    // 4.5 Task E 演进：每周学习日列 + 当日已学打卡表（均只依赖 plans 表）
+    DDL_PLANS_STUDY_DAYS_COL,
+    DDL_STUDY_DAY_MARKS_TABLE,
     // 5. 任务 18 演进：chapters 正文列 + 退役子表 DROP（统一收尾，
-    //    历史建过子表的 DB 与全新 DB 都收敛到同一终态）
+    //    历史 DB 与全新 DB 都收敛到同一终态）
     DDL_CHAPTERS_CONTENT_MD_COL,
     DDL_DROP_CONCEPTS_TABLE,
     DDL_DROP_KNOWLEDGE_POINTS_TABLE,
@@ -209,6 +226,18 @@ mod tests {
         find("weekly_hours");
         find("interests");
         find("background");
+        // Task E：study_days 列与 study_day_marks 表都在 plans 建表之后
+        let plans_table = find("CREATE TABLE IF NOT EXISTS plans");
+        let study_days_col = find("ALTER TABLE plans ADD COLUMN IF NOT EXISTS study_days");
+        let marks_table = find("CREATE TABLE IF NOT EXISTS study_day_marks");
+        assert!(
+            plans_table < study_days_col,
+            "study_days 演进列必须在 plans 建表之后"
+        );
+        assert!(
+            plans_table < marks_table,
+            "study_day_marks 建表必须在 plans 建表之后（外键依赖）"
+        );
         // 四张退役子表 DROP 恰好各一条且都在 content_md 演进列之后
         for (needle, label) in [
             ("DROP TABLE IF EXISTS concepts", "concepts"),
