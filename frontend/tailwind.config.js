@@ -1,7 +1,7 @@
-import animate from "tailwindcss-animate";
-
 /** @type {import('tailwindcss').Config} */
 export default {
+  // 暗色分支：class 策略 + index.css .dark 令牌组已转正为暗色主题系统
+  // （入口 main.ts 初始化 + App 顶栏 Sun/Moon 按钮切换）。
   darkMode: ["class"],
   content: ["./index.html", "./src/**/*.{vue,js,ts,jsx,tsx}"],
   theme: {
@@ -46,6 +46,21 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        success: {
+          DEFAULT: "hsl(var(--success))",
+          foreground: "hsl(40 33% 98%)",
+        },
+      },
+      fontFamily: {
+        /* 书页标题：思源宋体优先，本机宋体兑底，全文仅用于标题角色 */
+        display: [
+          "Noto Serif SC",
+          "Source Han Serif SC",
+          "Songti SC",
+          "SimSun",
+          "Georgia",
+          "serif",
+        ],
       },
       borderRadius: {
         lg: "var(--radius)",
@@ -55,7 +70,10 @@ export default {
       keyframes: {
         "fade-in-up": {
           "0%": { opacity: "0", transform: "translateY(6px)" },
-          "100%": { opacity: "1", transform: "translateY(0)" },
+          // 终帧必须 none：both fill 会永久保留 100% 帧，任何非 none transform
+          // 都会成为 fixed子孙（如 PlanResult 悬浮目录）的 containing block，
+          // 把 fixed 钉进内容盒——这是「右缘竖线不见」的根因（目录修复）。
+          "100%": { opacity: "1", transform: "none" },
         },
       },
       animation: {
@@ -63,5 +81,4 @@ export default {
       },
     },
   },
-  plugins: [animate],
 };

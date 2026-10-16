@@ -24,6 +24,7 @@ human: |
 # 降级文案：LLM 不可用（未配置 Key / 调用失败 / mock 模式）时按问题代码取用
 fallback_questions:
   goal_too_short: "你的学习目标可以再具体一些吗？比如目标岗位、想达到的水平或时间期限。"
+  goal_too_broad: "可以把目标再具体一点吗？比如补上「想做出什么 / 应用在什么场景 / 达到什么水平」中的一两项，一句话就行。"
   weekly_hours_out_of_range: "你每周实际能投入多少小时学习？请填写 1-80 之间的数字。"
   weeks_out_of_range: "你希望在多少周内完成这次学习？请填写 1-52 之间的数字。"
   background_missing: "能简单介绍一下你目前已有的基础吗（学过什么、做过什么项目）？这能帮 Agent 校准起点。"

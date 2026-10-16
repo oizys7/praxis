@@ -4,52 +4,79 @@
 
 /*
  * shadcn/ui 色板 CSS 变量（hsl 通道形式，由 tailwind.config.js 引用）。
- * 主色采用 violet，配合浅色 / 暗色两套主题。
+ * 「自习室纸面」主题：冷灰米白纸底 + 墨线正文 + 墨蓝主强调 + 书绿成长语义
+ * + 朱批警示 + 沙框分隔；个人学习工具，安静耐读优先于仪表盘感。
+ * 暗色为「暗自习室」：同语义变量的暗底重映射（.dark 分支），
+ * documentElement 的 dark class 切换（入口 main.ts 初始化 + App 顶栏按钮）。
  */
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 3.9%;
-    --primary: 262 83% 58%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: 240 5.9% 10%;
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 5.9% 90%;
-    --input: 240 5.9% 90%;
-    --ring: 262 83% 58%;
-    --radius: 0.5rem;
+    /* 纸面 #FAF9F6 冷灰米白 */
+    --background: 40 33% 97%;
+    /* 墨线 #2A3342 近黑偏蓝灰 */
+    --foreground: 215 22% 21%;
+    --card: 40 33% 99%;
+    --card-foreground: 215 22% 21%;
+    --popover: 40 33% 99%;
+    --popover-foreground: 215 22% 21%;
+    /* 墨蓝 #3D5A73 主强调 */
+    --primary: 208 31% 35%;
+    --primary-foreground: 40 33% 98%;
+    /* 沙框 #E7E2D8 的两档浅层底 */
+    --secondary: 40 24% 92%;
+    --secondary-foreground: 215 22% 28%;
+    --muted: 40 24% 93%;
+    --muted-foreground: 215 10% 42%;
+    --accent: 40 24% 92%;
+    --accent-foreground: 215 22% 28%;
+    /* 朱批 #B4443C */
+    --destructive: 4 50% 47%;
+    --destructive-foreground: 40 33% 98%;
+    --border: 40 24% 87%;
+    --input: 40 24% 87%;
+    --ring: 208 31% 35%;
+    /* 书绿 #5E7B57 成长语义（完成/知识点/正向） */
+    --success: 96 17% 41%;
+    --radius: 0.625rem;
   }
 
+  /*
+   * 「暗自习室」：深层墨蓝纸面基调，:root 语义变量逐项暗底重映射——
+   * 纸面下沉为深墨蓝、墨线反转为暖纸白、墨蓝/书绿/朱批换提亮变体，
+   * 徽章三态（success/destructive/secondary）随之联动；组件层零 dark:
+   * 变体，全靠此组换肤。--radius 不重复声明，继承 :root 保持一致。
+   */
   .dark {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 10% 5.9%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 10% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 263 70% 66%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 50.6%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --ring: 263 70% 66%;
+    /* 深墨蓝纸面 #141A24 */
+    --background: 216 29% 11%;
+    /* 暖纸白 #E2E7F0（墨线反转，暗底正文 ~13.9:1） */
+    --foreground: 215 25% 91%;
+    /* 卡片比纸面亮一档 #1A222D */
+    --card: 216 27% 14%;
+    --card-foreground: 215 25% 91%;
+    /* 浮层比卡片再亮半档，保持层级感 */
+    --popover: 216 27% 15%;
+    --popover-foreground: 215 25% 91%;
+    /* 墨蓝提亮变体 #7E9FBE（亮色 #3D5A73 的暗底等值，暗底 ~6.3:1） */
+    --primary: 209 33% 62%;
+    --primary-foreground: 216 30% 12%;
+    /* 沙框深层底 #242C38 */
+    --secondary: 217 22% 18%;
+    --secondary-foreground: 215 25% 90%;
+    --muted: 217 21% 17%;
+    /* 辅助正文 #98A4B3（暗底 ~6.9:1） */
+    --muted-foreground: 215 15% 65%;
+    --accent: 217 22% 18%;
+    --accent-foreground: 215 25% 90%;
+    /* 朱批提亮变体 #CC645C（亮色 #B4443C 的暗底等值，暗底 ~4.6:1） */
+    --destructive: 4 52% 58%;
+    --destructive-foreground: 216 30% 12%;
+    /* 沙框暗色等值 #2D3643 */
+    --border: 217 20% 22%;
+    --input: 217 20% 22%;
+    --ring: 209 33% 62%;
+    /* 书绿提亮变体 #8FAB7C（亮色 #5E7B57 的暗底等值，暗底 ~6.9:1） */
+    --success: 96 22% 58%;
   }
 }
 
@@ -60,10 +87,23 @@
   body {
     @apply bg-background text-foreground antialiased;
     font-family:
-      'Segoe UI',
-      'PingFang SC',
-      'Microsoft YaHei',
-      system-ui,
-      sans-serif;
+      "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  }
+}
+
+/*
+ * 减动画偏好退避（Web Interface Guidelines）：装饰性动效在
+ * prefers-reduced-motion 下全部停用——进场位移、过渡ooth全部即时化；
+ * 过程指示（spinner，animation 类）保留，语义需要不属于装饰。
+ */
+@media (prefers-reduced-motion: reduce) {
+  .animate-fade-in-up {
+    animation: none !important;
+  }
+
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
   }
 }

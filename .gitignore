@@ -15,6 +15,10 @@ frontend/dist/
 
 # ===== Python =====
 __pycache__/
+# PyInstaller 打包产物（agent sidecar）
+agent-service/build/
+agent-service/dist/
+agent-service/*.spec
 *.py[cod]
 .venv/
 venv/
@@ -25,3 +29,8 @@ venv/
 .env
 frontend/.env
 agent-service/.env
+
+# 本机应用配置（含数据库连接串/密钥，不入库）
+src-tauri/config.yaml
+# 任务 27：仓库根 config.json 本机维护（模板见 config.example.json）
+/config.json

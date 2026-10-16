@@ -1,9 +1,9 @@
 <script setup lang="ts">
-import type { HTMLAttributes } from 'vue'
-import { cn } from '@/lib/utils'
+import type { HTMLAttributes } from "vue";
+import { cn } from "@/lib/utils";
 
 /** Card 标题 */
-const props = defineProps<{ class?: HTMLAttributes['class'] }>()
+const props = defineProps<{ class?: HTMLAttributes["class"] }>();
 </script>
 
 <template>
