@@ -395,7 +395,7 @@ function onPlanRefreshed(plan: StudyPlan) {
       @open="openHistoryPlan"
     />
 
-    <div v-else class="mx-auto w-full max-w-6xl px-6 py-8">
+    <div v-else class="mx-auto w-full max-w-6xl px-6 py-8 2xl:max-w-7xl">
       <!-- 返回列表：跨两栏顶部（反馈⑥改位，grid 外层）；sticky 不随滚动；
            反馈⑤：加大字号与圆角胶囊、叠压时阴影/描边/毛玻璃更明显 -->
       <div v-if="planView === 'create'" class="sticky top-0 z-20 -mt-2 mb-3">

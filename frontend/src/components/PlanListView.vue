@@ -126,7 +126,7 @@ function formatTime(iso: string): string {
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-6xl space-y-5 px-6 py-8">
+  <div class="mx-auto w-full max-w-6xl space-y-5 px-6 py-8 2xl:max-w-7xl">
     <!-- 页头：衬线大标题 + 摘行；操作按钮右置同一行，hairline 收边 -->
     <div class="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
       <div>

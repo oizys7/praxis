@@ -7,7 +7,7 @@ import { NotebookPen } from "lucide-vue-next";
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-6xl px-6 py-8">
+  <div class="mx-auto w-full max-w-6xl px-6 py-8 2xl:max-w-7xl">
     <!-- 页头：与其他页同构的衬线大标题 + hairline -->
     <div class="mb-6">
       <h2 class="font-display text-3xl font-semibold tracking-tight">

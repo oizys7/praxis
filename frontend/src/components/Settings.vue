@@ -82,7 +82,7 @@ function onSubmit() {
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-6xl px-6 py-8">
+  <div class="mx-auto w-full max-w-6xl px-6 py-8 2xl:max-w-7xl">
     <!-- 页头：衬线大标题 + 摘行（原 CardHeader 文案上移） -->
     <div class="mb-6">
       <h2 class="font-display text-3xl font-semibold tracking-tight">设置</h2>

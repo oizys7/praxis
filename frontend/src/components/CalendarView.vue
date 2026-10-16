@@ -304,7 +304,7 @@ async function onToggleStudyDay(planId: string, day: number) {
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-5xl px-6 py-8">
+  <div class="mx-auto w-full max-w-7xl px-6 py-8 2xl:max-w-[1600px]">
     <!-- 页头：衬线大标题 + 摘行靠左；视图切换与翻页下沉到日历右栏上方 -->
     <div class="mb-2">
       <h2
@@ -354,7 +354,7 @@ async function onToggleStudyDay(planId: string, day: number) {
 
     <template v-else>
       <!-- 双栏：左计划进度管理 / 右日历（控件行 + 主体）；窄屏日历在上 -->
-      <div class="grid items-start gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
+      <div class="grid items-start gap-5 lg:grid-cols-[320px_minmax(0,1fr)] 2xl:grid-cols-[380px_minmax(0,1fr)]">
         <!-- 左：计划进度管理（学习日编辑入口在此，点周几即改即存） -->
         <div class="order-2 lg:order-1">
           <PlanProgressPanel
