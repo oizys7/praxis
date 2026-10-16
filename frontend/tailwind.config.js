@@ -1,7 +1,7 @@
 /** @type {import('tailwindcss').Config} */
 export default {
-  // 暗色分支曾成孤儿（源树零 dark: 引用），保留 class 策略待暗黑模式任务转正
-  // （index.css .dark 块同批保留）。
+  // 暗色分支：class 策略 + index.css .dark 令牌组已转正为暗色主题系统
+  // （入口 main.ts 初始化 + App 顶栏 Sun/Moon 按钮切换）。
   darkMode: ["class"],
   content: ["./index.html", "./src/**/*.{vue,js,ts,jsx,tsx}"],
   theme: {

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, provide, ref, shallowRef, watch } from "vue";
-import { BookOpen, Settings } from "lucide-vue-next";
+import { BookOpen, Moon, Settings, Sun } from "lucide-vue-next";
 import { useAgent } from "@/composables/useAgent";
 import {
   disposeProgressListener,
@@ -41,6 +41,19 @@ const MENU_ITEMS: MenuItem[] = [
   { id: "settings", label: "设置", icon: Settings },
 ];
 
+/** 当前是否暗色主题（初始读 documentElement：main.ts 已在 mount 前同步初始化） */
+const isDark = ref(document.documentElement.classList.contains("dark"));
+
+/**
+ * 切换全局暗色主题：toggle documentElement 的 dark class + localStorage
+ * 持久化（键与 main.ts 的 initTheme 共用）；亮态显 Moon、暗态显 Sun。
+ */
+function toggleTheme() {
+  isDark.value = !isDark.value;
+  document.documentElement.classList.toggle("dark", isDark.value);
+  localStorage.setItem("praxis-theme", isDark.value ? "dark" : "light");
+}
+
 /** 学习计划页滚动宿主（回顶 / 目录跳转的实际执行元素，经 inject 供下层使用） */
 const planScrollHost = shallowRef<HTMLElement | null>(null);
 provide("planScrollHost", planScrollHost);
@@ -78,6 +91,17 @@ onUnmounted(() => disposeProgressListener());
           </div>
         </div>
         <div class="flex items-center gap-3">
+          <!-- 暗色主题切换：样式对齐侧栏图标按钮（rounded-lg + hover 语义色） -->
+          <button
+            type="button"
+            class="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+            :aria-label="isDark ? '切换到亮色主题' : '切换到暗色主题'"
+            :title="isDark ? '切换到亮色主题' : '切换到暗色主题'"
+            @click="toggleTheme"
+          >
+            <Sun v-if="isDark" class="h-4 w-4" />
+            <Moon v-else class="h-4 w-4" />
+          </button>
           <Badge
             :variant="
               agentOnline === null
