@@ -114,8 +114,11 @@ function levelLabel(value: string): string {
   return LEVEL_OPTIONS.find((o) => o.value === value)?.label ?? value;
 }
 
-/** 中文日期时间格式常量（避免每次新建 Intl 实例） */
-const DATE_FMT = new Intl.DateTimeFormat("zh-CN", { hour12: false });
+/** 中文短日期格式（行尾时间列：秒级精度对决策无用，「10 月 16 日」即可） */
+const DATE_FMT = new Intl.DateTimeFormat("zh-CN", {
+  month: "long",
+  day: "numeric",
+});
 
 function formatTime(iso: string): string {
   return DATE_FMT.format(new Date(iso));
@@ -286,9 +289,10 @@ function formatTime(iso: string): string {
             class="min-w-16 justify-center tabular-nums"
             >{{ item.weeks }} 周</Badge
           >
-          <span class="text-xs text-muted-foreground tabular-nums">{{
-            formatTime(item.createdAt)
-          }}</span>
+          <span
+            class="w-16 shrink-0 text-right text-xs text-muted-foreground"
+            >{{ formatTime(item.createdAt) }}</span
+          >
         </div>
         <!-- 行尾操作：淡显 + focus-within 全显；删险用窗.confirm 兼容行内 -->
         <div

@@ -281,6 +281,21 @@ async function onSubmit(request: PlanRequest) {
 }
 
 /** 查看历史计划：注入已保存的计划并切到查看视图（携带 id 供重生成入口） */
+/**
+ * 跨页导航入口（日历抽屉「打开计划详情」）：按计划 id 拉详情后打开。
+ * 拉取失败静默落入 error 态由页面呈现。
+ */
+async function openPlanById(planId: string) {
+  try {
+    const record = await fetchPlanRecord(planId);
+    openHistoryPlan(record);
+  } catch (e) {
+    error.value = normalizeError(e);
+  }
+}
+
+defineExpose({ openPlanById });
+
 function openHistoryPlan(record: PlanRecord) {
   historyMode.value = true;
   historyPlanId.value = record.id;

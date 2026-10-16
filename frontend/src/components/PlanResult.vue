@@ -117,7 +117,7 @@ const resourceTypeLabels: Record<string, string> = {
       <div class="border-b bg-secondary/40 p-6">
         <div class="flex flex-wrap items-start justify-between gap-3">
           <h1
-            class="animate-fade-in-up font-display text-2xl font-semibold tracking-tight"
+            class="animate-fade-in-up font-display text-3xl font-semibold tracking-tight"
           >
             {{ plan.title }}
           </h1>
@@ -156,7 +156,7 @@ const resourceTypeLabels: Record<string, string> = {
     </Card>
 
     <!-- 阶段列表（锚点包装：目录跳定位；scroll-mt 抵销 sticky 双层高度） -->
-    <div class="space-y-3">
+    <div class="space-y-4">
       <div
         v-for="(phase, i) in plan.phases"
         :id="`plan-phase-${i}`"

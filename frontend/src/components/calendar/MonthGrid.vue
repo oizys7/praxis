@@ -146,10 +146,10 @@ function cellLabel(cell: CalendarCell): string {
           class="flex min-h-[5.5rem] cursor-pointer flex-col items-start gap-1 rounded-lg border p-1.5 text-left transition-colors duration-200 hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           :class="
             cell.isToday
-              ? 'border-primary/50 bg-primary/[0.04] ring-1 ring-inset ring-primary/60'
+              ? 'border-primary/60 bg-primary/[0.05] ring-2 ring-inset ring-primary/50'
               : cell.total > 0
-                ? 'border-border bg-background'
-                : 'border-border/50'
+                ? 'border-border bg-card shadow-[inset_0_0_0_1px_hsl(var(--border))]'
+                : 'border-transparent bg-muted/30'
           "
           :aria-label="cellLabel(cell)"
           @click="cell.date && emit('select-day', cell.date)"
@@ -187,8 +187,8 @@ function cellLabel(cell: CalendarCell): string {
               class="truncate rounded-md border px-1.5 py-0.5 text-[11px] leading-tight"
               :class="
                 ev.done
-                  ? 'border-transparent bg-success/[0.12] text-success'
-                  : 'border-primary/25 bg-primary/[0.06] text-foreground/85'
+                  ? 'border-transparent bg-success/20 text-success'
+                  : 'border-primary/30 bg-primary/[0.08] text-foreground/90'
               "
               :title="`${ev.planTitle} · ${ev.chapterName}`"
             >

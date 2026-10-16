@@ -47,6 +47,11 @@ import {
 } from "@/composables/useStudyAllocation";
 import type { PlanRecord, PlanSummary } from "@/types/agent";
 
+const emit = defineEmits<{
+  /** 抽屉内点计划名 → 跳转学习计划详情（App 层协调跨页导航） */
+  (e: "open-plan", planId: string): void;
+}>();
+
 // ---- 数据装载（list_plans + 逐计划 get_plan）----
 
 const records = shallowRef<PlanRecord[]>([]);
@@ -426,6 +431,7 @@ async function onSaveStudyDays(planId: string, days: number[]) {
       @close="drawerOpen = false"
       @toggle-mark="onToggleMark"
       @save-study-days="onSaveStudyDays"
+      @open-plan="(planId) => emit('open-plan', planId)"
     />
   </div>
 </template>

@@ -1,5 +1,13 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, provide, ref, shallowRef, watch } from "vue";
+import {
+  nextTick,
+  onMounted,
+  onUnmounted,
+  provide,
+  ref,
+  shallowRef,
+  watch,
+} from "vue";
 import {
   BookOpen,
   CalendarCheck,
@@ -38,6 +46,16 @@ type PageId = "plan" | "calendar" | "notes" | "settings";
 
 /** 当前激活页面：侧栏菜单切换 */
 const activePage = ref<PageId>("plan");
+
+/** PlanWorkbench 实例（日历页「打开计划详情」跨页导航的调用口） */
+const workbenchRef = ref<InstanceType<typeof PlanWorkbench> | null>(null);
+
+/** 日历抽屉点计划名：切回学习计划页并按 id 打开该计划详情 */
+async function onCalendarOpenPlan(planId: string) {
+  activePage.value = "plan";
+  await nextTick();
+  workbenchRef.value?.openPlanById(planId);
+}
 
 /** 侧栏回传的菜单 id 收窄为页面联合（AppSidebar 以宽型 string 维护 id，菜单项受控常量，收窄安全） */
 function switchPage(id: string) {
@@ -154,7 +172,7 @@ onUnmounted(() => disposeProgressListener());
         ref="planScrollHost"
         class="min-w-0 flex-1 overflow-y-auto"
       >
-        <PlanWorkbench />
+        <PlanWorkbench ref="workbenchRef" />
       </main>
 
       <!-- 打卡日历页：视觉版式先行（mock 数据，功能暂不实现） -->
@@ -162,7 +180,7 @@ onUnmounted(() => disposeProgressListener());
         v-else-if="activePage === 'calendar'"
         class="min-w-0 flex-1 overflow-y-auto"
       >
-        <CalendarView />
+        <CalendarView @open-plan="onCalendarOpenPlan" />
       </main>
 
       <!-- 笔记生成页：空占位 -->

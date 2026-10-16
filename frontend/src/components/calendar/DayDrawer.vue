@@ -51,6 +51,8 @@ const emit = defineEmits<{
   (e: "close"): void;
   (e: "toggle-mark", planId: string, done: boolean): void;
   (e: "save-study-days", planId: string, days: number[]): void;
+  /** 跳转学习计划详情（组头计划名点击） */
+  (e: "open-plan", planId: string): void;
 }>();
 
 const panelRef = ref<HTMLElement | null>(null);
@@ -193,8 +195,8 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
               {{ titleText }}
             </h3>
             <p class="mt-1 text-xs tabular-nums text-muted-foreground">
-              {{ date.getFullYear() }} 年 · 共 {{ totalCount }} 项安排 ·
-              已完成 {{ doneCount }}
+              {{ date.getFullYear() }} 年，共 {{ totalCount }} 项安排，已完成
+              {{ doneCount }} 项
             </p>
           </div>
           <button
@@ -219,9 +221,15 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
             <div
               class="flex items-center justify-between gap-3 border-b border-border px-4 py-3"
             >
-              <p class="min-w-0 truncate text-sm font-medium">
+              <button
+                type="button"
+                class="min-w-0 cursor-pointer truncate text-left text-sm font-medium text-foreground transition-colors hover:text-primary hover:underline hover:underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                :title="`打开计划详情：${group.planTitle}`"
+                :aria-label="`打开计划详情：${group.planTitle}`"
+                @click="emit('open-plan', group.planId)"
+              >
                 {{ group.planTitle }}
-              </p>
+              </button>
               <Button
                 variant="ghost"
                 size="sm"
@@ -238,9 +246,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
                 编辑学习日
                 <ChevronDown
                   class="h-3 w-3 transition-transform duration-200"
-                  :class="
-                    editingPlanId === group.planId ? 'rotate-180' : ''
-                  "
+                  :class="editingPlanId === group.planId ? 'rotate-180' : ''"
                   aria-hidden="true"
                 />
               </Button>
@@ -254,7 +260,11 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
               <p class="text-xs text-muted-foreground">
                 每周学习日（重新排布该计划的日历安排）
               </p>
-              <div class="flex flex-wrap gap-1.5" role="group" aria-label="每周学习日选择">
+              <div
+                class="flex flex-wrap gap-1.5"
+                role="group"
+                aria-label="每周学习日选择"
+              >
                 <button
                   v-for="(label, i) in WEEKDAY_LABELS"
                   :key="label"
