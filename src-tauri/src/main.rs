@@ -109,13 +109,18 @@ fn main() {
                     return;
                 }
                 match db::pool(&config).await {
-                    Ok(pool) => match plan_store::sweep_stale_generating(&pool).await {
-                        Ok(count) if count > 0 => {
-                            tracing::info!(count, "启动清扫完成：存量 generating 计划已置 failed")
+                    Ok(pool) => {
+                        // 启动清扫（任务 22，幂等）：仅处理 generating 滑口行；
+                        // 历史伪 complete 行不启动时自动修复（用户裁定
+                        // 「错误数据不需要修复」，失败部件走详情页重生成）。
+                        match plan_store::sweep_stale_generating(&pool).await {
+                            Ok(count) if count > 0 => {
+                                tracing::info!(count, "启动清扫完成：存量 generating 计划已置 failed")
+                            }
+                            Ok(_) => {}
+                            Err(e) => tracing::warn!(error = %e, "启动清扫执行失败"),
                         }
-                        Ok(_) => {}
-                        Err(e) => tracing::warn!(error = %e, "启动清扫执行失败"),
-                    },
+                    }
                     Err(e) => tracing::warn!(error = %e, "云端库不可用，跳过启动清扫"),
                 }
             });

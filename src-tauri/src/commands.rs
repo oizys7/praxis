@@ -330,11 +330,14 @@ pub struct PlanSubmitResult {
     pub plan_id: String,
 }
 
-/// done 终态对应的入库收尾（任务 22 失败语义修订；任务 24 增学时终值变体）：
+/// done 终态对应的入库收尾（任务 22 失败语义修订；任务 24 增学时终值变体；
+/// 2026-10-16 用户定案：总计划校验以【章】为粒度）：
 /// - clarification → 删除 generating 行（保留既有三态语义防回归）；
-/// - 其余终态（plan / error / 防御性未知状态）：行内已有任何 phase 行 →
-///   complete（后续可重生成/重看）；零内容 → failed（含 finalize_failed 的
-///   pending 子行翻牌，见 plan_store::finalize_plan）；
+/// - 其余终态（plan / error / 防御性未知状态）：校验所有章脈状态，
+///   全部章芄生成成功（至少一章且无失败/滞留）→ complete；存在任一
+///   失败章或生成中滞留章 → failed（含 finalize_failed 的 pending 子行
+///   翻牌；complete 子行不动，失败部件可从详情页重生成）；零章行
+///   （纯骨架/未扩）→ failed。见 plan_store::all_chapters_complete。
 /// - estimated_total_hours 为 Some 时随收尾覆写学时终值（done 包络携带的
 ///   plan.estimatedTotalHours 与 outline 期粗估差异修正，见 done 分派；
 ///   finalize_plan COALESCE 语义，None 保持原值）。
@@ -351,7 +354,7 @@ pub(crate) async fn settle_terminal_with_hours(
     if status != "plan" && status != "error" {
         warn!(status, "未知 done 终态状态，按内容语义收尾");
     }
-    if plan_store::has_phase_rows(pool, plan_id).await? {
+    if plan_store::all_chapters_complete(pool, plan_id).await? {
         plan_store::finalize_plan(pool, plan_id, "complete", None, estimated_total_hours).await
     } else {
         plan_store::finalize_plan(pool, plan_id, "failed", None, estimated_total_hours).await
@@ -629,18 +632,19 @@ impl GenerationConsumer {
         ))
     }
 
-    /// 观测丢失后的收尾：有 phase 行 → complete；零内容 → failed。
+    /// 观测丢失后的收尾（2026-10-16 章级口径）：全部章脈生成成功 →
+    /// complete；失败章/滞留骨架/零内容 → failed。
     /// 收尾失败仅告警（行可能滞留 generating，由下次启动清扫兜底）。
     async fn settle_after_loss(&mut self) {
         self.terminal = true;
         let Some(s) = &self.storage else {
             return;
         };
-        let semantic_status = match plan_store::has_phase_rows(&s.pool, s.plan_id).await {
+        let semantic_status = match plan_store::all_chapters_complete(&s.pool, s.plan_id).await {
             Ok(true) => "complete",
             Ok(false) => "failed",
             Err(e) => {
-                warn!(req_id = %self.req_id, error = %e, "阶段行存在性查询失败，按 failed 收尾");
+                warn!(req_id = %self.req_id, error = %e, "章脈完成状态查询失败，按 failed 收尾");
                 "failed"
             }
         };

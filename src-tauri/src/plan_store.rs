@@ -400,16 +400,26 @@ pub async fn mark_chapter_pending(
     Ok(())
 }
 
-/// 判定计划是否存在任何 phase 行（收尾语义修订的判定基础，见 commands
-/// settle_terminal_with_hours：有阶段内容 → complete，零内容 → failed）。
-/// 消费方：commands 终态收尾（done 终态与断线耗尽收尾）。
-pub async fn has_phase_rows(pool: &PgPool, plan_id: Uuid) -> Result<bool, AgentError> {
-    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM phases WHERE plan_id = $1)")
-        .bind(plan_id)
-        .fetch_one(pool)
-        .await
-        .map_err(|e| fail("查询阶段行存在性", e))?;
-    Ok(exists)
+/// 全章脈完成判定（2026-10-16 用户定案，终态收尾唯一口径）：总计划在完成
+/// 时校验所有章脈状态——存在至少一章 且 全部章脈 complete → true（总状态
+/// complete）；存在任一失败章/未完成的滞留章（骨架 pending）或零章行
+/// → false（总状态 failed，finalize_failed 将 pending 子行翻 failed）。
+/// 骨架行均为 pending，不充当内容证据；章三态 pending（生成中）/
+/// complete（生成成功）/ failed（生成失败）。消费方：commands 终态收尾
+/// （done 终态与断线耗尽收尾）。
+pub async fn all_chapters_complete(pool: &PgPool, plan_id: Uuid) -> Result<bool, AgentError> {
+    let all_done: bool = sqlx::query_scalar(
+        "SELECT EXISTS( SELECT 1 FROM chapters c JOIN phases p ON c.phase_id = p.id
+                        WHERE p.plan_id = $1 )
+             AND NOT EXISTS(
+                 SELECT 1 FROM chapters c2 JOIN phases p2 ON c2.phase_id = p2.id
+                 WHERE p2.plan_id = $1 AND c2.status <> 'complete' )",
+    )
+    .bind(plan_id)
+    .fetch_one(pool)
+    .await
+    .map_err(|e| fail("查询全章节完成状态", e))?;
+    Ok(all_done)
 }
 
 /// 启动清扫（任务 22）：sidecar / 应用重启后，后台生成任务随 Python 进程消失，
