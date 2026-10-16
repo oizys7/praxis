@@ -8,8 +8,8 @@
  * 2. 第二屏「学习日历」：工具条（年 | 月 chip 切换 + 翻页 + 今天）+
  *    双视图——月 = 6×7 日历（MonthGrid）/ 年 = 12 行热力图（YearHeatmap），
  *    强度 = computeDayAssignments 按日聚合（章完成比例五档色阶）
- * 3. 日钻取：点击任一天 → DayDrawer 右滑抽屉（按计划分组的当日分配 +
- *    「当日已学」打卡 + 内嵌「编辑学习日」chips，双写 IPC 落库后本地重算）
+ * 3. 月历格内直接排布章事件块（微型日程表），点击任一天 → DayDrawer 右滑
+ *    抽屉（完整当安排 + 「当日已学」打卡 + 内嵌「编辑学习日」chips）
  *
  * 分配零存储：useStudyAllocation 纯函数即时重算（marks / studyDays 编辑
  * 仅更新本地视图态，分配结果随 computed 联动）；
@@ -17,22 +17,16 @@
  */
 import { computed, onMounted, ref, shallowRef } from "vue";
 import {
-  BookCheck,
-  BookX,
   ChevronLeft,
   ChevronRight,
   LoaderCircle,
   TriangleAlert,
 } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import MonthGrid from "@/components/calendar/MonthGrid.vue";
+import { Card, CardContent } from "@/components/ui/card";
+import MonthGrid, {
+  type CalendarEvent,
+} from "@/components/calendar/MonthGrid.vue";
 import YearHeatmap from "@/components/calendar/YearHeatmap.vue";
 import DayDrawer, {
   type DrawerPlanGroup,
@@ -204,18 +198,26 @@ const drawerGroups = computed<DrawerPlanGroup[]>(() =>
   selectedDate.value ? dayGroups(selectedDate.value) : [],
 );
 
-/** 侧卡：今日分组 */
-const todayGroups = computed<DrawerPlanGroup[]>(() => dayGroups(new Date()));
-
-/** 侧卡今日节数（跨计划合计） */
-const todayTotal = computed(() =>
-  todayGroups.value.reduce((n, g) => n + g.assignments.length, 0),
-);
-
-/** 今日日期文本（M 月 D 日） */
-const todayLabel = computed(() => {
-  const now = new Date();
-  return `${now.getMonth() + 1} 月 ${now.getDate()} 日`;
+/** 月历事件块：dayKey → 章日程（跨计划聚合，明细供格内渲染） */
+const calendarEvents = computed<Map<string, CalendarEvent[]>>(() => {
+  const merged = new Map<string, CalendarEvent[]>();
+  for (const record of records.value) {
+    const marks = marksByPlan.value.get(record.id) ?? new Set();
+    const view = {
+      ...record,
+      studyDays: studyDaysByPlan.value.get(record.id) ?? record.studyDays,
+    };
+    for (const a of computeDayAssignments(view, marks)) {
+      const list = merged.get(a.date) ?? [];
+      list.push({
+        planTitle: record.title,
+        chapterName: a.chapterTitle,
+        done: a.done,
+      });
+      merged.set(a.date, list);
+    }
+  }
+  return merged;
 });
 
 /** 工具条标题：「2026 年 10 月」/「2026 年」 */
@@ -285,40 +287,85 @@ async function onSaveStudyDays(planId: string, days: number[]) {
 
 <template>
   <div class="mx-auto w-full max-w-5xl px-6 py-8">
-    <!-- 页头：标题 + 统计条（真数据：全计划章完成率 / 本月打卡天数） -->
-    <header
-      class="mb-6 flex flex-wrap items-end justify-between gap-x-6 gap-y-4"
+    <!-- 页头：衬线大标题为视觉锚 + 视图切换与翻页动作 -->
+    <div
+      class="mb-2 flex flex-wrap items-center justify-between gap-x-6 gap-y-4"
     >
-      <div>
-        <h2 class="font-display text-2xl font-semibold tracking-tight">
-          学习进度
+      <div class="flex items-center gap-3">
+        <h2
+          class="font-display text-3xl font-semibold tracking-tight tabular-nums"
+          aria-live="polite"
+        >
+          {{ viewTitle }}
         </h2>
-        <p class="mt-1 text-sm text-muted-foreground">
-          计划推进总览 · 每日一勤，功不唐捐
-        </p>
+        <div
+          class="flex items-center rounded-full bg-muted/40 p-1"
+          role="group"
+          aria-label="日历视图切换"
+        >
+          <button
+            type="button"
+            class="cursor-pointer rounded-full px-3.5 py-1 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            :class="
+              viewMode === 'month'
+                ? 'bg-card font-medium text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+            "
+            :aria-pressed="viewMode === 'month'"
+            @click="viewMode = 'month'"
+          >
+            月
+          </button>
+          <button
+            type="button"
+            class="cursor-pointer rounded-full px-3.5 py-1 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            :class="
+              viewMode === 'year'
+                ? 'bg-card font-medium text-foreground shadow-sm'
+                : 'text-muted-foreground hover:text-foreground'
+            "
+            :aria-pressed="viewMode === 'year'"
+            @click="viewMode = 'year'"
+          >
+            年
+          </button>
+        </div>
       </div>
-      <dl class="flex items-center gap-6">
-        <div class="text-right">
-          <dt class="text-xs text-muted-foreground">整体完成率</dt>
-          <dd
-            class="font-display text-xl font-semibold tabular-nums text-success"
-          >
-            {{ overallPercent
-            }}<span class="ml-0.5 text-xs font-normal">%</span>
-          </dd>
-        </div>
-        <div class="h-9 w-px bg-border" aria-hidden="true" />
-        <div class="text-right">
-          <dt class="text-xs text-muted-foreground">本月打卡</dt>
-          <dd
-            class="font-display text-xl font-semibold tabular-nums text-primary"
-          >
-            {{ monthMarkDays
-            }}<span class="ml-0.5 text-xs font-normal">天</span>
-          </dd>
-        </div>
-      </dl>
-    </header>
+      <div class="flex items-center gap-1.5">
+        <button
+          type="button"
+          class="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-border text-muted-foreground transition-colors duration-200 hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          :aria-label="viewMode === 'month' ? '上一月' : '上一年'"
+          :title="viewMode === 'month' ? '上一月' : '上一年'"
+          @click="shiftView(-1)"
+        >
+          <ChevronLeft class="h-4 w-4" aria-hidden="true" />
+        </button>
+        <button
+          type="button"
+          class="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-border text-muted-foreground transition-colors duration-200 hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          :aria-label="viewMode === 'month' ? '下一月' : '下一年'"
+          :title="viewMode === 'month' ? '下一月' : '下一年'"
+          @click="shiftView(1)"
+        >
+          <ChevronRight class="h-4 w-4" aria-hidden="true" />
+        </button>
+        <Button
+          variant="ghost"
+          size="sm"
+          type="button"
+          class="ml-1 cursor-pointer"
+          @click="goToday"
+        >
+          回到今天
+        </Button>
+      </div>
+    </div>
+    <!-- 摘行（真数据；中文逗号分隔） -->
+    <p class="mb-6 text-sm text-muted-foreground">
+      整体完成 {{ overallPercent }}%，本月打卡 {{ monthMarkDays }} 天，
+      {{ records.length }} 份计划进行中
+    </p>
 
     <!-- 加载 / 错误 / 空态 -->
     <div
@@ -352,180 +399,26 @@ async function onSaveStudyDays(planId: string, days: number[]) {
     </div>
 
     <template v-else>
-      <!-- 第二屏：学习日历 -->
-      <div class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
-        <h3 id="calendar-heading" class="sr-only">学习日历</h3>
-        <Card>
-          <CardHeader class="space-y-3">
-            <div
-              class="flex flex-wrap items-center justify-between gap-x-4 gap-y-3"
-            >
-              <!-- 视图 chip 切换（年 = 热力图 / 月 = 日历，默认月） -->
-              <div
-                class="flex items-center rounded-lg border border-border p-0.5"
-                role="group"
-                aria-label="日历视图切换"
-              >
-                <button
-                  type="button"
-                  class="cursor-pointer rounded-md px-3 py-1 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  :class="
-                    viewMode === 'month'
-                      ? 'bg-secondary font-medium text-secondary-foreground'
-                      : 'text-muted-foreground hover:text-foreground'
-                  "
-                  :aria-pressed="viewMode === 'month'"
-                  @click="viewMode = 'month'"
-                >
-                  月
-                </button>
-                <button
-                  type="button"
-                  class="cursor-pointer rounded-md px-3 py-1 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  :class="
-                    viewMode === 'year'
-                      ? 'bg-secondary font-medium text-secondary-foreground'
-                      : 'text-muted-foreground hover:text-foreground'
-                  "
-                  :aria-pressed="viewMode === 'year'"
-                  @click="viewMode = 'year'"
-                >
-                  年
-                </button>
-              </div>
-
-              <!-- 翻页 + 今天 -->
-              <div class="flex items-center gap-1">
-                <button
-                  type="button"
-                  class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg text-muted-foreground transition-colors duration-200 hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  :aria-label="viewMode === 'month' ? '上一月' : '上一年'"
-                  :title="viewMode === 'month' ? '上一月' : '上一年'"
-                  @click="shiftView(-1)"
-                >
-                  <ChevronLeft class="h-4 w-4" aria-hidden="true" />
-                </button>
-                <p
-                  class="min-w-[7.5rem] text-center font-display text-base font-semibold tabular-nums"
-                  aria-live="polite"
-                >
-                  {{ viewTitle }}
-                </p>
-                <button
-                  type="button"
-                  class="flex h-8 w-8 cursor-pointer items-center justify-center rounded-lg text-muted-foreground transition-colors duration-200 hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  :aria-label="viewMode === 'month' ? '下一月' : '下一年'"
-                  :title="viewMode === 'month' ? '下一月' : '下一年'"
-                  @click="shiftView(1)"
-                >
-                  <ChevronRight class="h-4 w-4" aria-hidden="true" />
-                </button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  type="button"
-                  class="ml-2"
-                  @click="goToday"
-                >
-                  今天
-                </Button>
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent>
-            <!-- 月视图：日历网格 -->
-            <MonthGrid
-              v-if="viewMode === 'month'"
-              :year="viewDate.getFullYear()"
-              :month="viewDate.getMonth()"
-              :stats="dayStats"
-              @select-day="openDay"
-            />
-            <!-- 年视图：热力图 -->
-            <YearHeatmap
-              v-else
-              :year="viewDate.getFullYear()"
-              :stats="dayStats"
-              @select-day="openDay"
-            />
-          </CardContent>
-        </Card>
-
-        <!-- 今日计划分配侧卡（真数据：当日分配 + 打卡） -->
-        <Card class="lg:sticky lg:top-4">
-          <CardHeader>
-            <CardTitle class="font-display text-base">今日计划分配</CardTitle>
-            <CardDescription>
-              {{ todayLabel }} · 共 {{ todayTotal }} 节
-            </CardDescription>
-          </CardHeader>
-          <CardContent class="space-y-5">
-            <p
-              v-if="todayGroups.length === 0"
-              class="text-sm text-muted-foreground"
-            >
-              今天没有排课，好好休息。
-            </p>
-            <div
-              v-for="group in todayGroups"
-              :key="group.planId"
-              class="space-y-2"
-            >
-              <div
-                class="flex items-center justify-between gap-2 border-b border-border/60 pb-1.5"
-              >
-                <p class="min-w-0 truncate text-sm font-medium">
-                  {{ group.planTitle }}
-                </p>
-              </div>
-              <ul class="space-y-2">
-                <li
-                  v-for="a in group.assignments"
-                  :key="`${group.planId}-${a.phaseIndex}-${a.chapterIndex}`"
-                  class="flex items-center justify-between gap-2"
-                >
-                  <p class="min-w-0 truncate text-sm">
-                    <span class="text-muted-foreground">
-                      阶段{{ a.phaseIndex + 1 }} ·
-                    </span>
-                    {{ a.chapterName }}
-                  </p>
-                  <span
-                    class="shrink-0 rounded-md border px-1.5 py-0.5 text-xs"
-                    :class="
-                      a.done
-                        ? 'border-transparent bg-success/15 text-success'
-                        : 'border-border text-muted-foreground'
-                    "
-                  >
-                    {{ a.done ? "✓ 已完成" : "◌ 未完成" }}
-                  </span>
-                </li>
-              </ul>
-              <button
-                type="button"
-                class="flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm transition-colors duration-200 hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                :class="
-                  group.marked
-                    ? 'border-success/40 bg-success/5 text-success'
-                    : 'border-border text-muted-foreground'
-                "
-                :disabled="saving"
-                @click="onToggleMark(group.planId, !group.marked, new Date())"
-              >
-                <span>{{ group.marked ? "✓ 当日已学" : "标记当日已学" }}</span>
-                <BookX v-if="group.marked" class="h-4 w-4" aria-hidden="true" />
-                <BookCheck v-else class="h-4 w-4" aria-hidden="true" />
-              </button>
-            </div>
-            <p
-              class="border-t border-border/60 pt-3 text-xs text-muted-foreground"
-            >
-              点击日历任意日期可查看当天完整安排与编辑学习日。
-            </p>
-          </CardContent>
-        </Card>
-      </div>
+      <Card>
+        <CardContent class="p-3 sm:p-4">
+          <!-- 月视图：日历网格 -->
+          <MonthGrid
+            v-if="viewMode === 'month'"
+            :year="viewDate.getFullYear()"
+            :month="viewDate.getMonth()"
+            :stats="dayStats"
+            :events="calendarEvents"
+            @select-day="openDay"
+          />
+          <!-- 年视图：热力图 -->
+          <YearHeatmap
+            v-else
+            :year="viewDate.getFullYear()"
+            :stats="dayStats"
+            @select-day="openDay"
+          />
+        </CardContent>
+      </Card>
     </template>
 
     <!-- 日钻取抽屉 -->
