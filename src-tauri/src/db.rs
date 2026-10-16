@@ -14,9 +14,7 @@ use tracing::{info, warn};
 
 use crate::config::DbConfig;
 use crate::error::AgentError;
-// SavePlanRequest：弃用的 save_plan 链请求结构随落库实现保留（v0.1 G1 清理）
-#[allow(deprecated)]
-use crate::protocol::{PlanRecord, PlanSummary, SavePlanRequest};
+use crate::protocol::{PlanRecord, PlanSummary};
 
 /// 单次连接/查询超时
 const QUERY_TIMEOUT: Duration = Duration::from_secs(10);
@@ -128,34 +126,6 @@ fn parse_id(id: &str) -> Result<uuid::Uuid, AgentError> {
     uuid::Uuid::parse_str(id).map_err(|_| AgentError::Db(format!("无效的计划 id：{id}")))
 }
 
-/// 保存计划（新记录），返回生成的 id
-///
-/// 弃用（任务 30）：save_plan 链落库实现（任务 11 起前端已不再调用；规范化改造后
-/// 新行不再写整串 plan_json），随 v0.1 G1 清理统一移除。生命周期内对已弃用的
-/// SavePlanRequest 的引用在本体声明处 suppress。
-#[deprecated(note = "save_plan 链落库实现（任务 11 起前端已不再调用）；v0.1 G1 清理")]
-#[allow(deprecated)]
-pub async fn save_plan(config: &DbConfig, request: &SavePlanRequest) -> Result<String, AgentError> {
-    let pool = pool(config).await?;
-    let id = uuid::Uuid::new_v4();
-    sqlx::query(
-        "INSERT INTO plans (id, title, goal, overview, level, weeks, plan_json)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)",
-    )
-    .bind(id)
-    .bind(&request.title)
-    .bind(&request.goal)
-    .bind(&request.overview)
-    .bind(&request.level)
-    .bind(i32::try_from(request.weeks).unwrap_or(0))
-    .bind(sqlx::types::Json(&request.plan))
-    .execute(&pool)
-    .await
-    .map_err(|e| fail("保存计划", e))?;
-    info!(plan_id = %id, title = %request.title, "学习计划已保存到云端");
-    Ok(id.to_string())
-}
-
 /// 计划列表（不含整份计划）：收藏置顶，其余按创建时间倒序；
 /// query 非空时对标题/目标做大小写不敏感的模糊过滤（空串匹配全部）。
 pub async fn list_plans(config: &DbConfig, query: &str) -> Result<Vec<PlanSummary>, AgentError> {
@@ -196,8 +166,8 @@ pub async fn list_plans(config: &DbConfig, query: &str) -> Result<Vec<PlanSummar
     Ok(result)
 }
 
-/// 读取完整计划记录（含整份计划）：plan_json 旧行走旧反序列化路径（只读兼容），
-/// 规范化新行走多表重组路径（见 plan_store::load_study_plan）
+/// 读取完整计划记录（含整份计划）：规范化新行走多表重组路径（见
+/// plan_store::load_study_plan）
 pub async fn get_plan(config: &DbConfig, id: &str) -> Result<PlanRecord, AgentError> {
     let pool = pool(config).await?;
     get_plan_by_pool(&pool, id).await
@@ -206,7 +176,7 @@ pub async fn get_plan(config: &DbConfig, id: &str) -> Result<PlanRecord, AgentEr
 /// get_plan 的 pool 版核心（pub(crate) 供集成测试直连临时库复用）
 pub(crate) async fn get_plan_by_pool(pool: &PgPool, id: &str) -> Result<PlanRecord, AgentError> {
     let row = sqlx::query(
-        "SELECT id, title, goal, overview, level, weeks, favorite, created_at, plan_json, status, estimated_total_hours
+        "SELECT id, title, goal, overview, level, weeks, favorite, created_at, status, estimated_total_hours
          FROM plans WHERE id = $1",
     )
     .bind(parse_id(id)?)
@@ -215,36 +185,22 @@ pub(crate) async fn get_plan_by_pool(pool: &PgPool, id: &str) -> Result<PlanReco
     .map_err(|e| fail("查询计划", e))?
     .ok_or_else(|| AgentError::Db(format!("计划不存在或已被删除：{id}")))?;
 
-    // plan_json 只读兼容层（任务 30）：本读取与下方 match 的 Some 分支仅服务
-    // legacy plan_json 行；规范化新行该列恒为 NULL（此读取无行为影响）。
-    // 历史 plan_json 行读完清库后（v0.1 G1 清理）删除本分支与列迁移。
-    #[allow(deprecated)]
-    let plan_json: Option<sqlx::types::Json<StudyPlanAlias>> =
-        row.try_get("plan_json").map_err(db_err)?;
     let record_id: uuid::Uuid = row.try_get("id").map_err(db_err)?;
     let created: chrono::DateTime<chrono::Utc> = row.try_get("created_at").map_err(db_err)?;
     let weeks: i32 = row.try_get("weeks").map_err(db_err)?;
     let estimated_total_hours: i32 = row.try_get("estimated_total_hours").map_err(db_err)?;
-    // 行级生成状态（generating | complete | failed）：legacy plan_json 行的列值
-    // 如实回传（默认 'complete'），与新行同口径（任务 24 补全）
+    // 行级生成状态（generating | complete | failed）：如实回传（默认 'complete'）
     let status: String = row.try_get("status").map_err(db_err)?;
     let title: String = row.try_get("title").map_err(db_err)?;
     let overview: String = row.try_get("overview").map_err(db_err)?;
-    let plan = match plan_json {
-        // 旧行：整串 plan_json 反序列化（含 estimatedTotalHours，行为与改造前一致）
-        Some(json) => json.0,
-        // 规范化新行：多表按 idx 重组
-        None => {
-            crate::plan_store::load_study_plan(
-                pool,
-                record_id,
-                &title,
-                &overview,
-                estimated_total_hours,
-            )
-            .await?
-        }
-    };
+    let plan = crate::plan_store::load_study_plan(
+        pool,
+        record_id,
+        &title,
+        &overview,
+        estimated_total_hours,
+    )
+    .await?;
     Ok(PlanRecord {
         id: record_id.to_string(),
         title,
@@ -258,13 +214,6 @@ pub(crate) async fn get_plan_by_pool(pool: &PgPool, id: &str) -> Result<PlanReco
         plan,
     })
 }
-
-/// StudyPlan 的类型别名（sqlx::types::Json 泛型参数需要具名类型）
-///
-/// 弃用（任务 30）：plan_json 列只读兼容层专用别名（规范化路径用 plan_store，
-/// 不经本别名），随 v0.1 G1 清理统一移除。勿误标协议层共享的 protocol::StudyPlan。
-#[deprecated(note = "plan_json 列只读兼容层专用别名（规范化路径不经此）；v0.1 G1 清理")]
-type StudyPlanAlias = crate::protocol::StudyPlan;
 
 /// 删除计划（硬删除；id 不存在视为已删除，幂等成功）
 pub async fn delete_plan(config: &DbConfig, id: &str) -> Result<(), AgentError> {

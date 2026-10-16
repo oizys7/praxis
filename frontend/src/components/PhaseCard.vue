@@ -20,11 +20,8 @@ import type { StudyPhase, StudyPlan } from "@/types/agent";
 
 /**
  * PhaseCard：单个学习阶段的可折叠卡片。
- * 展开后按阶段内容分代渲染：
- * - 新数据（chapters 非空）：章节列表（ChapterSection，含 Mermaid 图示与深入内容）；
- * - 旧云端数据（无 chapters）：回落原 theory 列表（legacy 渲染分支，
- *   @deprecated v0.1 G1 清理 —— 等 History 旧计划全走 chapters 后删除）；
- * 另有阶段目标 / 实操 / 作业 / 收尾项目（含背景、步骤、预计学时）。
+ * 展开后按章节列表渲染（ChapterSection，含 Mermaid 图示与深入内容），
+ * 另有阶段目标 / 收尾项目（含背景、步骤、预计学时）。
  * 头部按 phase.status 渲染两级状态徽标（undefined = 旧数据无徽标）；
  * failed/pending 且 planId 可用时提供「重新生成此阶段」入口。
  */
@@ -134,31 +131,6 @@ async function onRegenerate() {
   }
 }
 
-/** 理论 / 实操 / 作业 三个列表区块的元信息（theory 为旧数据兼容字段，可能缺失） */
-const sections = computed(() => [
-  /**
-   * @deprecated v0.1 G1 清理 —— legacy theory 渲染分支（旧云端数据无 chapters 时回落），
-   * 等 History 旧计划全走 chapters 后删除
-   */
-  {
-    key: "theory",
-    icon: "📚",
-    title: "理论学习",
-    items: props.phase.theory ?? [],
-  },
-  {
-    key: "practice",
-    icon: "🛠️",
-    title: "动手实操",
-    items: props.phase.practice,
-  },
-  {
-    key: "assignments",
-    icon: "✏️",
-    title: "课后作业",
-    items: props.phase.assignments,
-  },
-]);
 </script>
 
 <template>
@@ -269,20 +241,6 @@ const sections = computed(() => [
                 @refreshed="(p) => emit('refreshed', p)"
               />
             </div>
-          </div>
-
-          <!-- @deprecated v0.1 G1 清理：理论 / 实操 / 作业（旧数据含 theory 列表；新数据 theory 为空自动跳过）—— 等 History 旧计划全走 chapters 后删除 -->
-          <div
-            v-for="section in sections.filter((s) => s.items.length)"
-            :key="section.key"
-            class="grid grid-cols-[88px,1fr] gap-x-3 gap-y-1 text-sm"
-          >
-            <span class="font-medium"
-              >{{ section.icon }} {{ section.title }}</span
-            >
-            <ul class="space-y-1 text-muted-foreground">
-              <li v-for="(item, i) in section.items" :key="i">· {{ item }}</li>
-            </ul>
           </div>
 
           <!-- 阶段项目 + 验收标准 -->

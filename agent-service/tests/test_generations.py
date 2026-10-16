@@ -564,28 +564,3 @@ async def test_unexpected_exception_becomes_service_done(monkeypatch):
     assert events[-1]["response"]["error"]["code"] == "service"
 
 
-# ---------------------------------------------------------------------------
-# NDJSON 流端点仍直连既有管道（wire 兼容），既有 test_stream / test_regen 全量零改动通过
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_stream_endpoints_unaffected(monkeypatch):
-    """降层重构后 NDJSON 薄包装字节级不变：ensure_ascii=False + 尾行 \\n。"""
-    monkeypatch.setattr(settings, "allow_mock_llm", True)
-    transport = httpx.ASGITransport(app=app)
-    async with (
-        httpx.AsyncClient(transport=transport, base_url="http://test") as client,
-        client.stream("POST", "/api/generate-plan/stream", json=VALID_REQUEST) as response,
-    ):
-        assert response.status_code == 200
-        assert response.headers["content-type"].startswith("application/x-ndjson")
-        raw = b""
-        async for chunk in response.aiter_bytes():
-            raw += chunk
-    lines = raw.decode("utf-8").splitlines()
-    events = [json.loads(line) for line in lines]
-    assert events, "流必须至少产出一个事件"
-    assert events[-1]["type"] == "done"
-    assert raw.endswith(b"\n"), "NDJSON 尾行必须带换行（字节级 wire 兼容）"
-    assert {e["type"] for e in events} == {"outline", "chapter", "phase", "done"}

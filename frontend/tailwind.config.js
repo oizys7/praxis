@@ -1,9 +1,7 @@
-import animate from "tailwindcss-animate";
-
 /** @type {import('tailwindcss').Config} */
 export default {
-  // [v1 清理] 重设计后源树零 dark: 引用，暗色分支成孤儿（index.css .dark 同批），
-  // 删此行 + .dark 块 +下方 plugins 行（v0.1 G1 清理）
+  // 暗色分支曾成孤儿（源树零 dark: 引用），保留 class 策略待暗黑模式任务转正
+  // （index.css .dark 块同批保留）。
   darkMode: ["class"],
   content: ["./index.html", "./src/**/*.{vue,js,ts,jsx,tsx}"],
   theme: {
@@ -83,6 +81,4 @@ export default {
       },
     },
   },
-  // [v1 清理] 源树零 animate-in/out 工具类引用，tailwindcss-animate 成孤儿，删除随 G1
-  plugins: [animate],
 };

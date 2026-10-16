@@ -1,11 +1,11 @@
-"""regenerate 流式端点与 outline 事件扩展测试（mock 模式，httpx ASGITransport）。
+"""regenerate 流式端点测试（mock 模式，httpx ASGITransport）。
 
-用例名与任务简报逐字对应（test_outline_event_carries_phases /
-test_regen_phase_stream / test_regen_chapter_stream /
+用例名与任务简报逐字对应（test_regen_phase_stream / test_regen_chapter_stream /
 test_regen_out_of_range）。协议约定：
 
 - outline 事件除 phaseCount/title 外携带 overview + phases
-  （[{name, weekRange, chapterTitles}]，数据直出自 PlanOutline）；
+  （[{name, weekRange, chapterTitles}]，数据直出自 PlanOutline；载荷断言
+  已归口 test_generations.py 的 WS 事件链用例）；
 - /api/regenerate/stream：chapterIndex 缺省 → 单条 phase 事件；
   chapterIndex 指定 → 单条 chapter 事件（{index, phaseIndex, chapter}，
   chapter 为 by_alias camelCase）；
@@ -27,7 +27,7 @@ from app.main import app
 from app.mock import build_mock_outline
 from app.schemas import Chapter
 
-# 合法请求：goal 足够长、background 非空——避开规则澄清（与 test_stream.py 同源）
+# 合法请求：goal 足够长、background 非空——避开规则澄清
 VALID_REQUEST = {
     "goal": "学习 Rust 与系统编程",
     "level": "beginner",
@@ -51,24 +51,6 @@ async def _post_stream(path: str, payload: dict[str, Any]) -> list[dict[str, Any
             if line.strip():
                 events.append(json.loads(line))
     return events
-
-
-@pytest.mark.asyncio
-async def test_outline_event_carries_phases(monkeypatch):
-    """outline 事件扩展载荷：phases[i].chapterTitles 非空，overview 到位。"""
-    monkeypatch.setattr(settings, "allow_mock_llm", True)
-
-    events = await _post_stream("/api/generate-plan/stream", VALID_REQUEST)
-
-    first = events[0]
-    assert first["type"] == "outline"
-    phases = first["phases"]
-    assert isinstance(phases, list) and len(phases) == first["phaseCount"]
-    for phase in phases:
-        assert phase["name"], "阶段名必须非空"
-        assert phase["weekRange"], "周区间必须非空"
-        assert phase["chapterTitles"], "章节标题列表必须非空"
-    assert "overview" in first, "outline 事件必须携带整体概述"
 
 
 @pytest.mark.asyncio

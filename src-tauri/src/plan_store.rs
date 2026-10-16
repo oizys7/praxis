@@ -1,7 +1,7 @@
 //! 计划数据规范化多表存储：阶段级 upsert（每阶段完成即落库，章节整体替换）与多表重组读取。
 //!
 //! 与 db.rs 的分工：
-//! - db.rs：连接池管理、首连建表（ensure_schema -> db_ddl）、旧整串 plan_json 链路（save_plan 等保留）
+//! - db.rs：连接池管理、首连建表（ensure_schema -> db_ddl）
 //! - 本模块：流式生成链路（任务 10）的存储层——create_generating_plan /
 //!   update_outline_meta / seed_outline / upsert_phase / upsert_chapter /
 //!   mark_phase_pending / mark_chapter_pending / finalize_plan / finalize_failed /

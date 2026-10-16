@@ -38,8 +38,8 @@
     --radius: 0.625rem;
   }
 
-  /* [v1 清理] 重设计后源树零 dark: 引用，暗色变量组成孤儿待删（tailwind darkMode 同批，
-     v0.1 G1 清理）；保留不影响亮色渲染 */
+  /* 暗色变量组（源树曾零 dark: 引用成孤儿，保留待暗黑模式任务转正；
+     tailwind darkMode: ["class"] 同批保留） */
   .dark {
     --background: 240 10% 3.9%;
     --foreground: 0 0% 98%;

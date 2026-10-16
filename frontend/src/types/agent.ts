@@ -74,10 +74,8 @@ export interface StudyPhase {
   name: string;
   weekRange: string;
   objectives: string[];
-  /** 章节列表（章节化新结构；旧云端 plan_json 无此字段） */
+  /** 章节列表（章节化新结构） */
   chapters?: Chapter[];
-  /** @deprecated v0.1 G1 清理 —— 旧云端 plan_json 只读兼容保留，新数据不再产出；等 History 旧计划全走 chapters 后删除 */
-  theory?: string[];
   practice: string[];
   assignments: string[];
   project: PhaseProject;

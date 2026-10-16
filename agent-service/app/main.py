@@ -1,9 +1,6 @@
 """FastAPI 入口：Praxis Agent 服务。
 
 端点：
-- POST /api/generate-plan：生成学习计划（分层拓扑：outline → 并行扩展 → 拼装 → 评审）
-- POST /api/generate-plan/stream：同上，NDJSON 流式推送（outline/phase/done 事件，
-  供 Rust 侧逐阶段入库；done 必为最后一行）
 - POST /api/regenerate/stream：阶段/章节级重生成流式推送（phase/chapter/done 事件，
   供 Rust 侧 upsert 已入库的失败阶段/章节）
 - GET  /api/config：返回当前生效配置（设置页读取）
@@ -22,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import warnings
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -34,14 +30,12 @@ from pydantic import ValidationError
 from app import tasks
 from app.config import settings
 from app.errors import register_error_handlers
-from app.graph import agent_graph
 from app.llm import reset_chat_model_cache
 from app.logging_config import setup_logging, uvicorn_log_config
 from app.schemas import (
     AgentSettingsModel,
     GenerationSubmit,
     HealthResponse,
-    PlanRequest,
     PlanResponse,
     RegenRequest,
     StudyPlan,
@@ -103,13 +97,12 @@ async def _log_requests(request: Request, call_next):
 
 
 def build_response(final_state: dict[str, Any]) -> PlanResponse:
-    """把图终态组装成统一响应包络（流式 / 非流式两端点共用的纯函数）。
+    """把图终态组装成统一响应包络（后台生成任务使用的纯函数）。
 
     路径一：clarify 节点判定信息不完整，返回澄清问题；
     路径二：正常产出计划。
     业务异常不在此处理：可预期异常已由 llm 层翻译为 AgentServiceError，
-    非流式端点由全局 exception_handler、流式端点由生成器捕获后
-    分别转成 status=error 包络（前者 HTTP 200，后者为 done 终态行）。
+    事件管道生成器捕获后转成 status=error 的 done 终态。
     """
     # 路径一：澄清问题非空即 clarification 终态
     if final_state.get("clarifications"):
@@ -123,101 +116,13 @@ def build_response(final_state: dict[str, Any]) -> PlanResponse:
     return PlanResponse(status="plan", plan=plan)
 
 
-@app.post(
-    "/api/generate-plan", response_model=PlanResponse, response_model_by_alias=True
-)
-@warnings.deprecated(
-    "v0.1 G1 清理 —— Rust 已走 WS 后台生成（任务 22），前端不再调用"
-)
-async def generate_plan(request: PlanRequest) -> PlanResponse:
-    """弃用：v0.1 G1 清理移除 —— Rust 已走 WS 后台生成（任务 22），前端不再调用。
-
-    生成学习计划：驱动 LangGraph 状态图并组装统一包络（一次性返回）。
-    保留期间行为不变（wire 兼容），仅标记等待 v0.1 完成后统一清理。
-    """
-    logger.info(
-        "收到计划请求：goal=%r level=%s weeklyHours=%s weeks=%s",
-        request.goal,
-        request.level.value,
-        request.weekly_hours,
-        request.weeks,
-    )
-
-    final_state = await agent_graph.ainvoke(
-        {"request": request.model_dump(by_alias=True)}
-    )
-    response = build_response(final_state)
-
-    if response.status == "clarification":
-        logger.info("需要澄清：%d 个问题", len(response.clarifications or []))
-    else:
-        logger.info(
-            "计划生成成功：%s（%d 个阶段）",
-            response.plan.title if response.plan else "",
-            len(response.plan.phases) if response.plan else 0,
-        )
-    return response
-
-
-@app.post("/api/generate-plan/stream")
-@warnings.deprecated(
-    "v0.1 G1 清理 —— Rust 已走 WS 后台生成（任务 22），前端不再调用"
-)
-async def generate_plan_stream(request: PlanRequest) -> StreamingResponse:
-    """弃用：v0.1 G1 清理移除 —— Rust 已走 WS 后台生成（任务 22），前端不再调用。
-
-    流式生成学习计划：NDJSON 逐行推送事件，每阶段完成即到达。
-
-    事件序列（application/x-ndjson，每行一个 JSON 对象）：
-    - {"type": "outline", "phaseCount": N, "title": "…", "overview"?: "…",
-   "phases"?: [{"name": "…", "weekRange": "…", "chapterTitles": ["…"]}]}：
-  骨架到达时推 1 条（phases 为向后兼容的可选载荷，供渐进式骨架渲染）
-    - {"type": "phase", "index": i, "phase": {…}}：每阶段完成推 1 条，
-      可能乱序，回炉重生成时同 index 再次推送（覆盖语义）；
-    - {"type": "done", "response": {…统一包络…}}：终态，必为最后一行
-      （plan / clarification / error 三种终态统一走 done；clarification
-      与 error 终态无 outline / phase 事件，error 之前可能已有部分
-      outline / phase 事件，消费方以 done.response.status 判定成败）。
-
-    业务异常（AgentServiceError）不中断流：生成器捕获后翻译为 error 包络的
-    done 终态，与非流式通道全局 handler 的产出语义一致（见 app/errors.py）；
-    意外异常不在此捕获，仍由 Starlette 中断流；请求校验失败（422）发生在
-    流开始前，无需处理。
-    """
-    logger.info(
-        "收到流式计划请求：goal=%r level=%s weeklyHours=%s weeks=%s",
-        request.goal,
-        request.level.value,
-        request.weekly_hours,
-        request.weeks,
-    )
-    return StreamingResponse(
-        _stream_plan_events(request), media_type="application/x-ndjson"
-    )
-
-
-@warnings.deprecated(
-    "v0.1 G1 清理 —— 仅 /api/generate-plan/stream 独占的 NDJSON 薄包装，随端点一并退役"
-)
-async def _stream_plan_events(request: PlanRequest) -> AsyncIterator[str]:
-    """弃用（v0.1 G1 清理）：仅 /api/generate-plan/stream 独占的 NDJSON 薄包装。
-
-    透传 tasks._plan_event_dicts 的 event dict（wire 不变）。事件管道本体
-    _plan_event_dicts 已降层到 app/tasks.py 供后台任务与流端点共用（后台生成
-    仍在消费，不随本端点退役）；本函数只负责 NDJSON 序列化（ensure_ascii=False
-    + 尾行换行），字节级兼容旧线协议。
-    """
-    async for event in tasks._plan_event_dicts(request):
-        yield _ndjson_line(event)
-
-
 @app.post("/api/regenerate/stream")
 async def regenerate_stream(payload: RegenRequest) -> StreamingResponse:
     """阶段/章节级重生成流式端点（NDJSON，done 必为最后一行）。
 
     事件序列（application/x-ndjson，每行一个 JSON 对象）：
     - chapterIndex 缺省（全阶段）：{"type": "phase", "index": i, "phase": {…}} 1 条，
-      phase 为 StudyPhase 的 camelCase dict（与 generate-plan 流的 phase 事件同构，
+      phase 为 StudyPhase 的 camelCase dict（与后台生成任务的 phase 事件同构，
       Rust 侧直接复用 upsert_phase）；
     - chapterIndex 指定（单章）：{"type": "chapter", "index": c,
       "phaseIndex": i, "chapter": {…}} 1 条，chapter 为 Chapter 的 camelCase dict
@@ -227,7 +132,7 @@ async def regenerate_stream(payload: RegenRequest) -> StreamingResponse:
 
     越界 phaseIndex / chapterIndex 属业务失败：不抛 4xx，走 done(error) 包络
     （code=validation）；AgentServiceError 同样翻译为 error 终态，与
-    _stream_plan_events 的捕获模式一致；意外异常不在此捕获，仍由
+    _plan_event_dicts 事件管道的捕获模式一致；意外异常不在此捕获，仍由
     Starlette 中断流。结构合法性由 Pydantic 模型兜底，不跑整计划 validators。
     """
     logger.info(
@@ -349,8 +254,7 @@ async def _ws_send(ws: WebSocket, seq: int, event: dict[str, Any]) -> None:
     await ws.send_json({"seq": seq, "event": event})
 
 
-# _ndjson_line 为 /api/generate-plan/stream 与 /api/regenerate/stream 共用的
-# 序列化 helper（regenerate 未弃用，Rust 重生成链仍在消费），故不随弃用端点打标。
+# _ndjson_line 为 /api/regenerate/stream（Rust 重生成链在用）专用的序列化 helper。
 def _ndjson_line(event: dict[str, Any]) -> str:
     """单个事件序列化为一行 NDJSON（ensure_ascii=False 保留中文原文）。"""
     return json.dumps(event, ensure_ascii=False) + "\n"

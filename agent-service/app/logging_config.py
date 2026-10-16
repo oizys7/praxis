@@ -3,7 +3,7 @@
 格式契约（与 Rust 端 `src-tauri/src/logging.rs` 双向对齐，修改需同步两端）：
 
     <ISO8601 本地时间> [<LEVEL>] [<logger 名>] <消息> [key=value ...]
-    2026-10-03T15:04:05.123+08:00 [INFO] [praxis.main] --> POST /api/generate-plan req_id=req-...
+    2026-10-03T15:04:05.123+08:00 [INFO] [praxis.main] --> POST /api/regenerate/stream req_id=req-...
 
 - 级别：config.json 的 logging.level（双端同一配置文件，默认 INFO）
 - 目录：config.json 的 logging.dir；为空时按运行数据目录常量推导
