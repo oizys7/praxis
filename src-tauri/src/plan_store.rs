@@ -524,7 +524,7 @@ pub async fn all_chapters_complete(pool: &PgPool, plan_id: Uuid) -> Result<bool,
 /// 桌面单实例语义假定：若双实例并开，清扫可能把存活实例进行中的 generating
 /// 行暂翻 failed——该实例 done 收尾会终态覆写自愈，仅列表页短暂显示 failed。
 /// 返回清扫的行数（供日志）。消费方：main.rs setup 钩子。
-pub async fn sweep_stale_generating(pool: &PgPool) -> Result<u64, AgentError> {
+pub async fn sweep_stale_generating(pool: &PgPool) -> Result<(u64, u64), AgentError> {
     let stale: Vec<Uuid> = sqlx::query_scalar(
         "UPDATE plans SET status = 'failed', updated_at = now()
          WHERE status = 'generating' RETURNING id",
@@ -541,7 +541,39 @@ pub async fn sweep_stale_generating(pool: &PgPool) -> Result<u64, AgentError> {
     if count > 0 {
         info!(count, "启动清扫：存量 generating 计划行已置 failed");
     }
-    Ok(count)
+
+    // failed 自愈（2026-10-16 裁定）：章节已全部 complete 的 failed 行
+    // （重生成补齐后旧守卫收口漏翻的历史行）翻回 complete；尚有非
+    // complete 章的真失败行保持 failed。幂等：已 complete 行不再入选。
+    let failed_rows: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM plans WHERE status = 'failed'")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| fail("扫描失败计划行", e))?;
+    let mut healed = 0u64;
+    for plan_id in failed_rows {
+        match all_chapters_complete(pool, plan_id).await {
+            Ok(true) => {
+                sqlx::query(
+                    "UPDATE plans SET status = 'complete', updated_at = now()
+                     WHERE id = $1 AND status = 'failed'",
+                )
+                .bind(plan_id)
+                .execute(pool)
+                .await
+                .map_err(|e| fail("自愈失败计划行", e))?;
+                healed += 1;
+            }
+            Ok(false) => {}
+            Err(e) => warn!(%plan_id, error = %e, "自愈判定失败，跳过该行"),
+        }
+    }
+    if healed > 0 {
+        info!(
+            healed,
+            "启动自愈：章节已全部 complete 的 failed 计划行已翻 complete"
+        );
+    }
+    Ok((count, healed))
 }
 
 /// 失败收尾（children 位）：phases/chapters 中 status='pending' 的行置 failed；
@@ -601,21 +633,24 @@ pub async fn finalize_plan(
     Ok(())
 }
 
-/// regenerate 成功收尾（任务 15 裁定的守卫语义）：done(plan) 后把计划行翻
-/// complete，但 failed 行不强推——单阶段/单章成功不改变计划级 complete 语义，
-/// 计划级收尾由后续全阶段/全章节重生成推进（已知简化，前端不依赖计划行状态展示）。
-/// generating 行（重生成期不应出现，防御性）与 complete 行（幂等重写）同样翻 complete。
-/// 消费方：commands regenerate 双命令的 done(plan) 路径（任务 15）。
+/// regenerate 成功收尾（章级口径，2026-10-16 修复）：done(plan) 后按
+/// all_chapters_complete 判定——全部章节 complete（至少一章存在且零非
+/// complete）时把计划行翻 complete，**含 failed 行**。旧守卫语义
+/// （WHERE status <> 'failed'）导致重生成补齐全部失败章节后计划行永久
+/// 卡 failed、内容却完好（2026-10-16 计划 68c1aee0 实锤）。
+/// 尚有非 complete 章（如其余 pending）时不动行状态，计划级语义仍由
+/// 后续重生成推进。消费方：commands regenerate 双命令的 done(plan) 路径。
 pub async fn finalize_regen_complete(pool: &PgPool, plan_id: Uuid) -> Result<(), AgentError> {
-    sqlx::query(
-        "UPDATE plans SET status = 'complete', updated_at = now()
-         WHERE id = $1 AND status <> 'failed'",
-    )
-    .bind(plan_id)
-    .execute(pool)
-    .await
-    .map_err(|e| fail("收尾重生成计划状态", e))?;
-    info!(%plan_id, "重生成计划行已按守卫语义收尾（failed 行保持）");
+    if !all_chapters_complete(pool, plan_id).await? {
+        info!(%plan_id, "重生成收口：尚有非 complete 章节，计划行状态保持");
+        return Ok(());
+    }
+    sqlx::query("UPDATE plans SET status = 'complete', updated_at = now() WHERE id = $1")
+        .bind(plan_id)
+        .execute(pool)
+        .await
+        .map_err(|e| fail("收尾重生成计划状态", e))?;
+    info!(%plan_id, "重生成收口：全章节 complete，计划行已置 complete");
     Ok(())
 }
 

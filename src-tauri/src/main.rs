@@ -108,12 +108,13 @@ fn main() {
                 }
                 match db::pool(&config).await {
                     Ok(pool) => {
-                        // 启动清扫（任务 22，幂等）：仅处理 generating 滑口行；
-                        // 历史伪 complete 行不启动时自动修复（用户裁定
-                        // 「错误数据不需要修复」，失败部件走详情页重生成）。
+                        // 启动清扫（幂等）：① generating 滑口行置 failed；
+                        // ② failed 自愈（2026-10-16 裁定）：章节已全部 complete
+                        // 的 failed 行（重生成补齐后旧守卫收口漏翻）翻回
+                        // complete；真失败行（尚有非 complete 章）保持 failed。
                         match plan_store::sweep_stale_generating(&pool).await {
-                            Ok(count) if count > 0 => {
-                                tracing::info!(count, "启动清扫完成：存量 generating 计划已置 failed")
+                            Ok((swept, healed)) if swept > 0 || healed > 0 => {
+                                tracing::info!(swept, healed, "启动清扫完成：generating 行置 failed / failed 全章完成行自愈")
                             }
                             Ok(_) => {}
                             Err(e) => tracing::warn!(error = %e, "启动清扫执行失败"),

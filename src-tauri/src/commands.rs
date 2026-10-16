@@ -1032,8 +1032,9 @@ impl StreamEventSink for RegenSink<'_> {
 /// ①plans 七字段 + 大纲骨架读回，重建 PlanRequest / RegenOutline；
 /// ②目标行置 pending（前端即时转「生成中」）；
 /// ③POST /api/regenerate/stream 并消费流（共享 consume_ndjson_stream 骨架）；
-/// ④done(plan) → 计划行守卫收尾（finalize_regen_complete：failed 行不强推
-/// complete，裁定 3）；done(error) → finalize_failed（pending 行翻 failed，
+/// ④done(plan) → 计划行章级收尾（finalize_regen_complete：全章节 complete
+/// 才翻 complete，含 failed 行——2026-10-16 修复重生成补齐后 failed 卡死）；
+/// done(error) → finalize_failed（pending 行翻 failed，
 /// 前端按钮恢复可点，详情刷新可见失败态）；Err（传输断/超时/流提前中断）→
 /// finalize_failed + Err 透传。收尾失败仅告警，不影响返回。
 async fn run_regen(
@@ -1185,7 +1186,7 @@ async fn run_regen(
         Err(e) => Err(e),
     };
     match &result {
-        // done(plan)：计划行守卫收尾（failed 行不强推 complete，任务 15 裁定 3）
+        // done(plan)：计划行章级收尾（全章 complete 才翻 complete，含 failed 行）
         Ok(envelope) if envelope.status == "plan" => {
             if let Err(e) = plan_store::finalize_regen_complete(&pool, plan_id).await {
                 warn!(%req_id, error = %e, "重生成计划行收尾失败");

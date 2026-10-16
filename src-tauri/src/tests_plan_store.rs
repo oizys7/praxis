@@ -1131,8 +1131,9 @@ async fn test_sweep_stale_generating_only_touches_generating(pool: PgPool) {
         .await
         .unwrap();
 
-    let swept = plan_store::sweep_stale_generating(&pool).await.unwrap();
+    let (swept, healed) = plan_store::sweep_stale_generating(&pool).await.unwrap();
     assert_eq!(swept, 1, "只应清扫 generating 行");
+    assert_eq!(healed, 0, "本例无全章 complete 的 failed 行，不应自愈");
 
     let stale_status: String = sqlx::query_scalar("SELECT status FROM plans WHERE id = $1")
         .bind(stale_id)
@@ -1155,6 +1156,143 @@ async fn test_sweep_stale_generating_only_touches_generating(pool: PgPool) {
     assert_eq!(done_status, "complete", "complete 行不应被清扫触碰");
 
     // 幂等：二次清扫无存量可清
-    let swept_again = plan_store::sweep_stale_generating(&pool).await.unwrap();
-    assert_eq!(swept_again, 0, "清扫应幂等（二次调用为空集）");
+    let (swept_again, healed_again) = plan_store::sweep_stale_generating(&pool).await.unwrap();
+    assert_eq!(
+        (swept_again, healed_again),
+        (0, 0),
+        "清扫应幂等（二次调用为空集）"
+    );
+}
+
+/// regen 收口（章级口径，2026-10-16 修复回归）：failed 行 + 全章节 complete
+/// → finalize_regen_complete 翻回 complete（旧守卫语义会永久卡 failed）
+#[sqlx::test]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
+async fn test_finalize_regen_complete_heals_failed_row(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let id = new_generating_plan(&pool).await;
+    plan_store::seed_outline(&pool, id, &sample_outline(&["阶段甲"], &[1]), &[])
+        .await
+        .unwrap();
+    // 模拟历史失败收口后的重生成补齐：行 failed、全章节 complete
+    sqlx::query("UPDATE plans SET status = 'failed' WHERE id = $1")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE chapters SET status = 'complete'
+         WHERE phase_id IN (SELECT id FROM phases WHERE plan_id = $1)",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    plan_store::finalize_regen_complete(&pool, id)
+        .await
+        .unwrap();
+
+    let status: String = sqlx::query_scalar("SELECT status FROM plans WHERE id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        status, "complete",
+        "failed 行在全章 complete 后应被收口翻正"
+    );
+}
+
+/// regen 收口（章级口径）：尚有非 complete 章（pending）时保持 failed 不动
+#[sqlx::test]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
+async fn test_finalize_regen_complete_keeps_failed_with_pending(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let id = new_generating_plan(&pool).await;
+    plan_store::seed_outline(&pool, id, &sample_outline(&["阶段甲"], &[2]), &[])
+        .await
+        .unwrap();
+    sqlx::query("UPDATE plans SET status = 'failed' WHERE id = $1")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    // 只补齐第一章，第二章仍 pending
+    sqlx::query(
+        "UPDATE chapters SET status = 'complete' WHERE id IN (
+             SELECT c.id FROM chapters c JOIN phases p ON c.phase_id = p.id
+             WHERE p.plan_id = $1 ORDER BY c.idx LIMIT 1)",
+    )
+    .bind(id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    plan_store::finalize_regen_complete(&pool, id)
+        .await
+        .unwrap();
+
+    let status: String = sqlx::query_scalar("SELECT status FROM plans WHERE id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "failed", "尚有 pending 章时收口不应翻转");
+}
+
+/// 启动自愈（2026-10-16 裁定）：failed 且全章节 complete 的行翻 complete；
+/// 真 failed 行（章未齐）保持 failed；complete/generating 对照不受影响
+#[sqlx::test]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
+async fn test_sweep_heals_failed_with_all_chapters_complete(pool: PgPool) {
+    prepare_schema(&pool).await;
+
+    // 应自愈行：failed + 全章 complete
+    let heal_id = new_generating_plan(&pool).await;
+    plan_store::seed_outline(&pool, heal_id, &sample_outline(&["阶段甲"], &[1]), &[])
+        .await
+        .unwrap();
+    sqlx::query("UPDATE plans SET status = 'failed' WHERE id = $1")
+        .bind(heal_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "UPDATE chapters SET status = 'complete'
+         WHERE phase_id IN (SELECT id FROM phases WHERE plan_id = $1)",
+    )
+    .bind(heal_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 真失败对照行：failed + 章 pending（保持 failed）
+    let keep_id = new_generating_plan(&pool).await;
+    plan_store::seed_outline(&pool, keep_id, &sample_outline(&["阶段乙"], &[1]), &[])
+        .await
+        .unwrap();
+    sqlx::query("UPDATE plans SET status = 'failed' WHERE id = $1")
+        .bind(keep_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let (swept, healed) = plan_store::sweep_stale_generating(&pool).await.unwrap();
+    assert_eq!(swept, 0, "无 generating 行");
+    assert_eq!(healed, 1, "只应自愈全章 complete 的 failed 行");
+
+    let heal_status: String = sqlx::query_scalar("SELECT status FROM plans WHERE id = $1")
+        .bind(heal_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(heal_status, "complete", "自愈行应翻 complete");
+
+    let keep_status: String = sqlx::query_scalar("SELECT status FROM plans WHERE id = $1")
+        .bind(keep_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(keep_status, "failed", "真失败行应保持 failed");
 }
