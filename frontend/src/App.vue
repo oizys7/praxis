@@ -1,6 +1,13 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, provide, ref, shallowRef, watch } from "vue";
-import { BookOpen, Moon, Settings, Sun } from "lucide-vue-next";
+import {
+  BookOpen,
+  CalendarCheck,
+  Moon,
+  NotebookPen,
+  Settings,
+  Sun,
+} from "lucide-vue-next";
 import { useAgent } from "@/composables/useAgent";
 import {
   disposeProgressListener,
@@ -8,13 +15,15 @@ import {
 } from "@/composables/useGenerationProgress";
 import { Badge } from "@/components/ui/badge";
 import AppSidebar, { type MenuItem } from "@/components/AppSidebar.vue";
+import CalendarView from "@/components/CalendarView.vue";
+import NotesView from "@/components/NotesView.vue";
 import PlanWorkbench from "@/components/PlanWorkbench.vue";
 import SettingsPage from "@/components/Settings.vue";
 
 /**
  * App：页面骨架（保持精简——只保留 header 与 main 两块）。
  * - 上：顶部栏（品牌 + Agent 在线徽标）
- * - 下：左侧菜单栏 + 右侧页面内容（学习计划工作台 / 设置页）
+ * - 下：左侧菜单栏 + 右侧页面内容（学习计划 / 打卡日历 / 笔记生成 / 设置）
  * - 「新建计划 / 生成 / 结果 / 历史查看」等业务与视图态全部收敛在
  *   PlanWorkbench.vue；本文件只负责页面级路由与全局监听生命周期
  * （全局 'plan-progress' 监听随 App 生死——页面内导航不退出订阅）。
@@ -24,8 +33,16 @@ const { pingAgent } = useAgent();
 /** Agent 服务在线状态：null = 检测中 */
 const agentOnline = ref<boolean | null>(null);
 
+/** 页面唯一标识：与 MENU_ITEMS 的 id 一一对应 */
+type PageId = "plan" | "calendar" | "notes" | "settings";
+
 /** 当前激活页面：侧栏菜单切换 */
-const activePage = ref("plan");
+const activePage = ref<PageId>("plan");
+
+/** 侧栏回传的菜单 id 收窄为页面联合（AppSidebar 以宽型 string 维护 id，菜单项受控常量，收窄安全） */
+function switchPage(id: string) {
+  activePage.value = id as PageId;
+}
 
 /** 侧栏折叠状态（localStorage 持久化，重启应用后保持） */
 const sidebarCollapsed = ref(
@@ -38,6 +55,8 @@ watch(sidebarCollapsed, (v) => {
 /** 主导航菜单（新增页面时在此追加，并在内容区按 activePage 渲染对应区域） */
 const MENU_ITEMS: MenuItem[] = [
   { id: "plan", label: "学习计划", icon: BookOpen },
+  { id: "calendar", label: "打卡日历", icon: CalendarCheck },
+  { id: "notes", label: "笔记生成", icon: NotebookPen },
   { id: "settings", label: "设置", icon: Settings },
 ];
 
@@ -123,7 +142,8 @@ onUnmounted(() => disposeProgressListener());
     <!-- 主体：左侧菜单栏 + 右侧页面内容（滚动收敛在内容区内部，侧栏独立） -->
     <div class="flex min-h-0 flex-1">
       <AppSidebar
-        v-model="activePage"
+        :model-value="activePage"
+        @update:model-value="switchPage"
         v-model:collapsed="sidebarCollapsed"
         :items="MENU_ITEMS"
       />
@@ -135,6 +155,22 @@ onUnmounted(() => disposeProgressListener());
         class="min-w-0 flex-1 overflow-y-auto"
       >
         <PlanWorkbench />
+      </main>
+
+      <!-- 打卡日历页：视觉版式先行（mock 数据，功能暂不实现） -->
+      <main
+        v-else-if="activePage === 'calendar'"
+        class="min-w-0 flex-1 overflow-y-auto"
+      >
+        <CalendarView />
+      </main>
+
+      <!-- 笔记生成页：空占位 -->
+      <main
+        v-else-if="activePage === 'notes'"
+        class="min-w-0 flex-1 overflow-y-auto"
+      >
+        <NotesView />
       </main>
 
       <!-- 设置页：Agent 运行配置（保存即写盘 + 热加载） -->
