@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, inject, ref, watch, type ShallowRef } from "vue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -36,6 +36,8 @@ const props = defineProps<{
   defaultOpen?: boolean;
   /** 历史计划 id：重生成入口依赖，缺省（新生成结果）不显示按钮 */
   planId?: string;
+  /** 行级生成状态（generating/failed/complete）：驱动「生成中」徽章与重生成抑制 */
+  rowStatus?: string;
 }>();
 
 /** 子组件（Section）重生成完成：刷新后的计划整体上抛供调用方替换 */
@@ -52,17 +54,38 @@ const statusBadge = computed<{
     case "failed":
       return { label: "✗ 失败", variant: "destructive" };
     case "pending":
-      return { label: "◌ 未生成", variant: "secondary" };
+      // 行还在 generating 时 pending ≠ 未开始，而是「轮到/正在生成」（反馈③区分）
+      return props.rowStatus === "generating"
+        ? { label: "⟳ 生成中", variant: "secondary" }
+        : { label: "◌ 未生成", variant: "secondary" };
     default:
       return null;
   }
 });
 
-/** 本阶段重生成按钮：仅历史详情（有 planId）且目标处于 failed/pending 态时可用 */
+/** 本阶段重生成按钮：仅历史详情（有 planId）且目标处于 failed/pending 态
+ * 时可用；行仍在 generating 时不开放（与后台生成竞争） */
 const canRegenerate = computed(
   () =>
     !!props.planId &&
+    props.rowStatus !== "generating" &&
     (props.phase.status === "failed" || props.phase.status === "pending"),
+);
+
+/** 阶段折叠态受控（目录可驱动正文展开，反馈①）：初值取 default-open，
+ * 目录命令信箱（PlanWorkbench 悬浮目录 → provide）下发阶段/章节命令时
+ * 展开自身；用户在正文折叠后目录点阶段即重新展开——目录与正文互为镜像。 */
+const open = ref(props.defaultOpen ?? true);
+const tocCommands = inject<ShallowRef<{
+  phase?: number;
+  chapter?: { p: number; c: number };
+  seq: number;
+} | null> | null>("planTocCommands", null);
+watch(
+  () => tocCommands?.value,
+  (cmd) => {
+    if (cmd?.phase === props.index) open.value = true;
+  },
 );
 
 /** 本组件自身是否正在重生成（spinner；在飞锁另有模块级 regenScopes） */
@@ -139,7 +162,8 @@ const sections = computed(() => [
 </script>
 
 <template>
-  <Collapsible :default-open="props.defaultOpen">
+  <!-- 折叠受控开态（目录命令可驱动展开，反馈①） -->
+  <Collapsible :open="open" @update:open="(v) => (open = v)">
     <Card class="overflow-hidden">
       <!-- 头部：折叠触发器（标题/箭头，主体行可点击）+ 右侧状态徽标与重生成按钮 -->
       <div class="flex items-center gap-2">
@@ -150,12 +174,14 @@ const sections = computed(() => [
           >
             <div class="flex min-w-0 items-center gap-3">
               <span
-                class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-sm font-bold text-primary"
+                class="font-display flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-primary/10 text-sm font-semibold text-primary"
               >
                 {{ index + 1 }}
               </span>
               <div class="min-w-0">
-                <div class="truncate font-semibold leading-tight">
+                <div
+                  class="font-display truncate text-[15px] font-semibold leading-tight"
+                >
                   {{ phase.name }}
                 </div>
                 <div
@@ -169,6 +195,7 @@ const sections = computed(() => [
             <!-- 展开状态指示箭头：group-data-[state=open] 由 Collapsible 根元素驱动 -->
             <svg
               class="h-4 w-4 shrink-0 text-muted-foreground transition-transform duration-200 group-data-[state=open]:rotate-180"
+              aria-hidden="true"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -238,6 +265,7 @@ const sections = computed(() => [
                 :plan-id="planId"
                 :phase-index="index"
                 :chapter-index="ci"
+                :row-status="props.rowStatus"
                 @refreshed="(p) => emit('refreshed', p)"
               />
             </div>

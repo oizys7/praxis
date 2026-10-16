@@ -75,7 +75,9 @@ const resourceTypeLabels: Record<string, string> = {
 </script>
 
 <template>
-  <div class="animate-fade-in-up space-y-4">
+  <!-- 动效收敛：整根不再逐卡满 fade-in（AI 页面感通病），
+       唯一非用户触发动效留给 hero 标题一次性入场 -->
+  <div class="space-y-4">
     <!--
       行级状态兜底提示条（任务 25）：数据源是 get_plan 回读的 PlanRecord.status
       （rowStatus，wire 平铺字段与 record.plan 平级行），数据路径可达——
@@ -110,11 +112,15 @@ const resourceTypeLabels: Record<string, string> = {
     <!-- 计划概览（反馈③整卡一体化：渐变 hero + 元信息行 + 概要同层，
          与下方目录/阶段卡共用一套节奏） -->
     <Card class="overflow-hidden">
-      <div
-        class="border-b bg-gradient-to-br from-primary/[0.07] via-transparent to-primary/[0.05] p-6"
-      >
+      <!-- 音书页头：沙色纸带取代渐变洗染；标题 serif（书页隐喻），
+           唯一编排式入场动效挂在这行字上 -->
+      <div class="border-b bg-secondary/40 p-6">
         <div class="flex flex-wrap items-start justify-between gap-3">
-          <h1 class="text-xl font-bold tracking-tight">{{ plan.title }}</h1>
+          <h1
+            class="animate-fade-in-up font-display text-2xl font-semibold tracking-tight"
+          >
+            {{ plan.title }}
+          </h1>
           <div class="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">
               共 {{ plan.phases.length }} 阶段 / {{ chapterTotal }} 章节
@@ -161,6 +167,7 @@ const resourceTypeLabels: Record<string, string> = {
           :phase="phase"
           :index="i"
           :plan-id="planId"
+          :row-status="rowStatus"
           :default-open="i === 0"
           @refreshed="(p) => emit('refreshed', p)"
         />

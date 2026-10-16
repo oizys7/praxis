@@ -9,9 +9,8 @@ defineProps<{ questions: string[] }>();
 </script>
 
 <template>
-  <Card
-    class="animate-fade-in-up border-amber-300/60 bg-amber-50/50 dark:bg-amber-950/20"
-  >
+  <!-- 语义归拢：澄清不是警示（amber 双硬编码弃用），而是主流程的补充邀约，用墨蓝 -->
+  <Card class="border-primary/30 bg-primary/5">
     <CardHeader>
       <CardTitle class="flex items-center gap-2 text-base">
         <span>🤔</span>

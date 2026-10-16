@@ -31,6 +31,8 @@ const props = withDefaults(
     :class="
       cn(
         buttonVariants({ variant: props.variant, size: props.size }),
+        // Tailwind 3 Preflight 不给 button pointer 游标，基类统一补齐
+        'cursor-pointer',
         props.class,
       )
     "

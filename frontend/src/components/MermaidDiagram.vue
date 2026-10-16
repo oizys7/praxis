@@ -67,6 +67,8 @@ watch(() => props.code, render);
     <!-- eslint-disable-next-line vue/no-v-html：mermaid 产出的受信 SVG -->
     <div
       v-if="svg"
+      role="img"
+      :aria-label="props.caption || 'Mermaid 图示'"
       class="flex justify-center overflow-x-auto [&_svg]:h-auto [&_svg]:max-w-full"
       v-html="svg"
     />

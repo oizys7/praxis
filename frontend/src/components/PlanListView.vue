@@ -1,6 +1,14 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from "vue";
-import { Plus, RefreshCw, Search, Star, Trash2 } from "lucide-vue-next";
+import {
+  BookOpen,
+  ChevronRight,
+  Plus,
+  RefreshCw,
+  Search,
+  Star,
+  Trash2,
+} from "lucide-vue-next";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -122,6 +130,10 @@ function formatTime(iso: string): string {
         />
         <Input
           v-model="search"
+          type="search"
+          name="plan-search"
+          aria-label="搜索计划"
+          autocomplete="off"
           placeholder="搜索标题 / 目标…"
           class="w-64 pl-9"
         />
@@ -158,7 +170,7 @@ function formatTime(iso: string): string {
     <!-- 空态 -->
     <Card v-else-if="!list.length" class="border-dashed">
       <CardContent class="flex flex-col items-center gap-2 py-16 text-center">
-        <div class="text-4xl">🗂️</div>
+        <BookOpen class="h-9 w-9 text-primary/50" aria-hidden="true" />
         <p class="font-medium">
           {{ search ? "没有匹配的计划" : "还没有保存的计划" }}
         </p>
@@ -172,63 +184,56 @@ function formatTime(iso: string): string {
       </CardContent>
     </Card>
 
-    <!-- 计划卡片列表 -->
-    <div v-else class="grid gap-4 md:grid-cols-2">
-      <Card
-        v-for="item in list"
+    <!-- 计划列表：紧凑索引行（非卡网格）。整行可点进详情，删除/收藏
+         为行内次级操作（click.stop 防冒泡）；操作钮不靠 hover 隐藏
+         （a11y），仅淡显，键盘 focus-within 同样全显 -->
+    <div v-else class="overflow-hidden rounded-xl border bg-card">
+      <div
+        v-for="(item, ri) in list"
         :key="item.id"
-        class="animate-fade-in-up cursor-pointer transition-all hover:-translate-y-0.5 hover:border-primary/30 hover:shadow-lg"
+        class="group flex cursor-pointer items-center gap-3 px-4 py-3.5 transition-colors hover:bg-secondary/50"
+        :class="ri > 0 ? 'border-t' : ''"
+        role="button"
+        tabindex="0"
+        :aria-label="`查看计划：${item.title}`"
+        @click="onOpen(item)"
+        @keydown.enter="onOpen(item)"
+        @keydown.space.prevent="onOpen(item)"
       >
-        <!-- 反馈①：Card 首行文字此前吃不到内边距（CardContent 默认 p-6 pt-0，
-             该卡无 CardHeader 补顶距），显式 p-6 拉回四边对称 -->
-        <CardContent class="p-6">
-          <div class="flex items-start justify-between gap-2">
-            <div class="min-w-0">
-              <div class="flex items-center gap-1.5">
-                <Star
-                  v-if="item.favorite"
-                  class="h-4 w-4 shrink-0 fill-amber-400 text-amber-400"
-                />
-                <h3 class="truncate font-semibold">{{ item.title }}</h3>
-              </div>
-              <p class="mt-0.5 truncate text-xs text-muted-foreground">
-                🎯 {{ item.goal }}
-              </p>
-            </div>
-            <button
-              class="shrink-0 text-muted-foreground transition-colors hover:text-amber-500"
-              :class="{ 'text-amber-400': item.favorite }"
-              title="收藏"
-              @click="onToggleFavorite(item)"
-            >
-              <Star
-                class="h-4 w-4"
-                :class="{ 'fill-amber-400': item.favorite }"
-              />
-            </button>
-          </div>
-
-          <p class="line-clamp-2 min-h-10 text-sm text-muted-foreground">
-            {{ item.overview || "（暂无概述）" }}
+        <!-- 收藏星：激活态书页ecessary色（.stub保留 amber 语义） -->
+        <button
+          class="shrink-0 text-muted-foreground/50 transition-colors hover:text-amber-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          :class="item.favorite ? 'text-amber-400 hover:text-amber-500' : ''"
+          :title="item.favorite ? '取消收藏' : '收藏'"
+          :aria-label="
+            item.favorite ? `取消收藏：${item.title}` : `收藏：${item.title}`
+          "
+          :aria-pressed="item.favorite"
+          @click.stop="onToggleFavorite(item)"
+        >
+          <Star class="h-4 w-4" :class="{ 'fill-amber-400': item.favorite }" />
+        </button>
+        <!-- 主列：标题 + 目标 -->
+        <div class="min-w-0 flex-1">
+          <h3
+            class="font-display truncate text-[15px] font-semibold leading-tight"
+          >
+            {{ item.title }}
+          </h3>
+          <p class="mt-0.5 truncate text-xs text-muted-foreground">
+            {{ item.goal }}
           </p>
-
-          <div class="flex flex-wrap items-center gap-2">
-            <!--
-              行级三态徽章（任务 25）：两条来源取并集，不冲突——
-              ① store 实时判据 isPlanGenerating：本会话进度流观测未终态的行
-                （事件最早，终态后立刻收口）；
-              ② wire 判据 item.status：Rust list_plans 回传的数据库行级
-                status（generating | complete | failed，跨会话权威——应用
-                重启后 store 无观测，②单独覆盖；异秒差（行已终态/收尾未刷新）
-                由 terminalCounter 终态信号触发 refresh 拉新列表收口）。
-              complete 不加标（点击查看即见内容，无需噪声）。
-            -->
-            <!--
-              审查 Finding-2：wire failed 优先于 store 观测——行已终态失败但
-              store 终态最长滞后 ~2 分钟（静默对账窗口）时不显示双徽章
-            -->
+        </div>
+        <!-- 元信息列（窄屏隐藏避免挤断行） -->
+        <div class="hidden shrink-0 items-center gap-2 sm:flex">
+          <!-- 异步状态徽标套常驻 live region（display:contents 不动布局），
+               出现/撤除时读屏公告。判据 wire 权威 + store 实时（2026-10-
+               16 修复「实际已失败仍显示生成中」）：wire 已出终态时 store
+               挂账不再嵭宾夺主，仅 wire 仍 generating 且本会话观测同真
+               时才实时显示 -->
+          <div aria-live="polite" class="contents">
             <Badge
-              v-if="isPlanGenerating(item.id) && item.status !== 'failed'"
+              v-if="item.status === 'generating' && isPlanGenerating(item.id)"
               variant="secondary"
             >
               <span
@@ -236,36 +241,59 @@ function formatTime(iso: string): string {
               />
               生成中
             </Badge>
-            <!-- 生成失败徽标：行级终态 failed（收尾零内容/清扫翻牌/生成中止） -->
             <Badge v-if="item.status === 'failed'" variant="destructive">
               生成失败
             </Badge>
-            <Badge v-if="item.level" variant="secondary">
-              {{ levelLabel(item.level) }}
-            </Badge>
-            <Badge v-if="item.weeks" variant="outline">
-              {{ item.weeks }} 周
-            </Badge>
-            <span class="ml-auto text-xs text-muted-foreground">
-              {{ formatTime(item.createdAt) }}
-            </span>
           </div>
-
-          <div class="flex justify-end gap-2 border-t pt-3">
-            <Button variant="destructive" size="sm" @click="onDelete(item)">
-              <Trash2 class="mr-1 h-3.5 w-3.5" />
-              删除
-            </Button>
-            <Button
-              size="sm"
-              :disabled="openingId === item.id"
-              @click="onOpen(item)"
-            >
-              {{ openingId === item.id ? "加载中…" : "查看" }}
-            </Button>
-          </div>
-        </CardContent>
-      </Card>
+          <!-- 列对齐：数字位数不同（8/12 周）会使左右行元信息左缘漂移，
+               固定最小宽 + 居中 + 等宽数字保证同一列恒定 -->
+          <Badge
+            v-if="item.level"
+            variant="secondary"
+            class="min-w-20 justify-center"
+          >
+            {{ levelLabel(item.level) }}
+          </Badge>
+          <Badge
+            v-if="item.weeks"
+            variant="outline"
+            class="min-w-16 justify-center tabular-nums"
+            >{{ item.weeks }} 周</Badge
+          >
+          <span class="text-xs text-muted-foreground tabular-nums">{{
+            formatTime(item.createdAt)
+          }}</span>
+        </div>
+        <!-- 行尾操作：淡显 + focus-within 全显；删险用窗.confirm 兼容行内 -->
+        <div
+          class="flex shrink-0 items-center gap-0.5 opacity-40 transition-opacity focus-within:opacity-100 group-hover:opacity-100"
+        >
+          <Button
+            variant="ghost"
+            size="sm"
+            class="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
+            :title="`删除：${item.title}`"
+            :aria-label="`删除：${item.title}`"
+            @click.stop="onDelete(item)"
+          >
+            <Trash2 class="h-4 w-4" />
+          </Button>
+          <span
+            v-if="openingId === item.id"
+            class="flex h-8 w-8 items-center justify-center"
+            aria-live="polite"
+          >
+            <span
+              class="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent"
+            />
+          </span>
+          <ChevronRight
+            v-else
+            class="h-5 w-5 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary"
+            aria-hidden="true"
+          />
+        </div>
+      </div>
     </div>
   </div>
 </template>

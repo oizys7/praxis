@@ -16,8 +16,20 @@ import MermaidDiagram from "@/components/MermaidDiagram.vue";
  */
 
 type ContentSegment =
-  | { kind: "html"; html: string }
-  | { kind: "mermaid"; code: string };
+  { kind: "html"; html: string } | { kind: "mermaid"; code: string };
+
+/**
+ * 图片条款兑底：LLM 产出的内嵌 <img> 统一懒加载 + 异步解码；
+ * 真实尺寸未知，溢出/CLS 交给容器 max-w/h-auto 兜底（见模板变体）
+ */
+function lazyImages(node: Node) {
+  const el = node as Element;
+  if (el.tagName === "IMG") {
+    el.setAttribute("loading", "lazy");
+    el.setAttribute("decoding", "async");
+  }
+}
+DOMPurify.addHook("afterSanitizeAttributes", lazyImages);
 
 /** 同步 marked 解析 + DOMPurify 消毒：进入 v-html 的 HTML 必经此函数 */
 function renderHtml(markdown: string): string {
@@ -67,7 +79,7 @@ const segments = computed<ContentSegment[]>(() =>
       <!-- eslint-disable-next-line vue/no-v-html：DOMPurify 消毒红线已过 -->
       <div
         v-if="segment.kind === 'html'"
-        class="max-w-none text-sm leading-relaxed text-muted-foreground [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:text-xs [&_h1]:mb-2 [&_h1]:mt-4 [&_h1]:text-base [&_h1]:font-semibold [&_h1]:text-foreground [&_h2]:mb-2 [&_h2]:mt-4 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:text-foreground [&_h3]:mb-1 [&_h3]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-foreground [&_li]:my-1 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-2 [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-muted [&_pre]:p-2 [&_pre]:text-xs [&_strong]:font-semibold [&_strong]:text-foreground [&_ul]:list-disc [&_ul]:pl-6"
+        class="max-w-none text-[15px] leading-[1.9] text-foreground/90 [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:text-xs [&_h1]:mb-2 [&_h1]:mt-4 [&_h1]:text-base [&_h1]:font-semibold [&_h1]:text-foreground [&_h2]:mb-2 [&_h2]:mt-4 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:text-foreground [&_h3]:mb-1 [&_h3]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-foreground [&_img]:h-auto [&_img]:max-w-full [&_img]:rounded [&_li]:my-1 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-2.5 [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-muted [&_pre]:p-2 [&_pre]:text-xs [&_strong]:font-semibold [&_strong]:text-foreground [&_ul]:list-disc [&_ul]:pl-6 [&>p]:indent-[2em]"
         v-html="segment.html"
       />
       <MermaidDiagram v-else :code="segment.code" />

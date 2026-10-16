@@ -89,7 +89,7 @@ function onSubmit() {
 
 <template>
   <div class="mx-auto w-full max-w-6xl px-6 py-8">
-    <Card class="animate-fade-in-up">
+    <Card>
       <CardHeader>
         <CardTitle>设置</CardTitle>
         <CardDescription>
@@ -159,7 +159,7 @@ function onSubmit() {
             </p>
           </div>
 
-          <!-- 离线演示模式 -->
+          <!-- 离线演示模式（Label for= 已达成标签可点） -->
           <div class="flex items-center gap-2">
             <input
               id="mock"
@@ -182,15 +182,18 @@ function onSubmit() {
               保存并热加载
             </Button>
 
-            <Badge v-if="saveNotice?.kind === 'ok'" variant="success">
-              ✓ {{ saveNotice.text }}
-            </Badge>
-            <Badge
-              v-else-if="saveNotice?.kind === 'warn'"
-              variant="destructive"
-            >
-              {{ saveNotice.text }}
-            </Badge>
+            <!-- 异步保存结果：常驻 live region（display: contents 不影响布局），内容突变时读屏公告 -->
+            <div aria-live="polite" class="contents">
+              <Badge v-if="saveNotice?.kind === 'ok'" variant="success">
+                ✓ {{ saveNotice.text }}
+              </Badge>
+              <Badge
+                v-else-if="saveNotice?.kind === 'warn'"
+                variant="destructive"
+              >
+                {{ saveNotice.text }}
+              </Badge>
+            </div>
           </div>
         </form>
       </CardContent>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, inject, ref, watch, type ShallowRef } from "vue";
 import MarkdownContent from "@/components/MarkdownContent.vue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -26,6 +26,8 @@ const props = defineProps<{
   phaseIndex?: number;
   /** 章节索引（0-based，重生成命令参数） */
   chapterIndex?: number;
+  /** 行级生成状态（generating/failed/complete）：驱动「生成中」徽章与重生成抑制 */
+  rowStatus?: string;
 }>();
 
 /** 重生成完成：刷新后的计划整体上抛供调用方替换 */
@@ -40,17 +42,41 @@ const statusBadge = computed<{
     case "failed":
       return { label: "✗ 失败", variant: "destructive" };
     case "pending":
-      return { label: "◌ 未生成", variant: "secondary" };
+      // 行还在 generating 时 pending ≠ 未开始，而是「正在生成本章节」（反馈③区分）
+      return props.rowStatus === "generating"
+        ? { label: "⟳ 生成中", variant: "secondary" }
+        : { label: "◌ 未生成", variant: "secondary" };
     default:
       return null;
   }
 });
 
-/** 本章节重生成按钮：仅历史详情（有 planId）且目标处于 failed/pending 态时可用 */
+/** 本章节重生成按钮：仅历史详情（有 planId）且目标处于 failed/pending 态时
+ * 可用；行仍在 generating 时不开放（与后台生成竞争） */
 const canRegenerate = computed(
   () =>
     !!props.planId &&
+    props.rowStatus !== "generating" &&
     (props.chapter.status === "failed" || props.chapter.status === "pending"),
+);
+
+/** 目录命令信箱（悬浮目录 → provide）：点章节时确保本章节正文展开（反馈①） */
+const tocCommands = inject<ShallowRef<{
+  phase?: number;
+  chapter?: { p: number; c: number };
+  seq: number;
+} | null> | null>("planTocCommands", null);
+watch(
+  () => tocCommands?.value,
+  (cmd) => {
+    if (
+      cmd?.chapter &&
+      cmd.chapter.p === props.phaseIndex &&
+      cmd.chapter.c === props.chapterIndex
+    ) {
+      collapsed.value = false;
+    }
+  },
 );
 
 /**
@@ -127,6 +153,7 @@ const collapsed = ref(false);
         <svg
           class="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200"
           :class="collapsed ? '' : 'rotate-180'"
+          aria-hidden="true"
           viewBox="0 0 24 24"
           fill="none"
           stroke="currentColor"

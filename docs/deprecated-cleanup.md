@@ -56,3 +56,14 @@
 4. 数据项（plan_json 列）放最后一轮：确认线上旧行已读完（历史 plan_json 行清库）后
    再删列与迁移语句。
 5. 收尾删除本台账文件。
+
+## 重设计（自习室纸面）新增前端孤儿 —— v1 清理（随 G1 一并删）
+
+重设计后源树零 `dark:` 变体与零 `animate-in/out` 工具类引用，以下三项成孤儿：
+
+1. `frontend/src/assets/index.css` → `.dark` 暗色变量组整块
+2. `frontend/tailwind.config.js` → `darkMode: ["class"]` 行
+3. `frontend/tailwind.config.js` → `plugins: [animate]`（tailwindcss-animate 依赖随之可摘）
+
+删除时同步摘 package.json devDependency `tailwindcss-animate`。
+保留不动：`fade-in-up` keyframes（唯一消费方 = PlanResult hero 标题，存活）。

@@ -2,6 +2,8 @@ import animate from "tailwindcss-animate";
 
 /** @type {import('tailwindcss').Config} */
 export default {
+  // [v1 清理] 重设计后源树零 dark: 引用，暗色分支成孤儿（index.css .dark 同批），
+  // 删此行 + .dark 块 +下方 plugins 行（v0.1 G1 清理）
   darkMode: ["class"],
   content: ["./index.html", "./src/**/*.{vue,js,ts,jsx,tsx}"],
   theme: {
@@ -46,6 +48,21 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+        success: {
+          DEFAULT: "hsl(var(--success))",
+          foreground: "hsl(40 33% 98%)",
+        },
+      },
+      fontFamily: {
+        /* 书页标题：思源宋体优先，本机宋体兑底，全文仅用于标题角色 */
+        display: [
+          "Noto Serif SC",
+          "Source Han Serif SC",
+          "Songti SC",
+          "SimSun",
+          "Georgia",
+          "serif",
+        ],
       },
       borderRadius: {
         lg: "var(--radius)",
@@ -66,5 +83,6 @@ export default {
       },
     },
   },
+  // [v1 清理] 源树零 animate-in/out 工具类引用，tailwindcss-animate 成孤儿，删除随 G1
   plugins: [animate],
 };
