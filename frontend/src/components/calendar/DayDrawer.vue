@@ -4,8 +4,7 @@
  * - title 当天日期（衬线 font-display）+ 各计划分组的当日分配章节清单
  *   （阶段名 + 章节名），每条带完成徽章（✓ 已完成 / ◌ 未完成，
  *   口径 = 章 status=complete）
- * - 每组头部「编辑学习日」次级按钮 → 内嵌周几 chip 群（初始值 = 该计划
- *   studyDays），保存经宿主调 set_plan_study_days 后触发重算
+ * - 每组头部显示每周学习日（只读小字；编辑入口在日历页左侧计划进度面板）
  * - 每组尾部「当日已学」checkbox：打卡独立于章节完成（Task E 双语义位），
  *   切换经宿主调 set_study_day_mark 落库（幂等）
  * - 交互契约：Esc 关闭 + 点击遮罩关闭 + 开启时 focus 移入抽屉
@@ -13,10 +12,8 @@
  * - 数据全部来自宿主注入的真计划分配（useStudyAllocation 纯函数产出）
  */
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
-import { CalendarDays, Check, ChevronDown, Circle, X } from "lucide-vue-next";
+import { Check, Circle, X } from "lucide-vue-next";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { normalizeStudyDays } from "@/composables/useStudyAllocation";
 
 /** 单个计划当日的分配条目 */
 export interface DrawerAssignment {
@@ -50,16 +47,11 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: "close"): void;
   (e: "toggle-mark", planId: string, done: boolean): void;
-  (e: "save-study-days", planId: string, days: number[]): void;
   /** 跳转学习计划详情（组头计划名点击） */
   (e: "open-plan", planId: string): void;
 }>();
 
 const panelRef = ref<HTMLElement | null>(null);
-
-/** 学习日编辑态：正在编辑的计划 id + 草稿数组（null = 收起） */
-const editingPlanId = ref<string | null>(null);
-const draftDays = ref<number[]>([]);
 
 /** 打卡在飞的 planId 集合（checkbox 禁用防抖） */
 const markingIds = ref<Set<string>>(new Set());
@@ -89,32 +81,6 @@ const doneCount = computed(() =>
   ),
 );
 
-/** 进入/退出某计划的学习日编辑态 */
-function startEditStudyDays(group: DrawerPlanGroup) {
-  editingPlanId.value = group.planId;
-  draftDays.value = normalizeStudyDays(group.studyDays);
-}
-function cancelEditStudyDays() {
-  editingPlanId.value = null;
-  draftDays.value = [];
-}
-function toggleDraftDay(day: number) {
-  const idx = draftDays.value.indexOf(day);
-  if (idx >= 0) {
-    // 至少保留一个学习日（与 Rust/Python 校验同语义，前置拦截）
-    if (draftDays.value.length === 1) return;
-    draftDays.value.splice(idx, 1);
-  } else {
-    draftDays.value.push(day);
-    draftDays.value.sort((a, b) => a - b);
-  }
-}
-function submitStudyDays(group: DrawerPlanGroup) {
-  if (props.saving) return;
-  emit("save-study-days", group.planId, [...draftDays.value]);
-  cancelEditStudyDays();
-}
-
 /** 打卡切换（在飞由宿主回写 marked 后自然同步；这里仅禁用本组控件） */
 function onToggleMark(group: DrawerPlanGroup, done: boolean) {
   if (markingIds.value.has(group.planId) || props.saving) return;
@@ -129,9 +95,7 @@ function settleMark(planId: string) {
 }
 defineExpose({ settleMark });
 
-/** 抽屉关闭时复位编辑态 */
 function requestClose() {
-  cancelEditStudyDays();
   emit("close");
 }
 
@@ -152,7 +116,6 @@ watch(
       void nextTick(() => panelRef.value?.focus());
     } else {
       document.removeEventListener("keydown", onKeydown);
-      cancelEditStudyDays();
     }
   },
 );
@@ -217,7 +180,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
             class="rounded-lg border border-border"
             :aria-label="`${group.planTitle} 当日安排`"
           >
-            <!-- 组头：计划名 + 编辑学习日 -->
+            <!-- 组头：计划名（可点跳详情） + 每周学习日只读小字 -->
             <div
               class="flex items-center justify-between gap-3 border-b border-border px-4 py-3"
             >
@@ -230,77 +193,14 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
               >
                 {{ group.planTitle }}
               </button>
-              <Button
-                variant="ghost"
-                size="sm"
-                type="button"
-                class="h-7 shrink-0 gap-1 px-2 text-xs text-muted-foreground"
-                :aria-expanded="editingPlanId === group.planId"
-                @click="
-                  editingPlanId === group.planId
-                    ? cancelEditStudyDays()
-                    : startEditStudyDays(group)
-                "
+              <span
+                class="shrink-0 text-xs tabular-nums text-muted-foreground"
+                :aria-label="`${group.planTitle} 每周学习日`"
               >
-                <CalendarDays class="h-3.5 w-3.5" aria-hidden="true" />
-                编辑学习日
-                <ChevronDown
-                  class="h-3 w-3 transition-transform duration-200"
-                  :class="editingPlanId === group.planId ? 'rotate-180' : ''"
-                  aria-hidden="true"
-                />
-              </Button>
-            </div>
-
-            <!-- 学习日编辑（内嵌展开） -->
-            <div
-              v-if="editingPlanId === group.planId"
-              class="space-y-3 border-b border-border bg-accent/30 px-4 py-3"
-            >
-              <p class="text-xs text-muted-foreground">
-                每周学习日（重新排布该计划的日历安排）
-              </p>
-              <div
-                class="flex flex-wrap gap-1.5"
-                role="group"
-                aria-label="每周学习日选择"
-              >
-                <button
-                  v-for="(label, i) in WEEKDAY_LABELS"
-                  :key="label"
-                  type="button"
-                  class="rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  :aria-pressed="draftDays.includes(i + 1)"
-                  @click="toggleDraftDay(i + 1)"
-                >
-                  <Badge
-                    :variant="draftDays.includes(i + 1) ? 'default' : 'outline'"
-                    class="cursor-pointer select-none px-2 transition-opacity hover:opacity-80"
-                  >
-                    周{{ label }}
-                  </Badge>
-                </button>
-              </div>
-              <div class="flex justify-end gap-2">
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  type="button"
-                  class="h-7 text-xs"
-                  @click="cancelEditStudyDays"
-                >
-                  取消
-                </Button>
-                <Button
-                  size="sm"
-                  type="button"
-                  class="h-7 text-xs"
-                  :disabled="saving"
-                  @click="submitStudyDays(group)"
-                >
-                  保存
-                </Button>
-              </div>
+                每周{{
+                  group.studyDays.map((d) => WEEKDAY_LABELS[d - 1]).join("·")
+                }}
+              </span>
             </div>
 
             <!-- 条目清单 -->

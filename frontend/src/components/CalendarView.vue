@@ -46,6 +46,7 @@ import {
   type DayStat,
 } from "@/composables/useStudyAllocation";
 import type { PlanRecord, PlanSummary } from "@/types/agent";
+import PlanProgressPanel from "@/components/calendar/PlanProgressPanel.vue";
 
 const emit = defineEmits<{
   /** 抽屉内点计划名 → 跳转学习计划详情（App 层协调跨页导航） */
@@ -273,16 +274,28 @@ async function onToggleMark(planId: string, done: boolean, date?: Date) {
   }
 }
 
-/** 保存每周学习日（Rust 归一化返回后本地覆盖，分配/统计联动重算） */
-async function onSaveStudyDays(planId: string, days: number[]) {
+/** 学习日切换（进度面板 chip 点击）：乐观更新 + IPC，失败回滚；至少保留一天 */
+async function onToggleStudyDay(planId: string, day: number) {
+  if (saving.value) return;
+  const current =
+    studyDaysByPlan.value.get(planId) ??
+    records.value.find((r) => r.id === planId)?.studyDays ??
+    [];
+  const next = current.includes(day)
+    ? current.filter((d) => d !== day)
+    : [...current, day].sort((a, b) => a - b);
+  if (next.length === 0) return; // 至少保留一个学习日
   saving.value = true;
+  studyDaysByPlan.value = new Map(studyDaysByPlan.value).set(planId, next);
   try {
-    const normalized = await savePlanStudyDays(planId, days);
+    const normalized = await savePlanStudyDays(planId, next);
     studyDaysByPlan.value = new Map(studyDaysByPlan.value).set(
       planId,
       normalized,
     );
   } catch (e) {
+    // 回滚到切换前，重排随之还原
+    studyDaysByPlan.value = new Map(studyDaysByPlan.value).set(planId, current);
     loadError.value = normalizeError(e);
   } finally {
     saving.value = false;
@@ -292,80 +305,16 @@ async function onSaveStudyDays(planId: string, days: number[]) {
 
 <template>
   <div class="mx-auto w-full max-w-5xl px-6 py-8">
-    <!-- 页头：衬线大标题为视觉锚 + 视图切换与翻页动作 -->
-    <div
-      class="mb-2 flex flex-wrap items-center justify-between gap-x-6 gap-y-4"
-    >
-      <div class="flex items-center gap-3">
-        <h2
-          class="font-display text-3xl font-semibold tracking-tight tabular-nums"
-          aria-live="polite"
-        >
-          {{ viewTitle }}
-        </h2>
-        <div
-          class="flex items-center rounded-full bg-muted/40 p-1"
-          role="group"
-          aria-label="日历视图切换"
-        >
-          <button
-            type="button"
-            class="cursor-pointer rounded-full px-3.5 py-1 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            :class="
-              viewMode === 'month'
-                ? 'bg-card font-medium text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground'
-            "
-            :aria-pressed="viewMode === 'month'"
-            @click="viewMode = 'month'"
-          >
-            月
-          </button>
-          <button
-            type="button"
-            class="cursor-pointer rounded-full px-3.5 py-1 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            :class="
-              viewMode === 'year'
-                ? 'bg-card font-medium text-foreground shadow-sm'
-                : 'text-muted-foreground hover:text-foreground'
-            "
-            :aria-pressed="viewMode === 'year'"
-            @click="viewMode = 'year'"
-          >
-            年
-          </button>
-        </div>
-      </div>
-      <div v-if="viewMode === 'month'" class="flex items-center gap-1.5">
-        <button
-          type="button"
-          class="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-border text-muted-foreground transition-colors duration-200 hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label="上一月"
-          title="上一月"
-          @click="shiftView(-1)"
-        >
-          <ChevronLeft class="h-4 w-4" aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          class="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-border text-muted-foreground transition-colors duration-200 hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          aria-label="下一月"
-          title="下一月"
-          @click="shiftView(1)"
-        >
-          <ChevronRight class="h-4 w-4" aria-hidden="true" />
-        </button>
-        <Button
-          variant="ghost"
-          size="sm"
-          type="button"
-          class="ml-1 cursor-pointer"
-          @click="goToday"
-        >
-          回到今天
-        </Button>
-      </div>
+    <!-- 页头：衬线大标题 + 摘行靠左；视图切换与翻页下沉到日历右栏上方 -->
+    <div class="mb-2">
+      <h2
+        class="font-display text-3xl font-semibold tracking-tight tabular-nums"
+        aria-live="polite"
+      >
+        {{ viewTitle }}
+      </h2>
     </div>
+
     <!-- 摘行（真数据；中文逗号分隔） -->
     <p class="mb-6 text-sm text-muted-foreground">
       整体完成 {{ overallPercent }}%，本月打卡 {{ monthMarkDays }} 天，
@@ -404,21 +353,102 @@ async function onSaveStudyDays(planId: string, days: number[]) {
     </div>
 
     <template v-else>
-      <Card>
-        <CardContent class="p-3 sm:p-4">
-          <!-- 月视图：日历网格 -->
-          <MonthGrid
-            v-if="viewMode === 'month'"
-            :year="viewDate.getFullYear()"
-            :month="viewDate.getMonth()"
-            :stats="dayStats"
-            :events="calendarEvents"
-            @select-day="openDay"
+      <!-- 双栏：左计划进度管理 / 右日历（控件行 + 主体）；窄屏日历在上 -->
+      <div class="grid items-start gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
+        <!-- 左：计划进度管理（学习日编辑入口在此，点周几即改即存） -->
+        <div class="order-2 lg:order-1">
+          <PlanProgressPanel
+            :records="records"
+            :marks-by-plan="marksByPlan"
+            :study-days-by-plan="studyDaysByPlan"
+            :saving="saving"
+            @open-plan="(planId) => emit('open-plan', planId)"
+            @toggle-study-day="onToggleStudyDay"
           />
-          <!-- 年视图：热力图 -->
-          <YearHeatmap v-else :stats="dayStats" @select-day="openDay" />
-        </CardContent>
-      </Card>
+        </div>
+
+        <!-- 右：视图控件行 + 日历主体 -->
+        <div class="order-1 space-y-3 lg:order-2">
+          <div class="flex flex-wrap items-center justify-between gap-3">
+            <div
+              class="flex items-center rounded-full bg-muted/40 p-1"
+              role="group"
+              aria-label="日历视图切换"
+            >
+              <button
+                type="button"
+                class="cursor-pointer rounded-full px-3.5 py-1 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                :class="
+                  viewMode === 'month'
+                    ? 'bg-card font-medium text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground'
+                "
+                :aria-pressed="viewMode === 'month'"
+                @click="viewMode = 'month'"
+              >
+                月
+              </button>
+              <button
+                type="button"
+                class="cursor-pointer rounded-full px-3.5 py-1 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                :class="
+                  viewMode === 'year'
+                    ? 'bg-card font-medium text-foreground shadow-sm'
+                    : 'text-muted-foreground hover:text-foreground'
+                "
+                :aria-pressed="viewMode === 'year'"
+                @click="viewMode = 'year'"
+              >
+                年
+              </button>
+            </div>
+            <div v-if="viewMode === 'month'" class="flex items-center gap-1.5">
+              <button
+                type="button"
+                class="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-border text-muted-foreground transition-colors duration-200 hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label="上一月"
+                title="上一月"
+                @click="shiftView(-1)"
+              >
+                <ChevronLeft class="h-4 w-4" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                class="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-border text-muted-foreground transition-colors duration-200 hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label="下一月"
+                title="下一月"
+                @click="shiftView(1)"
+              >
+                <ChevronRight class="h-4 w-4" aria-hidden="true" />
+              </button>
+              <Button
+                variant="ghost"
+                size="sm"
+                type="button"
+                class="ml-1 cursor-pointer"
+                @click="goToday"
+              >
+                回到今天
+              </Button>
+            </div>
+          </div>
+          <Card>
+            <CardContent class="p-3 sm:p-4">
+              <!-- 月视图：日历网格 -->
+              <MonthGrid
+                v-if="viewMode === 'month'"
+                :year="viewDate.getFullYear()"
+                :month="viewDate.getMonth()"
+                :stats="dayStats"
+                :events="calendarEvents"
+                @select-day="openDay"
+              />
+              <!-- 年视图：热力图 -->
+              <YearHeatmap v-else :stats="dayStats" @select-day="openDay" />
+            </CardContent>
+          </Card>
+        </div>
+      </div>
     </template>
 
     <!-- 日钻取抽屉 -->
@@ -430,7 +460,6 @@ async function onSaveStudyDays(planId: string, days: number[]) {
       :saving="saving"
       @close="drawerOpen = false"
       @toggle-mark="onToggleMark"
-      @save-study-days="onSaveStudyDays"
       @open-plan="(planId) => emit('open-plan', planId)"
     />
   </div>
