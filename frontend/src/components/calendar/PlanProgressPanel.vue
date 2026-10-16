@@ -11,8 +11,8 @@
  * 学习日编辑（自 DayDrawer 迁入）：行内七枚周几 chip，点击即切换，
  * 由父组件乐观保存（toggle-study-day）。标题可点 → 跳计划详情。
  */
-import { computed } from "vue";
-import { SquareCheck } from "lucide-vue-next";
+import { computed, ref } from "vue";
+import { CalendarCheck, Play, SquareCheck } from "lucide-vue-next";
 import { computeDayAssignments } from "@/composables/useStudyAllocation";
 import type { PlanRecord } from "@/types/agent";
 
@@ -32,6 +32,8 @@ const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"] as cons
 const emit = defineEmits<{
   (e: "open-plan", planId: string): void;
   (e: "toggle-study-day", planId: string, day: number): void;
+  /** 开始学习（未开始行确认）：保存学习日并打卡今天，进入学习中 */
+  (e: "start-plan", planId: string): void;
 }>();
 
 interface ProgressRow {
@@ -127,6 +129,13 @@ function dayLabel(day: number): string {
 function isSelected(row: ProgressRow, day: number): boolean {
   return row.days.includes(day);
 }
+
+/** 展开开始学习流程的计划 id（未开始组行内编辑，单开） */
+const expandedStart = ref<string | null>(null);
+
+function toggleStart(planId: string) {
+  expandedStart.value = expandedStart.value === planId ? null : planId;
+}
 </script>
 
 <template>
@@ -199,8 +208,19 @@ function isSelected(row: ProgressRow, day: number): boolean {
               >
                 {{ row.record.title }}
               </button>
+              <button
+                v-if="group.key === 'pending' && !isLocked(row)"
+                type="button"
+                class="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-md border border-primary/40 bg-primary/[0.06] px-2 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                :aria-expanded="expandedStart === row.record.id"
+                :aria-label="`开始学习：${row.record.title}`"
+                @click="toggleStart(row.record.id)"
+              >
+                <Play class="h-3 w-3" aria-hidden="true" />
+                开始学习
+              </button>
               <span
-                v-if="!isLocked(row)"
+                v-else-if="!isLocked(row)"
                 class="shrink-0 text-xs tabular-nums text-muted-foreground"
               >
                 {{ row.done }}/{{ row.total }} 天
@@ -232,12 +252,13 @@ function isSelected(row: ProgressRow, day: number): boolean {
               />
             </div>
 
-            <!-- 学习日 chips（点击即切换，父组件乐观保存）；锁定计划禁用 -->
+            <!-- 学习日 chips（点击即切换，父组件乐观保存）；学习中/已结束常显，
+                 未开始收进「开始学习」展开区，锁定计划不显示 -->
             <div
+              v-if="group.key !== 'pending'"
               class="mt-2 flex flex-wrap gap-1"
-              :class="isLocked(row) ? 'opacity-50' : ''"
               role="group"
-              :aria-label="`${row.record.title} 每周学习日${isLocked(row) ? '（该计划暂不可学习）' : ''}`"
+              :aria-label="`${row.record.title} 每周学习日`"
             >
               <button
                 v-for="day in [1, 2, 3, 4, 5, 6, 7]"
@@ -255,6 +276,51 @@ function isSelected(row: ProgressRow, day: number): boolean {
                 @click="emit('toggle-study-day', row.record.id, day)"
               >
                 {{ dayLabel(day) }}
+              </button>
+            </div>
+
+            <!-- 开始学习展开区：选学习日 → 确认（保存学习日 + 打卡今天） -->
+            <div
+              v-if="
+                group.key === 'pending' &&
+                !isLocked(row) &&
+                expandedStart === row.record.id
+              "
+              class="mt-2 rounded-md border border-primary/20 bg-primary/[0.04] px-3 py-2.5"
+            >
+              <p class="text-xs text-muted-foreground">选择每周学习日</p>
+              <div
+                class="mt-1.5 flex flex-wrap gap-1"
+                role="group"
+                :aria-label="`${row.record.title} 每周学习日`"
+              >
+                <button
+                  v-for="day in [1, 2, 3, 4, 5, 6, 7]"
+                  :key="day"
+                  type="button"
+                  class="cursor-pointer rounded-md px-1.5 py-0.5 text-[11px] leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                  :class="
+                    isSelected(row, day)
+                      ? 'bg-primary/10 font-medium text-primary ring-1 ring-inset ring-primary/30'
+                      : 'text-muted-foreground/70 hover:bg-muted hover:text-foreground'
+                  "
+                  :aria-pressed="isSelected(row, day)"
+                  :aria-label="`每周${dayLabel(day)}${isSelected(row, day) ? '（已选）' : '（未选）'}`"
+                  :disabled="saving"
+                  @click="emit('toggle-study-day', row.record.id, day)"
+                >
+                  {{ dayLabel(day) }}
+                </button>
+              </div>
+              <button
+                type="button"
+                class="mt-2.5 flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-md bg-primary px-2 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                :disabled="saving"
+                :aria-label="`确认开始：${row.record.title}，保存学习日并打卡今天`"
+                @click="emit('start-plan', row.record.id)"
+              >
+                <CalendarCheck class="h-3.5 w-3.5" aria-hidden="true" />
+                今天开始（保存学习日并打卡）
               </button>
             </div>
           </div>

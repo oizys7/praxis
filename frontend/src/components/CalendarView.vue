@@ -270,6 +270,31 @@ async function onToggleMark(planId: string, done: boolean, date?: Date) {
   }
 }
 
+/** 开始学习（未开始行确认）：保存学习日 + 打卡今天，计划进入学习中 */
+async function onStartPlan(planId: string) {
+  if (saving.value) return;
+  const days =
+    studyDaysByPlan.value.get(planId) ??
+    records.value.find((r) => r.id === planId)?.studyDays ??
+    [];
+  if (days.length === 0) return;
+  saving.value = true;
+  const today = dayKey(new Date());
+  try {
+    await savePlanStudyDays(planId, days);
+    studyDaysByPlan.value = new Map(studyDaysByPlan.value).set(planId, days);
+    await saveStudyDayMark(planId, today, true);
+    marksByPlan.value = new Map(marksByPlan.value).set(
+      planId,
+      new Set(marksByPlan.value.get(planId) ?? []).add(today),
+    );
+  } catch (e) {
+    loadError.value = normalizeError(e);
+  } finally {
+    saving.value = false;
+  }
+}
+
 /** 学习日切换（进度面板 chip 点击）：乐观更新 + IPC，失败回滚；至少保留一天 */
 async function onToggleStudyDay(planId: string, day: number) {
   if (saving.value) return;
@@ -355,6 +380,7 @@ async function onToggleStudyDay(planId: string, day: number) {
             :saving="saving"
             @open-plan="(planId) => emit('open-plan', planId)"
             @toggle-study-day="onToggleStudyDay"
+            @start-plan="onStartPlan"
           />
         </div>
 
