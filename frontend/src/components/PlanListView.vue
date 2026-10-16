@@ -114,39 +114,60 @@ function levelLabel(value: string): string {
   return LEVEL_OPTIONS.find((o) => o.value === value)?.label ?? value;
 }
 
+/** 中文日期时间格式常量（避免每次新建 Intl 实例） */
+const DATE_FMT = new Intl.DateTimeFormat("zh-CN", { hour12: false });
+
 function formatTime(iso: string): string {
-  return new Date(iso).toLocaleString("zh-CN", { hour12: false });
+  return DATE_FMT.format(new Date(iso));
 }
 </script>
 
 <template>
   <div class="mx-auto w-full max-w-6xl space-y-5 px-6 py-8">
-    <!-- 工具栏：标题 + 搜索 + 刷新 + 新建 -->
-    <div class="flex flex-wrap items-center gap-3">
-      <h2 class="mr-auto text-lg font-bold">学习计划</h2>
-      <div class="relative">
-        <Search
-          class="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-muted-foreground"
-        />
-        <Input
-          v-model="search"
-          type="search"
-          name="plan-search"
-          aria-label="搜索计划"
-          autocomplete="off"
-          placeholder="搜索标题 / 目标…"
-          class="w-64 pl-9"
-        />
+    <!-- 页头：衬线大标题 + 摘行；操作按钮右置同一行，hairline 收边 -->
+    <div class="flex flex-wrap items-end justify-between gap-x-6 gap-y-3">
+      <div>
+        <h2 class="font-display text-3xl font-semibold tracking-tight">
+          学习计划
+        </h2>
+        <p class="mt-1 text-sm text-muted-foreground">
+          {{ list.length }} 份计划，按最近更新排序
+        </p>
       </div>
-      <Button variant="outline" size="sm" :disabled="loading" @click="refresh">
-        <RefreshCw class="mr-1 h-4 w-4" :class="{ 'animate-spin': loading }" />
-        刷新
-      </Button>
-      <Button size="sm" @click="emit('create')">
-        <Plus class="mr-1 h-4 w-4" />
-        新建计划
-      </Button>
+      <div class="flex items-center gap-3">
+        <div class="relative">
+          <Search
+            class="pointer-events-none absolute top-1/2 left-3 h-4 w-4 -translate-y-1/2 text-muted-foreground"
+          />
+          <Input
+            v-model="search"
+            type="search"
+            name="plan-search"
+            aria-label="搜索计划"
+            autocomplete="off"
+            placeholder="搜索标题 / 目标…"
+            class="w-64 pl-9"
+          />
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          :disabled="loading"
+          @click="refresh"
+        >
+          <RefreshCw
+            class="mr-1 h-4 w-4"
+            :class="{ 'animate-spin': loading }"
+          />
+          刷新
+        </Button>
+        <Button size="sm" @click="emit('create')">
+          <Plus class="mr-1 h-4 w-4" />
+          新建计划
+        </Button>
+      </div>
     </div>
+    <div class="h-px bg-primary/15" role="presentation" />
 
     <!-- 错误 -->
     <Card v-if="error" class="border-destructive/40">
@@ -191,7 +212,7 @@ function formatTime(iso: string): string {
       <div
         v-for="(item, ri) in list"
         :key="item.id"
-        class="group flex cursor-pointer items-center gap-3 px-4 py-3.5 transition-colors hover:bg-secondary/50"
+        class="group relative flex cursor-pointer items-center gap-3 px-4 py-3.5 transition-colors hover:bg-secondary/50"
         :class="ri > 0 ? 'border-t' : ''"
         role="button"
         tabindex="0"
@@ -200,6 +221,11 @@ function formatTime(iso: string): string {
         @keydown.enter="onOpen(item)"
         @keydown.space.prevent="onOpen(item)"
       >
+        <!-- 选中指示条：hover/键盘焦点时左缘墨蓝细条淡入（选中感） -->
+        <span
+          class="absolute inset-y-2 left-0 w-0.5 rounded-full bg-primary opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100"
+          aria-hidden="true"
+        />
         <!-- 收藏星：激活态书页ecessary色（.stub保留 amber 语义） -->
         <button
           class="shrink-0 text-muted-foreground/50 transition-colors hover:text-amber-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"

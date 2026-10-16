@@ -115,6 +115,14 @@ function onSubmit() {
     </CardHeader>
 
     <CardContent class="space-y-5">
+      <!-- 组题：目标与起点 -->
+      <div class="flex items-center gap-3">
+        <span class="text-xs font-medium text-muted-foreground"
+          >目标与起点</span
+        >
+        <div class="h-px flex-1 bg-primary/10" role="presentation" />
+      </div>
+
       <!-- 学习目标 -->
       <div class="space-y-1.5">
         <Label for="goal">学习目标 *</Label>
@@ -138,6 +146,12 @@ function onSubmit() {
           :options="LEVEL_OPTIONS"
           :disabled="props.loading"
         />
+      </div>
+
+      <!-- 组题：学习节奏 -->
+      <div class="flex items-center gap-3 pt-1">
+        <span class="text-xs font-medium text-muted-foreground">学习节奏</span>
+        <div class="h-px flex-1 bg-primary/10" role="presentation" />
       </div>
 
       <!-- 每周可用小时 / 期望周数 -->
@@ -187,9 +201,7 @@ function onSubmit() {
             @click="toggleStudyDay(i + 1)"
           >
             <Badge
-              :variant="
-                form.studyDays.includes(i + 1) ? 'default' : 'outline'
-              "
+              :variant="form.studyDays.includes(i + 1) ? 'default' : 'outline'"
               class="cursor-pointer select-none px-2.5 transition-opacity hover:opacity-80"
             >
               周{{ label }}
@@ -199,6 +211,14 @@ function onSubmit() {
         <p class="text-xs text-muted-foreground">
           计划章节将按所选日子排布到日历（至少保留一天）
         </p>
+      </div>
+
+      <!-- 组题：偏好与基础 -->
+      <div class="flex items-center gap-3 pt-1">
+        <span class="text-xs font-medium text-muted-foreground"
+          >偏好与基础</span
+        >
+        <div class="h-px flex-1 bg-primary/10" role="presentation" />
       </div>
 
       <!-- 偏好方向（多选标签） -->

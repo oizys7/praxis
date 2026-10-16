@@ -7,16 +7,31 @@ import { NotebookPen } from "lucide-vue-next";
 </script>
 
 <template>
-  <div class="flex h-full items-center justify-center px-6 py-8">
-    <div
-      class="w-full max-w-sm rounded-xl border bg-card px-10 py-14 text-center shadow-sm"
-    >
-      <NotebookPen
-        class="mx-auto h-12 w-12 text-muted-foreground/60"
-        aria-hidden="true"
-      />
-      <h2 class="font-display mt-5 text-lg font-semibold">笔记生成</h2>
-      <p class="mt-2 text-sm text-muted-foreground">功能待实现</p>
+  <div class="mx-auto w-full max-w-6xl px-6 py-8">
+    <!-- 页头：与其他页同构的衬线大标题 + hairline -->
+    <div class="mb-6">
+      <h2 class="font-display text-3xl font-semibold tracking-tight">
+        笔记生成
+      </h2>
+      <p class="mt-1 text-sm text-muted-foreground">
+        把学过的章节整理成可复习的笔记
+      </p>
+      <div class="mt-4 h-px bg-primary/15" role="presentation" />
+    </div>
+    <!-- 空态：方向性邀请（空屏是行动邀请，不是气氛渲染） -->
+    <div class="flex justify-center py-16">
+      <div
+        class="w-full max-w-sm rounded-xl border border-dashed bg-card/60 px-10 py-14 text-center"
+      >
+        <NotebookPen
+          class="mx-auto h-10 w-10 text-primary/40"
+          aria-hidden="true"
+        />
+        <p class="mt-4 font-medium">笔记生成功能尚未开放</p>
+        <p class="mt-1.5 text-sm text-muted-foreground">
+          先在「学习计划」里积累章节内容，笔记整理将在后续版本上线。
+        </p>
+      </div>
     </div>
   </div>
 </template>

@@ -2,13 +2,7 @@
 import { computed, onMounted, reactive } from "vue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
@@ -89,16 +83,16 @@ function onSubmit() {
 
 <template>
   <div class="mx-auto w-full max-w-6xl px-6 py-8">
+    <!-- 页头：衬线大标题 + 摘行（原 CardHeader 文案上移） -->
+    <div class="mb-6">
+      <h2 class="font-display text-3xl font-semibold tracking-tight">设置</h2>
+      <p class="mt-1 text-sm text-muted-foreground">
+        Agent 运行配置，保存后立即热加载到服务；Key 仅保存在本机 settings.json
+      </p>
+      <div class="mt-4 h-px bg-primary/15" role="presentation" />
+    </div>
     <Card>
-      <CardHeader>
-        <CardTitle>设置</CardTitle>
-        <CardDescription>
-          Agent 运行配置。保存后立即热加载到服务，无需重启应用；Key 仅保存在本机
-          settings.json。
-        </CardDescription>
-      </CardHeader>
-
-      <CardContent>
+      <CardContent class="pt-6">
         <!-- 加载中 -->
         <p
           v-if="loading"

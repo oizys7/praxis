@@ -396,6 +396,16 @@ function onPlanRefreshed(plan: StudyPlan) {
       <!-- 交互重构：单轴纵向流——参数卡在顶部（生成中收起为摘要条），
            其下依次过程卡/骨架树/结果；左右双栏并排取消，自上而下一条主轴 -->
       <div class="mx-auto w-full max-w-3xl space-y-5">
+        <!-- 创建态页头（历史详情由 PlanResult hero 承担，不重复） -->
+        <div v-if="!historyMode">
+          <h2 class="font-display text-3xl font-semibold tracking-tight">
+            生成学习计划
+          </h2>
+          <p class="mt-1 text-sm text-muted-foreground">
+            填好参数，Agent 为你编排分阶段路线，逐章生成并可随时补齐
+          </p>
+          <div class="mt-4 h-px bg-primary/15" role="presentation" />
+        </div>
         <!-- 参数卡：历史详情隐藏；生成中收起，点「修改」临时展开 -->
         <div v-if="!historyMode && (!generatingNow || showForm)">
           <PlanForm :loading="loading" @submit="onSubmit" />
