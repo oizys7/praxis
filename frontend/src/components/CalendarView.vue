@@ -16,7 +16,14 @@
  * 风格对齐「自习室纸面」：零 dark: 变体，色阶全走语义令牌。
  */
 import { computed, onMounted, ref, shallowRef } from "vue";
-import { ChevronLeft, ChevronRight, LoaderCircle, TriangleAlert } from "lucide-vue-next";
+import {
+  BookCheck,
+  BookX,
+  ChevronLeft,
+  ChevronRight,
+  LoaderCircle,
+  TriangleAlert,
+} from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -42,10 +49,7 @@ import {
   aggregateDayStats,
   computeDayAssignments,
   dayKey,
-  phaseBadgeStatus,
-  planStartDate,
   type DayStat,
-  type PhaseBadgeStatus,
 } from "@/composables/useStudyAllocation";
 import type { PlanRecord, PlanSummary } from "@/types/agent";
 
@@ -91,72 +95,37 @@ onMounted(load);
 
 // ---- 第一屏：进行中的学习计划 ----
 
-/** 水平档位中文（旧数据未知值原样透传） */
-const LEVEL_LABELS: Record<string, string> = {
-  beginner: "入门",
-  intermediate: "进阶",
-  advanced: "高级",
-};
+/** 页头统计：全部计划章完成率（零章防御） */
+const overallStats = computed(() => {
+  let total = 0;
+  let done = 0;
+  for (const record of records.value) {
+    for (const chapter of record.plan.phases.flatMap((p) => p.chapters ?? [])) {
+      total += 1;
+      if (chapter.status === "complete") done += 1;
+    }
+  }
+  return { total, done };
+});
 
-/** 进度卡视图模型 */
-interface PlanProgressCard {
-  id: string;
-  title: string;
-  level: string;
-  totalChapters: number;
-  completedChapters: number;
-  /** 距截止剩余天数（计划起点 = createdAt 所在周周一，跨周按 7 天/周计） */
-  daysLeft: number;
-  phases: Array<{ name: string; status: PhaseBadgeStatus }>;
-}
-
-const planCards = computed<PlanProgressCard[]>(() =>
-  records.value.map((record) => {
-    const chapters = record.plan.phases.flatMap((p) => p.chapters ?? []);
-    const completedChapters = chapters.filter(
-      (c) => c.status === "complete",
-    ).length;
-    const start = planStartDate(record.createdAt).getTime();
-    const deadline =
-      start + Math.max(Math.round(record.weeks) || 1, 1) * 7 * 86400000;
-    const now = new Date();
-    const todayMid = new Date(
-      now.getFullYear(),
-      now.getMonth(),
-      now.getDate(),
-    ).getTime();
-    return {
-      id: record.id,
-      title: record.title,
-      level: LEVEL_LABELS[record.level] ?? record.level,
-      totalChapters: chapters.length,
-      completedChapters,
-      daysLeft: Math.max(0, Math.ceil((deadline - todayMid) / 86400000)),
-      phases: record.plan.phases.map((p) => ({
-        name: p.name,
-        status: phaseBadgeStatus(p),
-      })),
-    };
-  }),
+const overallPercent = computed(() =>
+  overallStats.value.total === 0
+    ? 0
+    : Math.round((overallStats.value.done / overallStats.value.total) * 100),
 );
 
-/** 完成百分比（取整；零章防御） */
-function percent(p: { completedChapters: number; totalChapters: number }) {
-  if (p.totalChapters === 0) return 0;
-  return Math.round((p.completedChapters / p.totalChapters) * 100);
-}
-
-/** 剩余天数是否临近截止（<= 7 天转朱批提醒色） */
-function isUrgent(daysLeft: number) {
-  return daysLeft <= 7;
-}
-
-/** 阶段徽章样式（三态：已完成实绿 / 进行中墨蓝描边 / 未开始沙框灰） */
-const PHASE_CLASSES: Record<PhaseBadgeStatus, string> = {
-  done: "border-transparent bg-success/15 text-success",
-  active: "border-primary/40 text-primary",
-  todo: "border-border text-muted-foreground",
-};
+/** 本月打卡天数（跨计划按「该日任一计划已打卡」去重，dayKey 前缀匹配） */
+const monthMarkDays = computed(() => {
+  const now = new Date();
+  const prefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-`;
+  const days = new Set<string>();
+  for (const marks of marksByPlan.value.values()) {
+    for (const key of marks) {
+      if (key.startsWith(prefix)) days.add(key);
+    }
+  }
+  return days.size;
+});
 
 // ---- 第二屏：学习日历 ----
 
@@ -197,12 +166,11 @@ const dayStats = computed<Map<string, DayStat>>(() => {
 });
 
 /**
- * 抽屉分组：选中日期当天的各计划分配（无安排且未打卡的计划不出现，
- * 避免空组噪音）。
+ * 当日分组（通用）：给定日期当天各计划的分配清单（无安排且未打卡的
+ * 计划不出现，避免空组噪音）。drawerGroups / todayGroups 复用。
  */
-const drawerGroups = computed<DrawerPlanGroup[]>(() => {
-  if (!selectedDate.value) return [];
-  const key = dayKey(selectedDate.value);
+function dayGroups(date: Date): DrawerPlanGroup[] {
+  const key = dayKey(date);
   const groups: DrawerPlanGroup[] = [];
   for (const record of records.value) {
     const marks = marksByPlan.value.get(record.id) ?? new Set();
@@ -229,6 +197,25 @@ const drawerGroups = computed<DrawerPlanGroup[]>(() => {
     });
   }
   return groups;
+}
+
+/** 抽屉：选中日期的分组 */
+const drawerGroups = computed<DrawerPlanGroup[]>(() =>
+  selectedDate.value ? dayGroups(selectedDate.value) : [],
+);
+
+/** 侧卡：今日分组 */
+const todayGroups = computed<DrawerPlanGroup[]>(() => dayGroups(new Date()));
+
+/** 侧卡今日节数（跨计划合计） */
+const todayTotal = computed(() =>
+  todayGroups.value.reduce((n, g) => n + g.assignments.length, 0),
+);
+
+/** 今日日期文本（M 月 D 日） */
+const todayLabel = computed(() => {
+  const now = new Date();
+  return `${now.getMonth() + 1} 月 ${now.getDate()} 日`;
 });
 
 /** 工具条标题：「2026 年 10 月」/「2026 年」 */
@@ -259,10 +246,11 @@ function openDay(date: Date) {
 
 // ---- IPC 回写：打卡 / 编辑学习日（落库后本地视图态同步，分配重算）----
 
-/** 当日已学打卡开关 */
-async function onToggleMark(planId: string, done: boolean) {
-  if (!selectedDate.value) return;
-  const day = dayKey(selectedDate.value);
+/** 当日已学打卡开关（date 缺省 = 抽屉选中日；侧卡显式传今天） */
+async function onToggleMark(planId: string, done: boolean, date?: Date) {
+  const target = date ?? selectedDate.value;
+  if (!target) return;
+  const day = dayKey(target);
   saving.value = true;
   try {
     await saveStudyDayMark(planId, day, done);
@@ -297,14 +285,39 @@ async function onSaveStudyDays(planId: string, days: number[]) {
 
 <template>
   <div class="mx-auto w-full max-w-5xl px-6 py-8">
-    <!-- 页头 -->
-    <header class="mb-6">
-      <h2 class="font-display text-2xl font-semibold tracking-tight">
-        学习进度
-      </h2>
-      <p class="mt-1 text-sm text-muted-foreground">
-        计划推进总览 · 每日一勤，功不唐捐
-      </p>
+    <!-- 页头：标题 + 统计条（真数据：全计划章完成率 / 本月打卡天数） -->
+    <header
+      class="mb-6 flex flex-wrap items-end justify-between gap-x-6 gap-y-4"
+    >
+      <div>
+        <h2 class="font-display text-2xl font-semibold tracking-tight">
+          学习进度
+        </h2>
+        <p class="mt-1 text-sm text-muted-foreground">
+          计划推进总览 · 每日一勤，功不唐捐
+        </p>
+      </div>
+      <dl class="flex items-center gap-6">
+        <div class="text-right">
+          <dt class="text-xs text-muted-foreground">整体完成率</dt>
+          <dd
+            class="font-display text-xl font-semibold tabular-nums text-success"
+          >
+            {{ overallPercent
+            }}<span class="ml-0.5 text-xs font-normal">%</span>
+          </dd>
+        </div>
+        <div class="h-9 w-px bg-border" aria-hidden="true" />
+        <div class="text-right">
+          <dt class="text-xs text-muted-foreground">本月打卡</dt>
+          <dd
+            class="font-display text-xl font-semibold tabular-nums text-primary"
+          >
+            {{ monthMarkDays
+            }}<span class="ml-0.5 text-xs font-normal">天</span>
+          </dd>
+        </div>
+      </dl>
     </header>
 
     <!-- 加载 / 错误 / 空态 -->
@@ -330,7 +343,7 @@ async function onSaveStudyDays(planId: string, days: number[]) {
       </Button>
     </div>
     <div
-      v-else-if="planCards.length === 0"
+      v-else-if="records.length === 0"
       class="rounded-lg border border-dashed border-border px-6 py-16 text-center"
     >
       <p class="text-sm text-muted-foreground">
@@ -339,82 +352,8 @@ async function onSaveStudyDays(planId: string, days: number[]) {
     </div>
 
     <template v-else>
-      <!-- 第一屏：进行中的学习计划 -->
-      <section aria-labelledby="plans-heading" class="mb-8">
-        <h3
-          id="plans-heading"
-          class="mb-4 font-display text-base font-semibold"
-        >
-          进行中的学习计划
-        </h3>
-        <div class="grid items-start gap-4 sm:grid-cols-2 xl:grid-cols-3">
-          <Card
-            v-for="plan in planCards"
-            :key="plan.id"
-            class="transition-colors duration-200 hover:border-primary/40"
-          >
-            <CardHeader>
-              <div class="flex items-start justify-between gap-3">
-                <div class="min-w-0">
-                  <CardTitle class="font-display text-base leading-snug">
-                    {{ plan.title }}
-                  </CardTitle>
-                  <CardDescription class="mt-1">
-                    {{ plan.level }}
-                    <span
-                      class="ml-1 tabular-nums"
-                      :class="isUrgent(plan.daysLeft) ? 'text-destructive' : ''"
-                    >
-                      · 剩余 {{ plan.daysLeft }} 天
-                    </span>
-                  </CardDescription>
-                </div>
-                <!-- 完成百分比大数字 -->
-                <p
-                  class="shrink-0 font-display text-3xl font-semibold tabular-nums text-primary"
-                  :aria-label="`完成度 ${percent(plan)}%`"
-                >
-                  {{ percent(plan) }}<span class="text-sm font-normal">%</span>
-                </p>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <!-- 进度条 -->
-              <div
-                class="h-2 overflow-hidden rounded-full bg-primary/15"
-                role="progressbar"
-                :aria-valuenow="percent(plan)"
-                aria-valuemin="0"
-                aria-valuemax="100"
-                :aria-label="`${plan.title} 完成进度`"
-              >
-                <div
-                  class="h-full rounded-full bg-primary transition-[width] duration-500"
-                  :style="{ width: `${percent(plan)}%` }"
-                />
-              </div>
-              <p class="mt-2 text-xs tabular-nums text-muted-foreground">
-                已完成 {{ plan.completedChapters }} /
-                {{ plan.totalChapters }} 章
-              </p>
-              <!-- 阶段徽章序列 -->
-              <div class="mt-3 flex flex-wrap gap-1.5">
-                <span
-                  v-for="(phase, i) in plan.phases"
-                  :key="phase.name"
-                  class="inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-medium"
-                  :class="PHASE_CLASSES[phase.status]"
-                >
-                  阶段 {{ i + 1 }} · {{ phase.name }}
-                </span>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      </section>
-
       <!-- 第二屏：学习日历 -->
-      <section aria-labelledby="calendar-heading">
+      <div class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
         <h3 id="calendar-heading" class="sr-only">学习日历</h3>
         <Card>
           <CardHeader class="space-y-3">
@@ -511,7 +450,82 @@ async function onSaveStudyDays(planId: string, days: number[]) {
             />
           </CardContent>
         </Card>
-      </section>
+
+        <!-- 今日计划分配侧卡（真数据：当日分配 + 打卡） -->
+        <Card class="lg:sticky lg:top-4">
+          <CardHeader>
+            <CardTitle class="font-display text-base">今日计划分配</CardTitle>
+            <CardDescription>
+              {{ todayLabel }} · 共 {{ todayTotal }} 节
+            </CardDescription>
+          </CardHeader>
+          <CardContent class="space-y-5">
+            <p
+              v-if="todayGroups.length === 0"
+              class="text-sm text-muted-foreground"
+            >
+              今天没有排课，好好休息。
+            </p>
+            <div
+              v-for="group in todayGroups"
+              :key="group.planId"
+              class="space-y-2"
+            >
+              <div
+                class="flex items-center justify-between gap-2 border-b border-border/60 pb-1.5"
+              >
+                <p class="min-w-0 truncate text-sm font-medium">
+                  {{ group.planTitle }}
+                </p>
+              </div>
+              <ul class="space-y-2">
+                <li
+                  v-for="a in group.assignments"
+                  :key="`${group.planId}-${a.phaseIndex}-${a.chapterIndex}`"
+                  class="flex items-center justify-between gap-2"
+                >
+                  <p class="min-w-0 truncate text-sm">
+                    <span class="text-muted-foreground">
+                      阶段{{ a.phaseIndex + 1 }} ·
+                    </span>
+                    {{ a.chapterName }}
+                  </p>
+                  <span
+                    class="shrink-0 rounded-md border px-1.5 py-0.5 text-xs"
+                    :class="
+                      a.done
+                        ? 'border-transparent bg-success/15 text-success'
+                        : 'border-border text-muted-foreground'
+                    "
+                  >
+                    {{ a.done ? "✓ 已完成" : "◌ 未完成" }}
+                  </span>
+                </li>
+              </ul>
+              <button
+                type="button"
+                class="flex w-full cursor-pointer items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm transition-colors duration-200 hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                :class="
+                  group.marked
+                    ? 'border-success/40 bg-success/5 text-success'
+                    : 'border-border text-muted-foreground'
+                "
+                :disabled="saving"
+                @click="onToggleMark(group.planId, !group.marked, new Date())"
+              >
+                <span>{{ group.marked ? "✓ 当日已学" : "标记当日已学" }}</span>
+                <BookX v-if="group.marked" class="h-4 w-4" aria-hidden="true" />
+                <BookCheck v-else class="h-4 w-4" aria-hidden="true" />
+              </button>
+            </div>
+            <p
+              class="border-t border-border/60 pt-3 text-xs text-muted-foreground"
+            >
+              点击日历任意日期可查看当天完整安排与编辑学习日。
+            </p>
+          </CardContent>
+        </Card>
+      </div>
     </template>
 
     <!-- 日钻取抽屉 -->
