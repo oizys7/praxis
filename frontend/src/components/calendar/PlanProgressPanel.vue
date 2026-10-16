@@ -56,7 +56,10 @@ const rows = computed<ProgressRow[]>(() =>
     return {
       record,
       total: assignments.length,
-      done: assignments.filter((a) => a.done).length,
+      // 学习完成口径：分配天中已打卡（study_day_marks）的天数。
+      // 注意不是 a.done——那是章 status=complete 的「生成完成」语义
+      // （useStudyAllocation 明注），与本面板「已结束 = 学完」无关。
+      done: assignments.filter((a) => marks.has(a.date)).length,
       days: view.studyDays,
     };
   }),
