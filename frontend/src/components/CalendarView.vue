@@ -223,7 +223,7 @@ const calendarEvents = computed<Map<string, CalendarEvent[]>>(() => {
 /** 工具条标题：「2026 年 10 月」/「2026 年」 */
 const viewTitle = computed(() => {
   const y = viewDate.value.getFullYear();
-  if (viewMode.value === "year") return `${y} 年`;
+  if (viewMode.value === "year") return "近一年";
   return `${y} 年 ${viewDate.value.getMonth() + 1} 月`;
 });
 
@@ -331,12 +331,12 @@ async function onSaveStudyDays(planId: string, days: number[]) {
           </button>
         </div>
       </div>
-      <div class="flex items-center gap-1.5">
+      <div v-if="viewMode === 'month'" class="flex items-center gap-1.5">
         <button
           type="button"
           class="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-border text-muted-foreground transition-colors duration-200 hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          :aria-label="viewMode === 'month' ? '上一月' : '上一年'"
-          :title="viewMode === 'month' ? '上一月' : '上一年'"
+          aria-label="上一月"
+          title="上一月"
           @click="shiftView(-1)"
         >
           <ChevronLeft class="h-4 w-4" aria-hidden="true" />
@@ -344,8 +344,8 @@ async function onSaveStudyDays(planId: string, days: number[]) {
         <button
           type="button"
           class="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-border text-muted-foreground transition-colors duration-200 hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          :aria-label="viewMode === 'month' ? '下一月' : '下一年'"
-          :title="viewMode === 'month' ? '下一月' : '下一年'"
+          aria-label="下一月"
+          title="下一月"
           @click="shiftView(1)"
         >
           <ChevronRight class="h-4 w-4" aria-hidden="true" />
@@ -411,12 +411,7 @@ async function onSaveStudyDays(planId: string, days: number[]) {
             @select-day="openDay"
           />
           <!-- 年视图：热力图 -->
-          <YearHeatmap
-            v-else
-            :year="viewDate.getFullYear()"
-            :stats="dayStats"
-            @select-day="openDay"
-          />
+          <YearHeatmap v-else :stats="dayStats" @select-day="openDay" />
         </CardContent>
       </Card>
     </template>
