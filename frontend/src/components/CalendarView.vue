@@ -161,7 +161,7 @@ const dayStats = computed<Map<string, DayStat>>(() => {
 
 /**
  * 当日分组（通用）：给定日期当天各计划的分配清单（无安排且未打卡的
- * 计划不出现，避免空组噪音）。drawerGroups / todayGroups 复用。
+ * 计划不出现，避免空组噪音）。抽屉 drawerGroups 复用。
  */
 function dayGroups(date: Date): DrawerPlanGroup[] {
   const key = dayKey(date);
