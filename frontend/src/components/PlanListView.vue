@@ -13,6 +13,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import LoadingState from "@/components/LoadingState.vue";
 import {
   isPlanGenerating,
   terminalCounter,
@@ -184,12 +185,11 @@ function formatTime(iso: string): string {
       </CardContent>
     </Card>
 
-    <!-- 加载中 -->
-    <div v-else-if="loading && !list.length" class="flex justify-center py-16">
-      <div
-        class="h-10 w-10 animate-spin rounded-full border-2 border-primary border-t-transparent"
-      />
-    </div>
+    <!-- 加载中（全站统一 LoadingState） -->
+    <LoadingState
+      v-else-if="loading && !list.length"
+      text="正在加载学习计划…"
+    />
 
     <!-- 空态 -->
     <Card v-else-if="!list.length" class="border-dashed">

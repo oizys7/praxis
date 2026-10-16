@@ -16,12 +16,7 @@
  * 风格对齐「自习室纸面」：零 dark: 变体，色阶全走语义令牌。
  */
 import { computed, onMounted, ref, shallowRef } from "vue";
-import {
-  ChevronLeft,
-  ChevronRight,
-  LoaderCircle,
-  TriangleAlert,
-} from "lucide-vue-next";
+import { ChevronLeft, ChevronRight, TriangleAlert } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import MonthGrid, {
@@ -47,6 +42,7 @@ import {
 } from "@/composables/useStudyAllocation";
 import type { PlanRecord, PlanSummary } from "@/types/agent";
 import PlanProgressPanel from "@/components/calendar/PlanProgressPanel.vue";
+import LoadingState from "@/components/LoadingState.vue";
 
 const emit = defineEmits<{
   /** 抽屉内点计划名 → 跳转学习计划详情（App 层协调跨页导航） */
@@ -322,14 +318,7 @@ async function onToggleStudyDay(planId: string, day: number) {
     </p>
 
     <!-- 加载 / 错误 / 空态 -->
-    <div
-      v-if="loading"
-      class="flex items-center gap-2 py-16 text-sm text-muted-foreground"
-      role="status"
-    >
-      <LoaderCircle class="h-4 w-4 animate-spin" aria-hidden="true" />
-      正在加载学习进度…
-    </div>
+    <LoadingState v-if="loading" text="正在加载学习进度…" />
     <div
       v-else-if="loadError"
       class="flex flex-col items-start gap-3 rounded-lg border border-destructive/40 bg-destructive/5 px-5 py-4"
@@ -354,7 +343,9 @@ async function onToggleStudyDay(planId: string, day: number) {
 
     <template v-else>
       <!-- 双栏：左计划进度管理 / 右日历（控件行 + 主体）；窄屏日历在上 -->
-      <div class="grid items-start gap-5 lg:grid-cols-[320px_minmax(0,1fr)] 2xl:grid-cols-[380px_minmax(0,1fr)]">
+      <div
+        class="grid items-start gap-5 lg:grid-cols-[320px_minmax(0,1fr)] 2xl:grid-cols-[380px_minmax(0,1fr)]"
+      >
         <!-- 左：计划进度管理（学习日编辑入口在此，点周几即改即存） -->
         <div class="order-2 lg:order-1">
           <PlanProgressPanel
