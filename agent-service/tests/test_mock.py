@@ -137,7 +137,9 @@ def test_project_templates_complete():
             assert "了解" not in criterion and "熟悉" not in criterion, (
                 f"验收标准须可验证，禁「了解/熟悉」：{criterion}"
             )
-        assert isinstance(project["estimatedHours"], (int, float)), "estimatedHours 为数值"
+        assert isinstance(project["estimatedHours"], (int, float)), (
+            "estimatedHours 为数值"
+        )
         assert project["estimatedHours"] > 0, "estimatedHours 必须 > 0"
         project_names.append(project["name"])
 

@@ -47,8 +47,8 @@ export function isScopeInFlight(key: string): boolean {
   return regenScopes.value.has(key);
 }
 
-/** 阶段级 scope key */
-function phaseScope(planId: string, phaseIndex: number): string {
+/** 阶段级 scope key（导出：ChapterSection 判断「所属阶段重生成中」复用同一约定） */
+export function phaseScope(planId: string, phaseIndex: number): string {
   return `${planId}:${phaseIndex}`;
 }
 

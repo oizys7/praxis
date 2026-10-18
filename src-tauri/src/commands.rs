@@ -37,9 +37,11 @@ use crate::db;
 use crate::error::AgentError;
 use crate::plan_store::{self, PlanRequestRow};
 use crate::protocol::{
-    parse_ndjson_line, parse_ws_envelope, PlanProgressEnvelope, PlanProgressEvent, PlanRecord,
-    PlanRequest, PlanResponse, PlanSummary, RegenOutline, RegenRequest, StreamEvent,
+    parse_ndjson_line, parse_ws_envelope, MonthCalendarDay, PlanProgressEnvelope,
+    PlanProgressEvent, PlanRecord, PlanRequest, PlanResponse, PlanSummary, RegenOutline,
+    RegenRequest, StreamEvent, YearHeatmapDay,
 };
+use crate::schedule;
 use crate::settings::{load_settings, save_settings_to_disk, AgentSettings};
 use crate::sidecar::ensure_agent_running;
 
@@ -1424,25 +1426,66 @@ pub async fn toggle_favorite(id: String) -> Result<bool, AgentError> {
     db::toggle_favorite(&config, &id).await
 }
 
-/// 更新计划的每周学习日（Task E 需求 5）：非空、取值 1..=7、去重排序落库，
-/// 返回归一化数组（前端直接采用）；校验失败 / 计划不走 DB 均归一为
-/// AgentError 中文文案透传。
+/// 开始学习（打卡日历真数据需求 1）：提交每周学习日，写学习状态 active /
+/// 开始日期今天，全部章节按学习日分配落 study_schedule；不打卡今天。
 #[tauri::command]
-pub async fn set_plan_study_days(id: String, days: Vec<u8>) -> Result<Vec<u8>, AgentError> {
+pub async fn start_learning(id: String, days: Vec<u8>) -> Result<(), AgentError> {
     let config = load_db_config();
     let pool = db::pool(&config).await?;
-    plan_store::set_study_days(&pool, db::parse_id(&id)?, &days).await
+    schedule::start_learning(&pool, db::parse_id(&id)?, &days).await
 }
 
-/// 当日已学打卡开关（Task E）：done → 写入，undone → 撤销，两路幂等；
-/// day 为本地日期 'YYYY-MM-DD'，解析失败归一 Db 中文文案。
+/// 修改学习日（需求 3，仅学习中）：今天之前与今天已完成的日程不动，
+/// 今天未完成与未来的章节按新学习日从今天起重排。
 #[tauri::command]
-pub async fn set_study_day_mark(id: String, day: String, done: bool) -> Result<(), AgentError> {
-    let parsed_day = chrono::NaiveDate::parse_from_str(day.trim(), "%Y-%m-%d")
-        .map_err(|_| AgentError::Db(format!("无效的日期：{day}（应为 YYYY-MM-DD）")));
+pub async fn update_learning_days(id: String, days: Vec<u8>) -> Result<(), AgentError> {
     let config = load_db_config();
     let pool = db::pool(&config).await?;
-    plan_store::set_day_mark(&pool, db::parse_id(&id)?, parsed_day?, done).await
+    schedule::update_learning_days(&pool, db::parse_id(&id)?, &days).await
+}
+
+/// 行级打卡开关（需求 7，每章独立勾选；仅允许 date ≤ 今天）。
+/// date 为本地日期 'YYYY-MM-DD'，解析失败归一 Db 中文文案。
+#[tauri::command]
+pub async fn toggle_schedule_item(
+    id: String,
+    date: String,
+    phase_idx: u32,
+    chapter_idx: u32,
+    done: bool,
+) -> Result<(), AgentError> {
+    let parsed_date = chrono::NaiveDate::parse_from_str(date.trim(), "%Y-%m-%d")
+        .map_err(|_| AgentError::Db(format!("无效的日期：{date}（应为 YYYY-MM-DD）")));
+    let config = load_db_config();
+    let pool = db::pool(&config).await?;
+    schedule::toggle_schedule_item(
+        &pool,
+        db::parse_id(&id)?,
+        parsed_date?,
+        phase_idx as i32,
+        chapter_idx as i32,
+        done,
+    )
+    .await
+}
+
+/// 月历查询（需求 5）：当前月日程按天组织（只含有数据的天）。
+#[tauri::command]
+pub async fn query_month_calendar(
+    year: i32,
+    month: u32,
+) -> Result<Vec<MonthCalendarDay>, AgentError> {
+    let config = load_db_config();
+    let pool = db::pool(&config).await?;
+    schedule::query_month(&pool, year, month).await
+}
+
+/// 年热力图查询（需求 6）：按天聚合 total/done 强度。
+#[tauri::command]
+pub async fn query_year_heatmap(year: i32) -> Result<Vec<YearHeatmapDay>, AgentError> {
+    let config = load_db_config();
+    let pool = db::pool(&config).await?;
+    schedule::query_year(&pool, year).await
 }
 
 #[cfg(test)]

@@ -297,9 +297,13 @@ def _port(section: dict[str, Any], name: str, path: str, default: int) -> int:
     if value is None:
         return default
     if isinstance(value, bool) or not isinstance(value, int):
-        raise ConfigParseError(f"配置字段 {path} 必须是 1-65535 的整数，实际为 {value!r}")
+        raise ConfigParseError(
+            f"配置字段 {path} 必须是 1-65535 的整数，实际为 {value!r}"
+        )
     if not 1 <= value <= 65535:
-        raise ConfigParseError(f"配置字段 {path} 必须是 1-65535 的整数，实际为 {value!r}")
+        raise ConfigParseError(
+            f"配置字段 {path} 必须是 1-65535 的整数，实际为 {value!r}"
+        )
     return value
 
 

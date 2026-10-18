@@ -190,7 +190,9 @@ class TaskRegistry:
     # ------------------------------------------------------------------
 
     async def _run(
-        self, entry: TaskEntry, generator_factory: Callable[[], AsyncIterator[dict[str, Any]]]
+        self,
+        entry: TaskEntry,
+        generator_factory: Callable[[], AsyncIterator[dict[str, Any]]],
     ) -> None:
         """驱动单条任务：dict 生成器 → 事件日志追加；异常 → done(service)；
         cancel → done(cancelled)。退出时统一翻转 status 并记录 TTL 起点。"""
@@ -268,9 +270,7 @@ class TaskRegistry:
                         "type": "done",
                         "response": PlanResponse(
                             status="error",
-                            error=ErrorDetail(
-                                code="cancelled", message="生成已取消"
-                            ),
+                            error=ErrorDetail(code="cancelled", message="生成已取消"),
                         ).model_dump(mode="json", by_alias=True),
                     },
                 )
@@ -304,7 +304,10 @@ class TaskRegistry:
         for task_id, entry in self.tasks.items():
             if entry.status is TaskStatus.running:
                 continue
-            if entry.finished_at is not None and now - entry.finished_at > TASK_TTL_SECONDS:
+            if (
+                entry.finished_at is not None
+                and now - entry.finished_at > TASK_TTL_SECONDS
+            ):
                 expired.append(task_id)
         for task_id in expired:
             self.tasks.pop(task_id, None)
@@ -432,7 +435,9 @@ async def _regen_event_dicts(payload: RegenRequest) -> AsyncIterator[dict[str, A
 
     try:
         if payload.chapter_index is None:  # 全阶段重生成
-            phase = await nodes.regenerate_phase(request_dict, outline_dict, phase_index)
+            phase = await nodes.regenerate_phase(
+                request_dict, outline_dict, phase_index
+            )
             yield {"type": "phase", "index": phase_index, "phase": phase}
             response = PlanResponse(status="plan")
         else:  # 单章重生成

@@ -30,6 +30,7 @@ import ClarificationPanel from "@/components/ClarificationPanel.vue";
 import PlanForm from "@/components/PlanForm.vue";
 import PlanListView from "@/components/PlanListView.vue";
 import PlanResult from "@/components/PlanResult.vue";
+import LoadingState from "@/components/LoadingState.vue";
 import type { PlanRecord, PlanRequest, StudyPlan } from "@/types/agent";
 
 /**
@@ -281,16 +282,29 @@ async function onSubmit(request: PlanRequest) {
 }
 
 /** 查看历史计划：注入已保存的计划并切到查看视图（携带 id 供重生成入口） */
+/** 跨页打开详情的拉取中占位（乐观切视图后、详情数据到达前） */
+const openingDetail = ref(false);
+
 /**
  * 跨页导航入口（日历抽屉「打开计划详情」）：按计划 id 拉详情后打开。
- * 拉取失败静默落入 error 态由页面呈现。
+ * 乐观先切详情布局（historyMode 下表单/页头全隐藏），拉取期间以
+ * LoadingState 占位——避免先闪一帧列表再跳详情；拉取失败静默落入
+ * error 态由页面呈现。
  */
 async function openPlanById(planId: string) {
+  openingDetail.value = true;
+  planView.value = "create";
+  historyMode.value = true;
+  historyPlanId.value = planId;
+  result.value = null; // 清上次打开残留，防误显旧计划
+  error.value = null;
   try {
     const record = await fetchPlanRecord(planId);
     openHistoryPlan(record);
   } catch (e) {
     error.value = normalizeError(e);
+  } finally {
+    openingDetail.value = false;
   }
 }
 
@@ -411,6 +425,8 @@ function onPlanRefreshed(plan: StudyPlan) {
       <!-- 交互重构：单轴纵向流——参数卡在顶部（生成中收起为摘要条），
            其下依次过程卡/骨架树/结果；左右双栏并排取消，自上而下一条主轴 -->
       <div class="mx-auto w-full max-w-3xl space-y-5">
+        <!-- 跨页打开详情：数据到达前的占位（乐观切视图防列表闪现） -->
+        <LoadingState v-if="openingDetail" text="正在打开计划…" />
         <!-- 创建态页头（历史详情由 PlanResult hero 承担，不重复） -->
         <div v-if="!historyMode">
           <h2 class="font-display text-3xl font-semibold tracking-tight">

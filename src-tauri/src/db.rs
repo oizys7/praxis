@@ -83,6 +83,17 @@ pub async fn pool(config: &DbConfig) -> Result<PgPool, AgentError> {
         );
     }
     let pool = pool.map_err(|e| AgentError::Db(format!("连接云端数据库失败：{e}")))?;
+
+    // 拿锁后 double-check：并发首连时（如启动清扫与首个命令同时到达）只有
+    // 一人执行 ensure_schema 与写回，其余人复用先到者的池（自己多建的连接
+    // 随 drop 由后台回收）——否则两份 DDL 并发执行会互撞 already exists
+    let mut guard = POOL.lock().await;
+    if let Some(entry) = guard.as_ref() {
+        if entry.key == key {
+            return Ok(entry.pool.clone());
+        }
+    }
+    // 持锁执行 DDL：串行化首次建表/演化（后续快路径命中不再进入本段）
     ensure_schema(&pool).await?;
     info!(
         host = %config.host,
@@ -90,15 +101,10 @@ pub async fn pool(config: &DbConfig) -> Result<PgPool, AgentError> {
         elapsed_ms = started.elapsed().as_millis() as u64,
         "云端数据库已连接"
     );
-
-    let mut guard = POOL.lock().await;
-    // 并发重建时后到者让先到者（同 key 池等价），避免无谓抖动
-    if guard.as_ref().is_none_or(|e| e.key != key) {
-        *guard = Some(PoolEntry {
-            key,
-            pool: pool.clone(),
-        });
-    }
+    *guard = Some(PoolEntry {
+        key,
+        pool: pool.clone(),
+    });
     Ok(pool)
 }
 
@@ -142,10 +148,15 @@ pub(crate) async fn list_plans_by_pool(
 ) -> Result<Vec<PlanSummary>, AgentError> {
     let pattern = format!("%{}%", query.trim());
     let rows = sqlx::query(
-        "SELECT id, title, goal, overview, level, weeks, favorite, created_at, status, study_days
-         FROM plans
-         WHERE title ILIKE $1 OR goal ILIKE $1
-         ORDER BY favorite DESC, created_at DESC
+        "SELECT p.id, p.title, p.goal, p.overview, p.level, p.weeks, p.favorite, p.created_at, p.status, p.study_days,
+                p.learning_status, p.learning_started_at, p.study_total, p.study_done,
+                COALESCE((SELECT COUNT(*) FROM chapters c JOIN phases ph ON c.phase_id = ph.id
+                          WHERE ph.plan_id = p.id), 0) AS chapter_total,
+                COALESCE((SELECT COUNT(*) FROM chapters c JOIN phases ph ON c.phase_id = ph.id
+                          WHERE ph.plan_id = p.id AND c.status = 'complete'), 0) AS chapter_done
+         FROM plans p
+         WHERE p.title ILIKE $1 OR p.goal ILIKE $1
+         ORDER BY p.favorite DESC, p.created_at DESC
          LIMIT $2",
     )
     .bind(&pattern)
@@ -161,6 +172,15 @@ pub(crate) async fn list_plans_by_pool(
         let weeks: i32 = row.try_get("weeks").map_err(db_err)?;
         // 每周学习日（Task E）：列默认全周，读回恒为数组
         let study_days: sqlx::types::Json<Vec<u8>> = row.try_get("study_days").map_err(db_err)?;
+        // 学习状态（not_started | active | completed）+ 开始日期（null = 未开始）
+        let learning_status: String = row.try_get("learning_status").map_err(db_err)?;
+        let learning_started: Option<chrono::NaiveDate> =
+            row.try_get("learning_started_at").map_err(db_err)?;
+        let chapter_total: i64 = row.try_get("chapter_total").map_err(db_err)?;
+        let chapter_done: i64 = row.try_get("chapter_done").map_err(db_err)?;
+        // 打卡计数冗余列（INT）：应用层增量维护，列表直读零子查询
+        let study_total: i32 = row.try_get("study_total").map_err(db_err)?;
+        let study_done: i32 = row.try_get("study_done").map_err(db_err)?;
         result.push(PlanSummary {
             id: id.to_string(),
             title: row.try_get("title").map_err(db_err)?,
@@ -172,6 +192,12 @@ pub(crate) async fn list_plans_by_pool(
             level: row.try_get("level").map_err(db_err)?,
             weeks: weeks.max(0) as u32,
             study_days: study_days.0,
+            learning_status,
+            learning_started_at: learning_started.map(|d| d.format("%Y-%m-%d").to_string()),
+            chapter_total: chapter_total.max(0) as u32,
+            chapter_done: chapter_done.max(0) as u32,
+            study_total: study_total.max(0) as u32,
+            study_done: study_done.max(0) as u32,
             favorite: row.try_get("favorite").map_err(db_err)?,
             created_at: created.to_rfc3339(),
         });
@@ -208,13 +234,6 @@ pub(crate) async fn get_plan_by_pool(pool: &PgPool, id: &str) -> Result<PlanReco
     let overview: String = row.try_get("overview").map_err(db_err)?;
     // 每周学习日（Task E）：列默认全周，读回恒为数组
     let study_days: sqlx::types::Json<Vec<u8>> = row.try_get("study_days").map_err(db_err)?;
-    // 已打卡日（Task E）：'YYYY-MM-DD' 升序序列（前端 Set 化查询）
-    let marks = crate::plan_store::load_plan_marks(pool, record_id).await?;
-    let mut day_marks: Vec<String> = marks
-        .keys()
-        .map(|d| d.format("%Y-%m-%d").to_string())
-        .collect();
-    day_marks.sort();
     let plan = crate::plan_store::load_study_plan(
         pool,
         record_id,
@@ -232,7 +251,6 @@ pub(crate) async fn get_plan_by_pool(pool: &PgPool, id: &str) -> Result<PlanReco
         level: row.try_get("level").map_err(db_err)?,
         weeks: weeks.max(0) as u32,
         study_days: study_days.0,
-        day_marks,
         favorite: row.try_get("favorite").map_err(db_err)?,
         created_at: created.to_rfc3339(),
         plan,

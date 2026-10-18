@@ -53,9 +53,7 @@ def validate_plan(
 
     phases = plan_dict.get("phases") or []
     if not (MIN_PHASES <= len(phases) <= MAX_PHASES):
-        issues.append(
-            f"阶段数为 {len(phases)}，需在 {MIN_PHASES}-{MAX_PHASES} 个之间"
-        )
+        issues.append(f"阶段数为 {len(phases)}，需在 {MIN_PHASES}-{MAX_PHASES} 个之间")
         # 规则 1 全局失败：映射所有阶段索引（0 个阶段时为空集）
         failed_indexes.update(range(len(phases)))
 
@@ -81,7 +79,9 @@ def _check_phase(phase: dict, index: int, issues: list[str], failed: set[int]) -
         return
 
     for chapter_index, chapter in enumerate(chapters):
-        _check_chapter(chapter, f"{label}第 {chapter_index + 1} 章", issues, failed, index)
+        _check_chapter(
+            chapter, f"{label}第 {chapter_index + 1} 章", issues, failed, index
+        )
 
     _check_project(phase, label, issues, failed, index)
 
@@ -158,9 +158,7 @@ def _check_project(
         issues.append(f"{label}项目描述为空（project.description）")
         failed.add(index)
     if len(project.get("steps") or []) < MIN_PROJECT_STEPS:
-        issues.append(
-            f"{label}项目步骤不足 {MIN_PROJECT_STEPS} 条（project.steps）"
-        )
+        issues.append(f"{label}项目步骤不足 {MIN_PROJECT_STEPS} 条（project.steps）")
         failed.add(index)
     if len(project.get("acceptanceCriteria") or []) < MIN_PROJECT_ACCEPTANCE:
         issues.append(

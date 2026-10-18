@@ -170,7 +170,7 @@ onUnmounted(() => disposeProgressListener());
       <main
         v-if="activePage === 'plan'"
         ref="planScrollHost"
-        class="min-w-0 flex-1 overflow-y-auto"
+        class="scroll-stable min-w-0 flex-1 overflow-y-auto"
       >
         <PlanWorkbench ref="workbenchRef" />
       </main>
@@ -178,7 +178,7 @@ onUnmounted(() => disposeProgressListener());
       <!-- 打卡日历页：视觉版式先行（mock 数据，功能暂不实现） -->
       <main
         v-else-if="activePage === 'calendar'"
-        class="min-w-0 flex-1 overflow-y-auto"
+        class="scroll-stable min-w-0 flex-1 overflow-y-auto"
       >
         <CalendarView @open-plan="onCalendarOpenPlan" />
       </main>
@@ -186,7 +186,7 @@ onUnmounted(() => disposeProgressListener());
       <!-- 笔记生成页：空占位 -->
       <main
         v-else-if="activePage === 'notes'"
-        class="min-w-0 flex-1 overflow-y-auto"
+        class="scroll-stable min-w-0 flex-1 overflow-y-auto"
       >
         <NotesView />
       </main>
@@ -194,7 +194,7 @@ onUnmounted(() => disposeProgressListener());
       <!-- 设置页：Agent 运行配置（保存即写盘 + 热加载） -->
       <main
         v-else-if="activePage === 'settings'"
-        class="min-w-0 flex-1 overflow-y-auto"
+        class="scroll-stable min-w-0 flex-1 overflow-y-auto"
       >
         <SettingsPage />
       </main>

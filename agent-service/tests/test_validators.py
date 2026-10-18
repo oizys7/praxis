@@ -18,7 +18,8 @@ def _make_chapter(title: str = "章节", content_chars: int = 1000) -> dict:
         "summary": "章节概述",
         "contentMd": (
             f"## {title}\n\n"
-            f"### 概念入门\n\n" + "深" * content_chars
+            f"### 概念入门\n\n"
+            + "深" * content_chars
             + "\n\n```mermaid\nflowchart TD\n    A --> B\n```\n"
         ),
     }

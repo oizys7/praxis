@@ -235,8 +235,7 @@ def _chapter(title: str, goal: str) -> dict[str, Any]:
     content_md = "\n\n".join(
         (
             f"## {title}\n\n本章围绕「{title}」展开，结合「{goal}」的目标场景梳理主线内容。",
-            "### 什么是它 / 为什么需要它\n\n"
-            + _knowledge_section(title, goal),
+            "### 什么是它 / 为什么需要它\n\n" + _knowledge_section(title, goal),
             _CHAPTER_MERMAID,
             f"## 深入剖析\n\n{_deep_dive_content(title, goal)}",
         )

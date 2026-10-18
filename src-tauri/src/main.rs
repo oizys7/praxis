@@ -13,6 +13,7 @@ mod error;
 mod logging;
 mod plan_store;
 mod protocol;
+mod schedule;
 mod secret;
 mod settings;
 mod sidecar;
@@ -45,7 +46,9 @@ fn main() {
         // - generate_plan：转发学习计划生成请求到 Python Agent 服务
         // - regenerate_phase / regenerate_chapter：阶段/章节级重生成（任务 15）
         // - ping_agent：健康检查，用于前端展示服务在线状态
-        // - set_plan_study_days / set_study_day_mark：每周学习日 + 当日已学打卡（Task E）
+        // - start_learning / update_learning_days / toggle_schedule_item：
+        //   开始学习 / 修改学习日 / 行级打卡（打卡日历真数据）
+        // - query_month_calendar / query_year_heatmap：月历按天组织 / 年热力图
         .invoke_handler(tauri::generate_handler![
             commands::generate_plan,
             commands::regenerate_phase,
@@ -57,8 +60,11 @@ fn main() {
             commands::get_plan,
             commands::delete_plan,
             commands::toggle_favorite,
-            commands::set_plan_study_days,
-            commands::set_study_day_mark,
+            commands::start_learning,
+            commands::update_learning_days,
+            commands::toggle_schedule_item,
+            commands::query_month_calendar,
+            commands::query_year_heatmap,
         ])
         .setup(|app| {
             use tauri::Manager;

@@ -134,7 +134,8 @@ async def test_generation_payload_invalid_422(monkeypatch):
         assert both.status_code == 422, both.text
         # regen_phase 缺 regenRequest → 422
         wrong_field = await client.post(
-            "/api/generations", json={"kind": "regen_phase", "planRequest": VALID_REQUEST}
+            "/api/generations",
+            json={"kind": "regen_phase", "planRequest": VALID_REQUEST},
         )
         assert wrong_field.status_code == 422, wrong_field.text
 
@@ -165,9 +166,7 @@ async def test_plan_event_sequence(monkeypatch):
     ), types
     assert outline["phaseCount"] >= 2
     assert outline["title"], "outline 事件必须携带计划标题"
-    expected_chapters = sum(
-        len(p["chapterTitles"]) for p in outline["phases"]
-    )
+    expected_chapters = sum(len(p["chapterTitles"]) for p in outline["phases"])
     assert len(chapter_events) == expected_chapters, "每章恰好一条 chapter 事件"
     assert len(phase_events) == outline["phaseCount"], "每阶段恰好一条 phase 事件"
     for e in phase_events:
@@ -186,8 +185,7 @@ async def test_plan_event_sequence(monkeypatch):
         assert set(chapter) == {"title", "summary", "contentMd"}
         assert "```mermaid" in chapter["contentMd"], "正文必须内联 mermaid 码块"
         assert (
-            chapter["title"]
-            in outline["phases"][e["phaseIndex"]]["chapterTitles"]
+            chapter["title"] in outline["phases"][e["phaseIndex"]]["chapterTitles"]
         ), "章题与骨架一致"
     for e in phase_events:
         assert set(e) == {"type", "index", "phase"}
@@ -286,7 +284,12 @@ async def test_snapshot_fields(monkeypatch):
             pytest.fail("任务未在 30s 内完成")
         snapshot = snap.json()
         assert set(snapshot) == {
-            "taskId", "kind", "status", "firstSeq", "lastSeq", "done",
+            "taskId",
+            "kind",
+            "status",
+            "firstSeq",
+            "lastSeq",
+            "done",
         }
         assert snapshot["taskId"] == task_id
         assert snapshot["kind"] == "plan"
@@ -307,9 +310,7 @@ async def test_snapshot_fields(monkeypatch):
 async def _wait_finished_plan() -> str:
     from app.schemas import PlanRequest
 
-    task_id = await registry.submit(
-        "plan", PlanRequest.model_validate(VALID_REQUEST)
-    )
+    task_id = await registry.submit("plan", PlanRequest.model_validate(VALID_REQUEST))
     await _drain_until_terminal(task_id)
     return task_id
 
@@ -330,9 +331,12 @@ class TestWsReplay:
         task_id = asyncio.run(_wait_finished_plan())
         events = _fetch_log(task_id)
 
-        with TestClient(app) as client, client.websocket_connect(
-            f"/api/generations/{task_id}/events?cursor=0"
-        ) as ws:
+        with (
+            TestClient(app) as client,
+            client.websocket_connect(
+                f"/api/generations/{task_id}/events?cursor=0"
+            ) as ws,
+        ):
             replay = _drain_until_done(ws)
 
         assert len(replay) == len(events), "回放必须不丢不重，与日志一比一对齐"
@@ -346,21 +350,30 @@ class TestWsReplay:
         task_id = asyncio.run(_wait_finished_plan())
         events = _fetch_log(task_id)
 
-        with TestClient(app) as client, client.websocket_connect(
-            f"/api/generations/{task_id}/events?cursor=1"
-        ) as ws:
+        with (
+            TestClient(app) as client,
+            client.websocket_connect(
+                f"/api/generations/{task_id}/events?cursor=1"
+            ) as ws,
+        ):
             replay = _drain_until_done(ws)
 
         assert len(replay) == len(events) - 1, "cursor=1 应跳过 seq=1"
         for i, message in enumerate(replay):
             assert message["seq"] == 2 + i, "后缀 seq 必须连续"
-        assert [m["event"] for m in replay] == events[1:], "后缀必须逐事件与日志 seq>=2 完全一致"
+        assert [m["event"] for m in replay] == events[1:], (
+            "后缀必须逐事件与日志 seq>=2 完全一致"
+        )
 
     def test_ws_missing_task_4404(self):
         """任务不存在 → WS 关闭 code=4404。"""
-        with TestClient(app) as client, pytest.raises(Exception) as exc_info, client.websocket_connect(
-            "/api/generations/nonexistent/events?cursor=0"
-        ) as ws:
+        with (
+            TestClient(app) as client,
+            pytest.raises(Exception) as exc_info,
+            client.websocket_connect(
+                "/api/generations/nonexistent/events?cursor=0"
+            ) as ws,
+        ):
             ws.receive_text()
 
         code = getattr(exc_info.value, "code", None)
@@ -519,7 +532,9 @@ async def test_business_error_becomes_done_error(monkeypatch):
     monkeypatch.setattr(settings, "allow_mock_llm", False)
 
     async def _boom(*args, **kwargs):
-        raise AgentServiceError("模型响应超时或网络异常，请稍后重试，或在设置页更换模型")
+        raise AgentServiceError(
+            "模型响应超时或网络异常，请稍后重试，或在设置页更换模型"
+        )
 
     monkeypatch.setattr(nodes, "invoke_structured", _boom)
     monkeypatch.setattr(nodes, "has_llm_config", lambda: True)
@@ -562,5 +577,3 @@ async def test_unexpected_exception_becomes_service_done(monkeypatch):
     assert events[-1]["type"] == "done"
     assert events[-1]["response"]["status"] == "error"
     assert events[-1]["response"]["error"]["code"] == "service"
-
-

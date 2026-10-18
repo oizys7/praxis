@@ -79,7 +79,7 @@ watch(() => props.code, render);
     >
 图示渲染失败，显示原始源码：
 {{ props.code }}</pre>
-    <div v-else class="py-6 text-center text-xs text-muted-foreground">
+    <div v-else class="min-h-40 py-6 text-center text-xs text-muted-foreground">
       图示渲染中…
     </div>
     <figcaption

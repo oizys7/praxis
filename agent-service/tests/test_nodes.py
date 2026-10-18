@@ -46,7 +46,9 @@ def _state(**overrides: Any) -> AgentState:
     return cast(AgentState, state)
 
 
-def _drafts_and_extras(outline: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+def _drafts_and_extras(
+    outline: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """用确定性 mock 填满章草稿复合键与阶段轻装（测试共用基底）。"""
     drafts: dict[str, Any] = {}
     extras: dict[str, Any] = {}
@@ -166,11 +168,12 @@ async def test_expand_chapter_real_path_variables(monkeypatch):
     assert variables["phase_name"] == phase_outline["name"]
     # 兄弟章排除自身
     assert (
-        variables["sibling_chapter_titles"]
-        == f"- {phase_outline['chapterTitles'][1]}"
+        variables["sibling_chapter_titles"] == f"- {phase_outline['chapterTitles'][1]}"
     )
     assert set(result) == {"chapter_drafts"}
-    assert result["chapter_drafts"] == {"0:0": {"title": "核心概念入门", "summary": "概述", "contentMd": "# 正文"}}
+    assert result["chapter_drafts"] == {
+        "0:0": {"title": "核心概念入门", "summary": "概述", "contentMd": "# 正文"}
+    }
 
 
 @pytest.mark.asyncio
@@ -203,7 +206,11 @@ async def test_expand_phase_wrap_parallel_safe(monkeypatch):
     outline = build_mock_outline(REQUEST)
 
     for index, phase_outline in enumerate(outline["phases"]):
-        payload = {"request": REQUEST, "phase_outline": phase_outline, "phase_index": index}
+        payload = {
+            "request": REQUEST,
+            "phase_outline": phase_outline,
+            "phase_index": index,
+        }
         result = await nodes.expand_phase_wrap_node(payload)
 
         assert set(result) == {"phase_extras"}, "顶层只允许 phase_extras 一个键"
@@ -240,9 +247,9 @@ async def test_expand_phase_wrap_real_path_variables(monkeypatch):
     assert captured["model_cls"] is nodes.PhaseExtrasOutput
     assert captured["prompt_key"] == "phase_extras"
     variables = captured["variables"]
-    assert (
-        outline["phases"][1]["name"] in variables["phase_outline"]
-    ), "骨架须 JSON 序列化后注入"
+    assert outline["phases"][1]["name"] in variables["phase_outline"], (
+        "骨架须 JSON 序列化后注入"
+    )
     assert variables["weekly_hours"] == "10" and variables["weeks"] == "12"
     assert set(result) == {"phase_extras"}
     assert result["phase_extras"]["1"]["practice"] == ["练"]
@@ -271,7 +278,8 @@ async def test_expand_revision_keeps_old_draft_on_failure(monkeypatch):
     state = _state(
         outline=outline,
         chapter_drafts=broken_break,
-        phase_extras=build_mock_extras(REQUEST, outline["phases"][0], 0) and {"0": build_mock_extras(REQUEST, outline["phases"][0], 0)},
+        phase_extras=build_mock_extras(REQUEST, outline["phases"][0], 0)
+        and {"0": build_mock_extras(REQUEST, outline["phases"][0], 0)},
         pending_phase_indexes=[0],
         failed_chapter_keys=["0:0"],
         review_notes=["第一轮评审意见"],
@@ -337,9 +345,9 @@ async def test_expand_revision_structural_redoes_all_chapters_and_extras(monkeyp
 
     assert result["revised"] is True
     phase_titles = outline["phases"][0]["chapterTitles"]
-    assert set(result["chapter_drafts"]) == {f"0:{c}" for c in range(len(phase_titles))}, (
-        "全部章重扩"
-    )
+    assert set(result["chapter_drafts"]) == {
+        f"0:{c}" for c in range(len(phase_titles))
+    }, "全部章重扩"
     assert set(result["phase_extras"]) == {"0"}, "结构回炉连带轻装重做"
 
 
@@ -464,8 +472,9 @@ async def test_assemble_extras_missing_retries_once(monkeypatch):
     retried = result["phase_extras"]
     assert set(retried) == {"1"}, "补放增量只含缺失阶段"
     assert retried["1"]["project"]["name"].strip(), "补放产物含合法项目"
-    assert result["plan"]["phases"][1]["project"]["name"] == (
-        retried["1"]["project"]["name"]
+    assert (
+        result["plan"]["phases"][1]["project"]["name"]
+        == (retried["1"]["project"]["name"])
     ), "补放结果直接合入计划"
     assert result["pending_phase_indexes"] == [], "补放成功后无阶段罚项"
 

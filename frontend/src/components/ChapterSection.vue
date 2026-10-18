@@ -4,8 +4,10 @@ import MarkdownContent from "@/components/MarkdownContent.vue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  isRegenInFlight,
   isScopeInFlight,
   normalizeError,
+  phaseScope,
   regenerateChapter,
 } from "@/composables/useAgent";
 import { fetchPlanRecord } from "@/composables/usePlanHistory";
@@ -33,6 +35,19 @@ const props = defineProps<{
 /** 重生成完成：刷新后的计划整体上抛供调用方替换 */
 const emit = defineEmits<{ refreshed: [plan: StudyPlan] }>();
 
+/** 所属阶段级重生成是否在飞（阶段按钮发起，本阶段章节由后端统一重做） */
+const phaseRegenInFlight = computed(
+  () =>
+    !!props.planId &&
+    props.phaseIndex !== undefined &&
+    isScopeInFlight(phaseScope(props.planId, props.phaseIndex)),
+);
+
+/** 同计划任意重生成是否在飞（跨 scope 互斥：生成结束前所有生成入口不可点） */
+const planRegenInFlight = computed(
+  () => !!props.planId && isRegenInFlight(props.planId),
+);
+
 /** 章节级徽标仅 failed/pending：complete 章节照常渲染不额外加标 */
 const statusBadge = computed<{
   label: string;
@@ -40,10 +55,13 @@ const statusBadge = computed<{
 } | null>(() => {
   switch (props.chapter.status) {
     case "failed":
-      return { label: "✗ 失败", variant: "destructive" };
+      // 阶段重生成中失败章节会被重做 → 显示生成中而非失败
+      return phaseRegenInFlight.value
+        ? { label: "⟳ 生成中", variant: "secondary" }
+        : { label: "✗ 失败", variant: "destructive" };
     case "pending":
       // 行还在 generating 时 pending ≠ 未开始，而是「正在生成本章节」（反馈③区分）
-      return props.rowStatus === "generating"
+      return props.rowStatus === "generating" || phaseRegenInFlight.value
         ? { label: "⟳ 生成中", variant: "secondary" }
         : { label: "◌ 未生成", variant: "secondary" };
     default:
@@ -184,7 +202,7 @@ const collapsed = ref(false);
           v-if="canRegenerate"
           variant="outline"
           size="sm"
-          :disabled="busy || regenScopeInFlight"
+          :disabled="planRegenInFlight"
           @click="onRegenerate"
         >
           <span

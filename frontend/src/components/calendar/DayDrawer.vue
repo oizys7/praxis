@@ -1,60 +1,48 @@
 <script setup lang="ts">
 /**
  * DayDrawer：日钻取抽屉（右滑弹层）。
- * - title 当天日期（衬线 font-display）+ 各计划分组的当日分配章节清单
- *   （阶段名 + 章节名），每条带完成徽章（✓ 已完成 / ◌ 未完成，
- *   口径 = 章 status=complete）
- * - 每组头部显示每周学习日（只读小字；编辑入口在日历页左侧计划进度面板）
- * - 每组尾部「当日已学」checkbox：打卡独立于章节完成（Task E 双语义位），
- *   切换经宿主调 set_study_day_mark 落库（幂等）
+ * - title 当天日期（衬线 font-display）+ 各计划分组的当日章节清单
+ *   （阶段名 + 章节名）
+ * - 行级打卡（每章独立勾选，study_schedule.done）：勾选 = 该章已学打卡，
+ *   仅允许今天及之前的日程勾选（未来行禁用，与 Rust 校验一致）
+ * - 组头为计划名（可点跳详情）；学习日编辑入口在日历页左侧计划进度面板
  * - 交互契约：Esc 关闭 + 点击遮罩关闭 + 开启时 focus 移入抽屉
  *   （role=dialog aria-modal，键盘可达性对齐 Web Interface Guidelines）
- * - 数据全部来自宿主注入的真计划分配（useStudyAllocation 纯函数产出）
+ * - 数据全部来自宿主注入的月历查询真数据（query_month_calendar 按天组织）
  */
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
-import { Check, Circle, X } from "lucide-vue-next";
-import { Badge } from "@/components/ui/badge";
+import { Circle, X } from "lucide-vue-next";
+import type { ScheduleItem } from "@/types/agent";
 
-/** 单个计划当日的分配条目 */
-export interface DrawerAssignment {
-  phaseIndex: number;
-  phaseName: string;
-  chapterIndex: number;
-  chapterName: string;
-  /** 章 status=complete */
-  done: boolean;
-}
-
-/** 按计划分组的当日安排（含打卡态与学习日编辑初值） */
+/** 按计划分组的当日安排（来自月历数据的该天条目） */
 export interface DrawerPlanGroup {
   planId: string;
   planTitle: string;
-  /** 该日已打卡（当日已学） */
-  marked: boolean;
-  /** 该计划的每周学习日（1=周一..7=周日，编辑 chips 初值） */
-  studyDays: number[];
-  assignments: DrawerAssignment[];
+  items: ScheduleItem[];
 }
 
 const props = defineProps<{
   open: boolean;
   date: Date | null;
   groups: DrawerPlanGroup[];
-  /** 打卡/保存学习日请求在飞（禁用对应控件防重复提交） */
+  /** 打卡请求在飞（禁用对应行防重复提交） */
   saving: boolean;
+  /** 该抽屉日是否允许打卡（今天及之前为 true；未来日期整组只读展示） */
+  markable: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: "close"): void;
-  (e: "toggle-mark", planId: string, done: boolean): void;
+  /** 行级打卡切换（每章独立勾选） */
+  (e: "toggle-item", planId: string, item: ScheduleItem, done: boolean): void;
   /** 跳转学习计划详情（组头计划名点击） */
   (e: "open-plan", planId: string): void;
 }>();
 
 const panelRef = ref<HTMLElement | null>(null);
 
-/** 打卡在飞的 planId 集合（checkbox 禁用防抖） */
-const markingIds = ref<Set<string>>(new Set());
+/** 打卡在飞行键集合（'planId:phaseIdx:chapterIdx'，行级禁用防抖） */
+const togglingKeys = ref<Set<string>>(new Set());
 
 /** 星期几中文（「一」..「日」，列序即 1..7） */
 const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"] as const;
@@ -72,28 +60,35 @@ const titleText = computed(() => {
 
 /** 全部组条目数与完成数（头部摘要） */
 const totalCount = computed(() =>
-  props.groups.reduce((sum, g) => sum + g.assignments.length, 0),
+  props.groups.reduce((sum, g) => sum + g.items.length, 0),
 );
 const doneCount = computed(() =>
   props.groups.reduce(
-    (sum, g) => sum + g.assignments.filter((a) => a.done).length,
+    (sum, g) => sum + g.items.filter((item) => item.done).length,
     0,
   ),
 );
 
-/** 打卡切换（在飞由宿主回写 marked 后自然同步；这里仅禁用本组控件） */
-function onToggleMark(group: DrawerPlanGroup, done: boolean) {
-  if (markingIds.value.has(group.planId) || props.saving) return;
-  markingIds.value = new Set(markingIds.value).add(group.planId);
-  emit("toggle-mark", group.planId, done);
+function itemKey(planId: string, item: ScheduleItem): string {
+  return `${planId}:${item.phaseIdx}:${item.chapterIdx}`;
 }
-/** 宿主在请求收尾后调用清在飞标记（经 defineExpose） */
-function settleMark(planId: string) {
-  const next = new Set(markingIds.value);
-  next.delete(planId);
-  markingIds.value = next;
+
+/** 行级打卡切换（在飞行由宿主刷新数据后自然同步；这里仅禁用本行） */
+function onToggleItem(group: DrawerPlanGroup, item: ScheduleItem) {
+  const key = itemKey(group.planId, item);
+  if (togglingKeys.value.has(key) || props.saving || !props.markable) return;
+  togglingKeys.value = new Set(togglingKeys.value).add(key);
+  emit("toggle-item", group.planId, item, !item.done);
 }
-defineExpose({ settleMark });
+
+/** 宿主在请求收尾后调用清在飞行标记（经 defineExpose） */
+function settleToggle(planId: string, item: ScheduleItem) {
+  const key = itemKey(planId, item);
+  const next = new Set(togglingKeys.value);
+  next.delete(key);
+  togglingKeys.value = next;
+}
+defineExpose({ settleToggle });
 
 function requestClose() {
   emit("close");
@@ -158,7 +153,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
               {{ titleText }}
             </h3>
             <p class="mt-1 text-xs tabular-nums text-muted-foreground">
-              {{ date.getFullYear() }} 年，共 {{ totalCount }} 项安排，已完成
+              {{ date.getFullYear() }} 年，共 {{ totalCount }} 项安排，已学
               {{ doneCount }} 项
             </p>
           </div>
@@ -180,7 +175,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
             class="rounded-lg border border-border"
             :aria-label="`${group.planTitle} 当日安排`"
           >
-            <!-- 组头：计划名（可点跳详情） + 每周学习日只读小字 -->
+            <!-- 组头：计划名（可点跳详情）+ 组完成度小字 -->
             <div
               class="flex items-center justify-between gap-3 border-b border-border px-4 py-3"
             >
@@ -195,43 +190,54 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
               </button>
               <span
                 class="shrink-0 text-xs tabular-nums text-muted-foreground"
-                :aria-label="`${group.planTitle} 每周学习日`"
+                :aria-label="`${group.planTitle} 当日完成度`"
               >
-                每周{{
-                  group.studyDays.map((d) => WEEKDAY_LABELS[d - 1]).join("·")
+                {{ group.items.filter((item) => item.done).length }}/{{
+                  group.items.length
                 }}
+                已学
               </span>
             </div>
 
-            <!-- 条目清单 -->
-            <ul v-if="group.assignments.length > 0" class="px-4 py-3">
+            <!-- 行级勾选清单（每章独立打卡） -->
+            <ul v-if="group.items.length > 0" class="px-4 py-3">
               <li
-                v-for="a in group.assignments"
-                :key="`${a.phaseIndex}-${a.chapterIndex}`"
-                class="flex items-start justify-between gap-3 border-b border-border/60 py-2.5 last:border-b-0"
+                v-for="item in group.items"
+                :key="`${item.phaseIdx}-${item.chapterIdx}`"
+                class="border-b border-border/60 py-2.5 last:border-b-0"
               >
-                <div class="min-w-0">
-                  <p class="truncate text-sm">
-                    {{ a.chapterName }}
-                  </p>
-                  <p
-                    class="mt-0.5 truncate text-xs tabular-nums text-muted-foreground"
-                  >
-                    阶段 {{ a.phaseIndex + 1 }} · {{ a.phaseName }}
-                  </p>
-                </div>
-                <Badge
-                  :variant="a.done ? 'success' : 'outline'"
-                  class="shrink-0"
+                <label
+                  class="flex cursor-pointer items-start justify-between gap-3"
+                  :class="{ 'cursor-not-allowed opacity-60': !markable }"
                 >
-                  <Check
-                    v-if="a.done"
-                    class="mr-1 h-3 w-3"
-                    aria-hidden="true"
-                  />
-                  <Circle v-else class="mr-1 h-3 w-3" aria-hidden="true" />
-                  {{ a.done ? "已完成" : "未完成" }}
-                </Badge>
+                  <div class="min-w-0">
+                    <p class="truncate text-sm">
+                      {{ item.chapterTitle }}
+                    </p>
+                    <p
+                      class="mt-0.5 truncate text-xs tabular-nums text-muted-foreground"
+                    >
+                      阶段 {{ item.phaseIdx + 1 }} · {{ item.phaseName }}
+                    </p>
+                  </div>
+                  <span class="flex shrink-0 items-center gap-1.5">
+                    <input
+                      type="checkbox"
+                      class="h-4 w-4 accent-success"
+                      :checked="item.done"
+                      :disabled="
+                        !markable ||
+                        saving ||
+                        togglingKeys.has(itemKey(group.planId, item))
+                      "
+                      :aria-label="`${item.chapterTitle} 已学打卡`"
+                      @change="onToggleItem(group, item)"
+                    />
+                    <span class="text-xs text-muted-foreground">
+                      {{ item.done ? "已学" : "未学" }}
+                    </span>
+                  </span>
+                </label>
               </li>
             </ul>
             <p
@@ -241,26 +247,6 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
             >
               该计划当日无学习安排
             </p>
-
-            <!-- 组尾：当日已学打卡 -->
-            <label
-              class="flex cursor-pointer items-center gap-3 border-t border-border bg-muted/20 px-4 py-3 transition-colors duration-200 hover:bg-accent/40"
-            >
-              <input
-                type="checkbox"
-                class="h-4 w-4 accent-success"
-                :checked="group.marked"
-                :disabled="markingIds.has(group.planId) || saving"
-                :aria-label="`${group.planTitle} 当日已学`"
-                @change="onToggleMark(group, !group.marked)"
-              />
-              <span class="text-sm">
-                当日已学
-                <span class="ml-1 text-xs text-muted-foreground">
-                  勾选标记该计划当天已完成
-                </span>
-              </span>
-            </label>
           </section>
 
           <!-- 空态：当天无任何安排 -->

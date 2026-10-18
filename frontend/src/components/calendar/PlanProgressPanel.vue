@@ -2,26 +2,23 @@
 /**
  * PlanProgressPanel：打卡日历页左侧的「计划进度管理」面板。
  *
- * 以计划（项目）为粒度管理学习进度，按打卡口径三态分组：
- * - 学习中：0 < 已打卡天数 < 总分配天数
- * - 未开始：已打卡天数为 0
- * - 已结束：已打卡天数 ≥ 总分配天数
- * 计划行级 generating/failed 不参与三态，单独以徽章提示。
+ * 按学习状态（plans.learning_status，真数据）三分类：
+ * - 学习中 active / 未开始 not_started / 已完成 completed；
+ * 生成中/失败（行级 generating/failed）不支持学习，归「未开始」组以状态点区分。
  *
- * 学习日编辑（自 DayDrawer 迁入）：行内七枚周几 chip，点击即切换，
- * 由父组件乐观保存（toggle-study-day）。标题可点 → 跳计划详情。
+ * 学习日 chips 仅本地暂存（点击不调接口）：
+ * - 未开始行：展开区选学习日 → 点【从今天开始】一次性提交（start-learning），
+ *   Rust 落定逐章日程且不打卡今天；
+ * - 学习中行：chips 变更后行内出现「保存学习日」确认（update-study-days），
+ *   Rust 保留今天之前与今天已完成、只重排未来。
+ * 进度口径 = 章节完成度（chapterDone/chapterTotal，list_plans 随行携带）。
  */
 import { computed, ref } from "vue";
 import { CalendarCheck, Play, SquareCheck } from "lucide-vue-next";
-import { computeDayAssignments } from "@/composables/useStudyAllocation";
-import type { PlanRecord } from "@/types/agent";
+import type { PlanSummary } from "@/types/agent";
 
 const props = defineProps<{
-  records: PlanRecord[];
-  /** planId → 已打卡 dayKey 集合 */
-  marksByPlan: Map<string, Set<string>>;
-  /** planId → 每周学习日（本地视图态，编辑后由父组件覆盖） */
-  studyDaysByPlan: Map<string, number[]>;
+  summaries: PlanSummary[];
   /** 保存请求在飞（chips 禁用防抖） */
   saving?: boolean;
 }>();
@@ -31,107 +28,131 @@ const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"] as cons
 
 const emit = defineEmits<{
   (e: "open-plan", planId: string): void;
-  (e: "toggle-study-day", planId: string, day: number): void;
-  /** 开始学习（未开始行确认）：保存学习日并打卡今天，进入学习中 */
-  (e: "start-plan", planId: string): void;
+  /** 学习中行保存学习日：今天之前与今天已完成不动，未来重排 */
+  (e: "update-study-days", planId: string, days: number[]): void;
+  /** 开始学习（未开始行）：提交学习日，从今天起落定日程（不打卡今天） */
+  (e: "start-learning", planId: string, days: number[]): void;
 }>();
 
 interface ProgressRow {
-  record: PlanRecord;
-  /** 总分配学习天数 */
-  total: number;
-  /** 已打卡天数 */
-  done: number;
-  /** 生效学习日（本地视图态优先） */
+  summary: PlanSummary;
+  /** 生效学习日（本地草稿优先，回退 summary.studyDays） */
   days: number[];
+  /** chips 相对库值有未保存改动 */
+  dirty: boolean;
 }
 
-/** 逐计划聚合分配天数与打卡数（与月历/抽屉同一口径） */
+/** 学习日本地草稿：planId → 未保存的每周学习日（chips 只改这里，不调接口） */
+const draftDays = ref<Map<string, number[]>>(new Map());
+
+/** 展开开始学习流程的计划 id（未开始组行内编辑，单开） */
+const expandedStart = ref<string | null>(null);
+
+function effectiveDays(summary: PlanSummary): number[] {
+  return draftDays.value.get(summary.id) ?? summary.studyDays ?? [];
+}
+
+function isDirty(summary: PlanSummary): boolean {
+  const draft = draftDays.value.get(summary.id);
+  if (draft === undefined) return false;
+  const base = [...(summary.studyDays ?? [])].sort().join(",");
+  return [...draft].sort().join(",") !== base;
+}
+
+/** chip 点击：仅更新本地草稿（至少保留一天；由父组件统一提交） */
+function toggleDraftDay(summary: PlanSummary, day: number) {
+  const current = [...effectiveDays(summary)];
+  const next = current.includes(day)
+    ? current.filter((d) => d !== day)
+    : [...current, day].sort((a, b) => a - b);
+  if (next.length === 0) return;
+  draftDays.value = new Map(draftDays.value).set(summary.id, next);
+}
+
+function submitStart(summary: PlanSummary) {
+  emit("start-learning", summary.id, [...effectiveDays(summary)]);
+}
+
+function submitUpdate(summary: PlanSummary) {
+  emit("update-study-days", summary.id, [...effectiveDays(summary)]);
+}
+
+/** 逐行视图态（草稿合并） */
 const rows = computed<ProgressRow[]>(() =>
-  props.records.map((record) => {
-    const marks = props.marksByPlan.get(record.id) ?? new Set<string>();
-    const view = {
-      ...record,
-      studyDays: props.studyDaysByPlan.get(record.id) ?? record.studyDays ?? [],
-    };
-    const assignments = computeDayAssignments(view, marks);
-    return {
-      record,
-      total: assignments.length,
-      // 学习完成口径：分配天中已打卡（study_day_marks）的天数。
-      // 注意不是 a.done——那是章 status=complete 的「生成完成」语义
-      // （useStudyAllocation 明注），与本面板「已结束 = 学完」无关。
-      done: assignments.filter((a) => marks.has(a.date)).length,
-      days: view.studyDays,
-    };
-  }),
+  props.summaries.map((summary) => ({
+    summary,
+    days: effectiveDays(summary),
+    dirty: isDirty(summary),
+  })),
 );
 
-/** 三态分组：学习中在前，未开始次之，已结束殿后 */
+/** 三分类分组：学习中在前，未开始次之，已完成殿后 */
 const groups = computed(() => {
   const active: ProgressRow[] = [];
   const notStarted: ProgressRow[] = [];
-  const finished: ProgressRow[] = [];
+  const completed: ProgressRow[] = [];
   for (const row of rows.value) {
-    // 生成中/失败的计划不支持学习，一律归入「未开始」（状态点区分）
-    if (row.record.status === "generating" || row.record.status === "failed") {
+    // 生成中/失败的计划不支持学习流程，一律归「未开始」（状态点区分）
+    if (
+      row.summary.status === "generating" ||
+      row.summary.status === "failed" ||
+      row.summary.learningStatus === "not_started"
+    ) {
       notStarted.push(row);
-      continue;
+    } else if (row.summary.learningStatus === "completed") {
+      completed.push(row);
+    } else {
+      active.push(row);
     }
-    if (row.done === 0) notStarted.push(row);
-    else if (row.done >= row.total && row.total > 0) finished.push(row);
-    else active.push(row);
   }
   return [
     { key: "active", label: "学习中", rows: active },
     { key: "pending", label: "未开始", rows: notStarted },
-    { key: "done", label: "已结束", rows: finished },
+    { key: "done", label: "已完成", rows: completed },
   ];
 });
 
 /** 行状态点样式（12px 圆点：朱批叉点 / 旋转墨环 / 空心 / 书绿勾 / 墨蓝半环） */
 function dotClass(row: ProgressRow): string {
-  if (row.record.status === "failed")
+  if (row.summary.status === "failed")
     return "border-destructive bg-destructive/25";
-  if (row.record.status === "generating")
+  if (row.summary.status === "generating")
     return "border-primary/40 border-t-primary animate-spin";
-  if (row.done === 0) return "border-muted-foreground/40 bg-transparent";
-  if (row.done >= row.total && row.total > 0)
+  if (row.summary.learningStatus === "completed")
     return "border-success bg-success";
-  return "border-primary bg-primary/20";
+  if (row.summary.learningStatus === "active")
+    return "border-primary bg-primary/20";
+  return "border-muted-foreground/40 bg-transparent";
 }
 
 /** 状态点读屏文案（点即状态，行内不再重复文字徽章） */
 function stateLabel(row: ProgressRow): string {
-  if (row.record.status === "failed") return "生成失败";
-  if (row.record.status === "generating") return "生成中";
-  if (row.done === 0) return "未开始";
-  if (row.done >= row.total && row.total > 0) return "已结束";
-  return "学习中";
+  if (row.summary.status === "failed") return "生成失败";
+  if (row.summary.status === "generating") return "生成中";
+  if (row.summary.learningStatus === "completed") return "已完成";
+  if (row.summary.learningStatus === "active") return "学习中";
+  return "未开始";
 }
 
 /** 生成中/失败的计划锁定学习日编辑（不支持学习） */
 function isLocked(row: ProgressRow): boolean {
-  return row.record.status === "generating" || row.record.status === "failed";
+  return row.summary.status === "generating" || row.summary.status === "failed";
 }
 
 function percent(row: ProgressRow): number {
-  return row.total === 0
+  const { studyTotal, studyDone } = row.summary;
+  return studyTotal === 0
     ? 0
-    : Math.min(100, Math.round((row.done / row.total) * 100));
+    : Math.min(100, Math.round((studyDone / studyTotal) * 100));
 }
 
 function dayLabel(day: number): string {
   return WEEKDAY_LABELS[day - 1] ?? String(day);
 }
 
-/** chip 是否选中：当前生效学习日 */
 function isSelected(row: ProgressRow, day: number): boolean {
   return row.days.includes(day);
 }
-
-/** 展开开始学习流程的计划 id（未开始组行内编辑，单开） */
-const expandedStart = ref<string | null>(null);
 
 function toggleStart(planId: string) {
   expandedStart.value = expandedStart.value === planId ? null : planId;
@@ -149,7 +170,7 @@ function toggleStart(planId: string) {
         </h3>
         <div class="mt-1.5 h-0.5 w-10 bg-primary/70" role="presentation" />
         <p class="mt-2 text-xs text-muted-foreground">
-          点周几可调整学习日，改动立即生效并重排日历
+          学习日仅本地暂存，点「保存学习日 / 从今天开始」统一提交并重排日历
         </p>
       </div>
 
@@ -174,7 +195,7 @@ function toggleStart(planId: string) {
         >
           {{
             group.key === "done"
-              ? "还没有学完的计划"
+              ? "还没有已完成的计划"
               : group.key === "pending"
                 ? "没有待开始的计划"
                 : "没有进行中的计划"
@@ -189,7 +210,7 @@ function toggleStart(planId: string) {
           <!-- 行：状态点 + 标题 + 进度 + 学习日 chips -->
           <div
             v-for="row in group.rows"
-            :key="row.record.id"
+            :key="row.summary.id"
             class="group rounded-lg px-2 py-2.5 transition-colors hover:bg-secondary/40"
           >
             <div class="flex items-center gap-2.5">
@@ -202,37 +223,37 @@ function toggleStart(planId: string) {
               <button
                 type="button"
                 class="min-w-0 flex-1 cursor-pointer truncate text-left text-sm font-medium text-foreground transition-colors hover:text-primary hover:underline hover:underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                :title="`打开计划详情：${row.record.title}`"
-                :aria-label="`打开计划详情：${row.record.title}，已完成 ${row.done} 天，共 ${row.total} 天`"
-                @click="emit('open-plan', row.record.id)"
+                :title="`打开计划详情：${row.summary.title}`"
+                :aria-label="`打开计划详情：${row.summary.title}，已学 ${row.summary.studyDone} 章，共排 ${row.summary.studyTotal} 章`"
+                @click="emit('open-plan', row.summary.id)"
               >
-                {{ row.record.title }}
+                {{ row.summary.title }}
               </button>
               <button
                 v-if="group.key === 'pending' && !isLocked(row)"
                 type="button"
                 class="inline-flex shrink-0 cursor-pointer items-center gap-1 rounded-md border border-primary/40 bg-primary/[0.06] px-2 py-1 text-xs font-medium text-primary transition-colors hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                :aria-expanded="expandedStart === row.record.id"
-                :aria-label="`开始学习：${row.record.title}`"
-                @click="toggleStart(row.record.id)"
+                :aria-expanded="expandedStart === row.summary.id"
+                :aria-label="`开始学习：${row.summary.title}`"
+                @click="toggleStart(row.summary.id)"
               >
                 <Play class="h-3 w-3" aria-hidden="true" />
                 开始学习
               </button>
               <span
-                v-else-if="!isLocked(row)"
+                v-else-if="!isLocked(row) && row.summary.studyTotal > 0"
                 class="shrink-0 text-xs tabular-nums text-muted-foreground"
               >
-                {{ row.done }}/{{ row.total }} 天
+                已学 {{ row.summary.studyDone }}/{{ row.summary.studyTotal }} 章
               </span>
             </div>
 
-            <!-- 进度条（hairline 细条） -->
+            <!-- 学习进度条（打卡口径：studyDone/studyTotal；hairline 细条） -->
             <div
               v-if="
-                row.record.status !== 'generating' &&
-                row.record.status !== 'failed' &&
-                row.total > 0
+                row.summary.status !== 'generating' &&
+                row.summary.status !== 'failed' &&
+                row.summary.studyTotal > 0
               "
               class="mt-2 h-1.5 overflow-hidden rounded-full bg-muted"
               role="progressbar"
@@ -244,7 +265,7 @@ function toggleStart(planId: string) {
               <div
                 class="h-full rounded-full transition-[width] duration-300"
                 :class="
-                  row.done >= row.total && row.total > 0
+                  row.summary.learningStatus === 'completed'
                     ? 'bg-success'
                     : 'bg-primary'
                 "
@@ -252,13 +273,13 @@ function toggleStart(planId: string) {
               />
             </div>
 
-            <!-- 学习日 chips（点击即切换，父组件乐观保存）；学习中/已结束常显，
-                 未开始收进「开始学习」展开区，锁定计划不显示 -->
+            <!-- 学习日 chips（学习中/已完成常显：点击仅本地暂存；
+                 学习中 dirty 时行内出现保存确认；锁定计划不显示） -->
             <div
               v-if="group.key !== 'pending'"
-              class="mt-2 flex flex-wrap gap-1"
+              class="mt-2 flex flex-wrap items-center gap-1"
               role="group"
-              :aria-label="`${row.record.title} 每周学习日`"
+              :aria-label="`${row.summary.title} 每周学习日`"
             >
               <button
                 v-for="day in [1, 2, 3, 4, 5, 6, 7]"
@@ -273,18 +294,31 @@ function toggleStart(planId: string) {
                 :aria-pressed="isSelected(row, day)"
                 :aria-label="`每周${dayLabel(day)}${isSelected(row, day) ? '（已选）' : '（未选）'}`"
                 :disabled="saving || isLocked(row)"
-                @click="emit('toggle-study-day', row.record.id, day)"
+                @click="toggleDraftDay(row.summary, day)"
               >
                 {{ dayLabel(day) }}
               </button>
+              <button
+                v-if="group.key === 'active'"
+                type="button"
+                class="ml-auto rounded-md bg-primary px-2 py-1 text-[11px] font-medium text-primary-foreground transition-opacity duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                :class="row.dirty ? 'opacity-100' : 'pointer-events-none opacity-0'"
+                :aria-hidden="!row.dirty"
+                :tabindex="row.dirty ? 0 : -1"
+                :aria-label="`保存学习日：${row.summary.title}，今天之前与今天已完成不动`"
+                :disabled="saving"
+                @click="submitUpdate(row.summary)"
+              >
+                保存学习日
+              </button>
             </div>
 
-            <!-- 开始学习展开区：选学习日 → 确认（保存学习日 + 打卡今天） -->
+            <!-- 开始学习展开区：选学习日（本地暂存）→【从今天开始】一次性提交 -->
             <div
               v-if="
                 group.key === 'pending' &&
                 !isLocked(row) &&
-                expandedStart === row.record.id
+                expandedStart === row.summary.id
               "
               class="mt-2 rounded-md border border-primary/20 bg-primary/[0.04] px-3 py-2.5"
             >
@@ -292,7 +326,7 @@ function toggleStart(planId: string) {
               <div
                 class="mt-1.5 flex flex-wrap gap-1"
                 role="group"
-                :aria-label="`${row.record.title} 每周学习日`"
+                :aria-label="`${row.summary.title} 每周学习日`"
               >
                 <button
                   v-for="day in [1, 2, 3, 4, 5, 6, 7]"
@@ -307,7 +341,7 @@ function toggleStart(planId: string) {
                   :aria-pressed="isSelected(row, day)"
                   :aria-label="`每周${dayLabel(day)}${isSelected(row, day) ? '（已选）' : '（未选）'}`"
                   :disabled="saving"
-                  @click="emit('toggle-study-day', row.record.id, day)"
+                  @click="toggleDraftDay(row.summary, day)"
                 >
                   {{ dayLabel(day) }}
                 </button>
@@ -316,20 +350,20 @@ function toggleStart(planId: string) {
                 type="button"
                 class="mt-2.5 flex w-full cursor-pointer items-center justify-center gap-1.5 rounded-md bg-primary px-2 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
                 :disabled="saving"
-                :aria-label="`确认开始：${row.record.title}，保存学习日并打卡今天`"
-                @click="emit('start-plan', row.record.id)"
+                :aria-label="`从今天开始：${row.summary.title}，按学习日排定日程（不打卡今天）`"
+                @click="submitStart(row.summary)"
               >
                 <CalendarCheck class="h-3.5 w-3.5" aria-hidden="true" />
-                今天开始（保存学习日并打卡）
+                从今天开始
               </button>
             </div>
           </div>
         </div>
       </section>
 
-      <!-- 全空兜底（records 空时父组件不会渲染面板，此为防御） -->
+      <!-- 全空兜底（summaries 空时父组件不会渲染面板，此为防御） -->
       <p
-        v-if="records.length === 0"
+        v-if="summaries.length === 0"
         class="flex items-center gap-2 text-sm text-muted-foreground"
       >
         <SquareCheck class="h-4 w-4" aria-hidden="true" />

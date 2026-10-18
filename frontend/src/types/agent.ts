@@ -316,8 +316,6 @@ export interface PlanRecord {
    * 旧 wire 缺省空数组（前端按全周兑底）
    */
   studyDays: number[];
-  /** 已打卡日（当日已学，'YYYY-MM-DD' 升序，Task E）；旧 wire 缺省空数组 */
-  dayMarks: string[];
   favorite: boolean;
   createdAt: string;
   plan: StudyPlan;
@@ -335,6 +333,47 @@ export interface PlanSummary {
   weeks: number;
   /** 每周学习日（1=周一..7=周日，Task E，同 PlanRecord.studyDays） */
   studyDays: number[];
+  /** 学习状态三分类：not_started | active | completed（与 Rust 常量逐字对齐） */
+  learningStatus: string;
+  /** 开始学习日期（'YYYY-MM-DD'；未开始为 null） */
+  learningStartedAt: string | null;
+  /** 章节总数 / 已完成章节数（列表页完成度，免 get_plan；生成口径，非学习进度） */
+  chapterTotal: number;
+  chapterDone: number;
+  /** 已排日程总数（plans 冗余计数列，应用层事务内维护；打卡页专用） */
+  studyTotal: number;
+  /** 已打卡章数（打卡/取消打卡时增量维护；存量数据为 0） */
+  studyDone: number;
   favorite: boolean;
   createdAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// 学习日程（打卡日历真数据）：与 src-tauri/src/protocol.rs 逐字段对齐
+// ---------------------------------------------------------------------------
+
+/** 日程条目：某计划某天的单章安排（行级打卡 done 独立存 study_schedule） */
+export interface ScheduleItem {
+  planId: string;
+  planTitle: string;
+  phaseIdx: number;
+  phaseName: string;
+  chapterIdx: number;
+  chapterTitle: string;
+  done: boolean;
+}
+
+/** 月历单日：该天全部计划的安排（查询接口按天组织，只含有数据的天） */
+export interface MonthCalendarDay {
+  date: string;
+  items: ScheduleItem[];
+  total: number;
+  doneCount: number;
+}
+
+/** 年热力图单日强度（total/done 由前端映射色阶） */
+export interface YearHeatmapDay {
+  date: string;
+  total: number;
+  done: number;
 }

@@ -161,9 +161,7 @@ def test_cli_scan_empty_value_is_unspecified():
     assert extract_cli_config_path(["x", "--config="]) is None
     # 首中即决语义（Rust config_cli_override 同构）：首个 --config 命中空值
     # 即判未指定返回 None，不再向后扫描
-    assert (
-        extract_cli_config_path(["x", "--config", "", "--config=C:/y.json"]) is None
-    )
+    assert extract_cli_config_path(["x", "--config", "", "--config=C:/y.json"]) is None
 
 
 # ---------------------------------------------------------------------------

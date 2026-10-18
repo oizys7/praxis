@@ -166,7 +166,9 @@ async def create_generation(request: Request):
     try:
         body = await request.json()
     except Exception as exc:  # 非 JSON / 解析失败统一 422
-        raise HTTPException(status_code=422, detail=f"请求体不是合法 JSON：{exc}") from exc
+        raise HTTPException(
+            status_code=422, detail=f"请求体不是合法 JSON：{exc}"
+        ) from exc
     kind, payload = _parse_generation_submit(body)
     try:
         task_id = await registry.submit(kind, payload)
@@ -240,9 +242,7 @@ async def generation_events(ws: WebSocket, task_id: str, cursor: int = 0) -> Non
             if event.get("type") == "done":
                 done_sent = True
         if done_sent or (
-            not pending
-            and entry.status is not TaskStatus.running
-            and entry.done
+            not pending and entry.status is not TaskStatus.running and entry.done
         ):
             break
         await asyncio.sleep(0.05)

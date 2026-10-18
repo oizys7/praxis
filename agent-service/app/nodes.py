@@ -619,11 +619,8 @@ async def expand_revision_node(state: AgentState) -> dict[str, Any]:
         if isinstance(result, BaseException):
             if _kind == "chapter":
                 titles = (
-                    (phases[phase_index] if 0 <= phase_index < len(phases) else {}).get(
-                        "chapterTitles"
-                    )
-                    or []
-                )
+                    phases[phase_index] if 0 <= phase_index < len(phases) else {}
+                ).get("chapterTitles") or []
                 title = titles[chapter_index] if chapter_index < len(titles) else ""
                 notes.append(
                     f"第 {phase_index + 1} 阶段「{title}」章重生成失败，"
@@ -703,7 +700,11 @@ async def assemble_node(state: AgentState) -> dict[str, Any]:
             chapter = chapter_drafts.get(key)
             if chapter is None:
                 # 通底：章实例缺失不阻断拼装，占位交由 validators 罚项 + 回炉重建
-                chapter = {"title": titles[chapter_index], "summary": "", "contentMd": ""}
+                chapter = {
+                    "title": titles[chapter_index],
+                    "summary": "",
+                    "contentMd": "",
+                }
             if _chapter_failed(chapter):
                 failed_keys.append(key)
             chapters.append(chapter)
@@ -767,7 +768,12 @@ async def review_node(state: AgentState) -> dict[str, Any]:
     if settings.allow_mock_llm:
         return {"passed": True, "review_notes": ["（Mock 模式：未执行真实 LLM 评审）"]}
     if not has_llm_config():
-        return {"passed": True, "review_notes": ["（未配置 API Key：请在应用设置页配置后重试；本轮跳过评审）"]}
+        return {
+            "passed": True,
+            "review_notes": [
+                "（未配置 API Key：请在应用设置页配置后重试；本轮跳过评审）"
+            ],
+        }
 
     output = await invoke_structured(
         ReviewOutput,

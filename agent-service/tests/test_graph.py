@@ -93,7 +93,9 @@ def _patch_rework_expand(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
             and kwargs["review_notes"] != nodes_module._FIRST_EXPAND_REVIEW_NOTES
         )
 
-    async def _chapter_with_rework_sentinel(*args: Any, **kwargs: Any) -> dict[str, Any]:
+    async def _chapter_with_rework_sentinel(
+        *args: Any, **kwargs: Any
+    ) -> dict[str, Any]:
         chapter = await original_chapter(*args, **kwargs)
         if not _is_rework(kwargs):
             return chapter
@@ -237,9 +239,9 @@ async def test_structural_rework_redoes_all_chapters_and_extras(monkeypatch):
         )
         for i in range(2)
     ), "重组采用回炉新稿"
-    assert result["plan"]["phases"][1]["chapters"][0]["summary"].startswith(_SENTINEL), (
-        "未点名阶段保留首展稿"
-    )
+    assert result["plan"]["phases"][1]["chapters"][0]["summary"].startswith(
+        _SENTINEL
+    ), "未点名阶段保留首展稿"
 
 
 # ---------------------------------------------------------------------------
@@ -289,10 +291,14 @@ async def test_fan_out_payload_shape(monkeypatch):
 
     async def _capturing_chapter(payload: dict[str, Any]) -> dict[str, Any]:
         seen.append(dict(payload))
-        chapter = Chapter(title=payload["phase_outline"]["chapterTitles"][payload["chapter_index"]])
+        chapter = Chapter(
+            title=payload["phase_outline"]["chapterTitles"][payload["chapter_index"]]
+        )
         return {
             "chapter_drafts": {
-                f"{payload['phase_index']}:{payload['chapter_index']}": chapter.model_dump(mode="json", by_alias=True)
+                f"{payload['phase_index']}:{payload['chapter_index']}": chapter.model_dump(
+                    mode="json", by_alias=True
+                )
             }
         }
 
@@ -305,7 +311,13 @@ async def test_fan_out_payload_shape(monkeypatch):
     assert seen, "章实例应被分发"
     stage_titles = set()
     for payload in seen:
-        assert {"request", "phase_outline", "phase_index", "chapter_index", "plan_context"} <= set(payload)
+        assert {
+            "request",
+            "phase_outline",
+            "phase_index",
+            "chapter_index",
+            "plan_context",
+        } <= set(payload)
         assert payload["plan_context"], "计划上下文非空"
         stage_titles.add((payload["phase_index"], payload["chapter_index"]))
     assert len(stage_titles) == len(seen), "各章 payload 唯一"

@@ -1,21 +1,22 @@
 <script setup lang="ts">
 /**
- * CalendarView：学习进度页（Task E 真数据版）。
+ * CalendarView：学习进度页（打卡日历真数据版）。
  * 页面重心 =「计划学习进度」，一屏上下两段：
  *
- * 1. 第一屏「进行中的学习计划」：计划卡列表——list_plans + get_plan 拉取，
- *    完成度 = 章节 status=complete 计数 / 总章数；阶段徽章由 phaseBadgeStatus 推导
+ * 1. 第一屏「进行中的学习计划」：计划卡列表——仅 list_plans（零 get_plan），
+ *    完成度 = chapterDone/chapterTotal（summary 随行携带）；三分类 =
+ *    learningStatus（not_started | active | completed，真字段）
  * 2. 第二屏「学习日历」：工具条（年 | 月 chip 切换 + 翻页 + 今天）+
  *    双视图——月 = 6×7 日历（MonthGrid）/ 年 = 12 行热力图（YearHeatmap），
- *    强度 = computeDayAssignments 按日聚合（章完成比例五档色阶）
+ *    数据来自 query_month_calendar（按天组织）/ query_year_heatmap，
+ *    强度 = 已学章节比例五档色阶
  * 3. 月历格内直接排布章事件块（微型日程表），点击任一天 → DayDrawer 右滑
- *    抽屉（完整当安排 + 「当日已学」打卡 + 内嵌「编辑学习日」chips）
+ *    抽屉（完整当日安排 + 每章独立打卡勾选，仅今天及之前可勾）
  *
- * 分配零存储：useStudyAllocation 纯函数即时重算（marks / studyDays 编辑
- * 仅更新本地视图态，分配结果随 computed 联动）；
- * 风格对齐「自习室纸面」：零 dark: 变体，色阶全走语义令牌。
+ * 学习日开始/修改：chips 在 PlanProgressPanel 仅本地暂存，提交（start-learning /
+ * update-study-days）由本层调 IPC；提交后失效月/年缓存并重拉当前视图。
  */
-import { computed, onMounted, ref, shallowRef } from "vue";
+import { computed, onMounted, ref, shallowRef, watch } from "vue";
 import { ChevronLeft, ChevronRight, TriangleAlert } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -29,18 +30,20 @@ import DayDrawer, {
 import { normalizeError } from "@/composables/useAgent";
 import type { CommandError } from "@/types/agent";
 import {
-  fetchPlanRecord,
+  queryMonthCalendar,
+  queryYearHeatmap,
+  startLearning,
+  toggleScheduleItem,
+  updateLearningDays,
   fetchPlanSummaries,
-  savePlanStudyDays,
-  saveStudyDayMark,
 } from "@/composables/usePlanHistory";
-import {
-  aggregateDayStats,
-  computeDayAssignments,
-  dayKey,
-  type DayStat,
-} from "@/composables/useStudyAllocation";
-import type { PlanRecord, PlanSummary } from "@/types/agent";
+import { dayKey, type DayStat } from "@/composables/useStudyAllocation";
+import type {
+  MonthCalendarDay,
+  PlanSummary,
+  ScheduleItem,
+  YearHeatmapDay,
+} from "@/types/agent";
 import PlanProgressPanel from "@/components/calendar/PlanProgressPanel.vue";
 import LoadingState from "@/components/LoadingState.vue";
 
@@ -49,38 +52,20 @@ const emit = defineEmits<{
   (e: "open-plan", planId: string): void;
 }>();
 
-// ---- 数据装载（list_plans + 逐计划 get_plan）----
+// ---- 数据装载（仅 list_plans + 月/年日程查询，零 get_plan）----
 
-const records = shallowRef<PlanRecord[]>([]);
+const summaries = shallowRef<PlanSummary[]>([]);
 const loading = ref(true);
 const loadError = ref<CommandError | null>(null);
 
-/** 打卡 / 学习日编辑请求在飞（抽屉控件禁用与防抖） */
+/** 打卡 / 学习日提交请求在飞（抽屉与面板控件禁用与防抖） */
 const saving = ref(false);
-
-/** 本地视图态：planId → 已打卡日集合（初始取自 dayMarks，打卡后本地同步） */
-const marksByPlan = ref<Map<string, Set<string>>>(new Map());
-/** 本地视图态：planId → 每周学习日（编辑保存后本地覆盖，分配即时重算） */
-const studyDaysByPlan = ref<Map<string, number[]>>(new Map());
 
 async function load() {
   loading.value = true;
   loadError.value = null;
   try {
-    const summaries: PlanSummary[] = await fetchPlanSummaries();
-    // 详情并发拉取（单用户桌面场景，列表上限内直拉全量）
-    const details = await Promise.all(
-      summaries.map((s) => fetchPlanRecord(s.id)),
-    );
-    records.value = details;
-    const marks = new Map<string, Set<string>>();
-    const days = new Map<string, number[]>();
-    for (const record of details) {
-      marks.set(record.id, new Set(record.dayMarks));
-      days.set(record.id, record.studyDays);
-    }
-    marksByPlan.value = marks;
-    studyDaysByPlan.value = days;
+    summaries.value = await fetchPlanSummaries();
   } catch (e) {
     loadError.value = normalizeError(e);
   } finally {
@@ -89,17 +74,99 @@ async function load() {
 }
 onMounted(load);
 
-// ---- 第一屏：进行中的学习计划 ----
+// ---- 第二屏：学习日历（月/年真数据） ----
 
-/** 页头统计：全部计划章完成率（零章防御） */
+/** 视图模式：月 = 日历网格（默认）/ 年 = 热力图 */
+const viewMode = ref<"month" | "year">("month");
+
+/** 当前查看的年月（初始锚今天） */
+const viewDate = ref(new Date());
+
+/** 月数据缓存：'YYYY-MM' → 按天组织的当月日程（提交打卡/学习日后失效） */
+const monthCache = ref<Map<string, MonthCalendarDay[]>>(new Map());
+/** 年数据缓存：年份字符串 → 按天强度 */
+const yearCache = ref<Map<string, YearHeatmapDay[]>>(new Map());
+/** 日历查询在飞（与 saving 分开：打卡禁用控件，查询禁用翻页不必要） */
+const calendarLoading = ref(false);
+
+function monthKeyOf(year: number, month: number): string {
+  return `${year}-${String(month + 1).padStart(2, "0")}`;
+}
+
+/** 当前视图月份键 */
+const currentMonthKey = computed(() =>
+  monthKeyOf(viewDate.value.getFullYear(), viewDate.value.getMonth()),
+);
+
+/** 当月按天数据（月视图 / 抽屉共用；无数据天不出现在数组中） */
+const monthDays = computed<MonthCalendarDay[]>(
+  () => monthCache.value.get(currentMonthKey.value) ?? [],
+);
+
+/** 当前年数据（年视图热力图） */
+const yearDays = computed<YearHeatmapDay[]>(
+  () => yearCache.value.get(String(viewDate.value.getFullYear())) ?? [],
+);
+
+/** 确保当前视图的月数据已拉取（缓存未命中才请求） */
+async function ensureMonthData() {
+  const key = currentMonthKey.value;
+  if (monthCache.value.has(key)) return;
+  const [year, month] = key.split("-").map(Number);
+  calendarLoading.value = true;
+  try {
+    const days = await queryMonthCalendar(year, month);
+    monthCache.value = new Map(monthCache.value).set(key, days);
+  } catch (e) {
+    loadError.value = normalizeError(e);
+  } finally {
+    calendarLoading.value = false;
+  }
+}
+
+/** 确保当前视图的年数据已拉取（缓存未命中才请求） */
+async function ensureYearData() {
+  const year = String(viewDate.value.getFullYear());
+  if (yearCache.value.has(year)) return;
+  calendarLoading.value = true;
+  try {
+    const days = await queryYearHeatmap(Number(year));
+    yearCache.value = new Map(yearCache.value).set(year, days);
+  } catch (e) {
+    loadError.value = normalizeError(e);
+  } finally {
+    calendarLoading.value = false;
+  }
+}
+
+/** 视图切换 / 翻页 / 首次进入：按需拉取对应月或年的数据（
+ *  不受列表 loading 影响：日历数据独立于 summaries，守卫会吞掉 immediate 首跑） */
+watch(
+  [viewMode, viewDate],
+  () => {
+    if (viewMode.value === "month") void ensureMonthData();
+    else void ensureYearData();
+  },
+  { immediate: true },
+);
+
+/** 任何日程变更（打卡/开始学习/改学习日）后失效全部月/年缓存并重拉当前视图 */
+function invalidateCalendar() {
+  monthCache.value = new Map();
+  yearCache.value = new Map();
+  if (viewMode.value === "month") void ensureMonthData();
+  else void ensureYearData();
+}
+
+// ---- 第一屏：进度统计（summary 自足，零 get_plan）----
+
+/** 页头统计：全部计划打卡进度（study_schedule 口径，冗余计数直读） */
 const overallStats = computed(() => {
   let total = 0;
   let done = 0;
-  for (const record of records.value) {
-    for (const chapter of record.plan.phases.flatMap((p) => p.chapters ?? [])) {
-      total += 1;
-      if (chapter.status === "complete") done += 1;
-    }
+  for (const summary of summaries.value) {
+    total += summary.studyTotal;
+    done += summary.studyDone;
   }
   return { total, done };
 });
@@ -110,114 +177,51 @@ const overallPercent = computed(() =>
     : Math.round((overallStats.value.done / overallStats.value.total) * 100),
 );
 
-/** 本月打卡天数（跨计划按「该日任一计划已打卡」去重，dayKey 前缀匹配） */
-const monthMarkDays = computed(() => {
-  const now = new Date();
-  const prefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-`;
-  const days = new Set<string>();
-  for (const marks of marksByPlan.value.values()) {
-    for (const key of marks) {
-      if (key.startsWith(prefix)) days.add(key);
-    }
-  }
-  return days.size;
-});
+/** 学习中计划数（learningStatus = active 真字段计数） */
+const activeCount = computed(
+  () => summaries.value.filter((s) => s.learningStatus === "active").length,
+);
 
-// ---- 第二屏：学习日历 ----
+/** 本月已学天数（当月数据中 doneCount > 0 的天） */
+const monthMarkedDays = computed(
+  () => monthDays.value.filter((d) => d.doneCount > 0).length,
+);
 
-/** 视图模式：月 = 日历网格（默认）/ 年 = 热力图 */
-const viewMode = ref<"month" | "year">("month");
-
-/** 当前查看的年月（初始锚今天） */
-const viewDate = ref(new Date());
-
-/** 日钻取抽屉状态 */
-const selectedDate = ref<Date | null>(null);
-const drawerOpen = ref(false);
-const drawerRef = ref<InstanceType<typeof DayDrawer> | null>(null);
+// ---- 日历主体数据构建（保持 MonthGrid/YearHeatmap 消费形状不变）----
 
 /**
- * 按日统计（真计划分配聚合）：每计划以视图态（本地 studyDays 覆盖 +
- * 本地 marks）重算分配，再跨计划按日累加。
+ * 按日统计：月视图用当月按天数据；年视图用年强度数据。
+ * done 口径 = 行级打卡（study_schedule.done），与章节生成状态解耦。
  */
 const dayStats = computed<Map<string, DayStat>>(() => {
   const merged = new Map<string, DayStat>();
-  for (const record of records.value) {
-    const view = {
-      ...record,
-      studyDays: studyDaysByPlan.value.get(record.id) ?? record.studyDays,
-    };
-    const assignments = computeDayAssignments(
-      view,
-      marksByPlan.value.get(record.id) ?? new Set(),
-    );
-    for (const [date, stat] of aggregateDayStats(assignments)) {
-      const cur = merged.get(date) ?? { total: 0, done: 0 };
-      cur.total += stat.total;
-      cur.done += stat.done;
-      merged.set(date, cur);
-    }
+  const source: Array<{ date: string; total: number; done: number }> =
+    viewMode.value === "month"
+      ? monthDays.value.map((d) => ({
+          date: d.date,
+          total: d.total,
+          done: d.doneCount,
+        }))
+      : yearDays.value;
+  for (const d of source) {
+    merged.set(d.date, { total: d.total, done: d.done });
   }
   return merged;
 });
 
-/**
- * 当日分组（通用）：给定日期当天各计划的分配清单（无安排且未打卡的
- * 计划不出现，避免空组噪音）。抽屉 drawerGroups 复用。
- */
-function dayGroups(date: Date): DrawerPlanGroup[] {
-  const key = dayKey(date);
-  const groups: DrawerPlanGroup[] = [];
-  for (const record of records.value) {
-    const marks = marksByPlan.value.get(record.id) ?? new Set();
-    const view = {
-      ...record,
-      studyDays: studyDaysByPlan.value.get(record.id) ?? record.studyDays,
-    };
-    const dayPlans = computeDayAssignments(view, marks).filter(
-      (a) => a.date === key,
-    );
-    if (dayPlans.length === 0 && !marks.has(key)) continue;
-    groups.push({
-      planId: record.id,
-      planTitle: record.title,
-      marked: marks.has(key),
-      studyDays: view.studyDays,
-      assignments: dayPlans.map((a) => ({
-        phaseIndex: a.phaseIndex,
-        phaseName: a.phaseName,
-        chapterIndex: a.chapterIndex,
-        chapterName: a.chapterTitle,
-        done: a.done,
-      })),
-    });
-  }
-  return groups;
-}
-
-/** 抽屉：选中日期的分组 */
-const drawerGroups = computed<DrawerPlanGroup[]>(() =>
-  selectedDate.value ? dayGroups(selectedDate.value) : [],
-);
-
-/** 月历事件块：dayKey → 章日程（跨计划聚合，明细供格内渲染） */
+/** 月历事件块：dayKey → 章事件（跨计划；年视图无明细传空，悬浮卡退化统计） */
 const calendarEvents = computed<Map<string, CalendarEvent[]>>(() => {
   const merged = new Map<string, CalendarEvent[]>();
-  for (const record of records.value) {
-    const marks = marksByPlan.value.get(record.id) ?? new Set();
-    const view = {
-      ...record,
-      studyDays: studyDaysByPlan.value.get(record.id) ?? record.studyDays,
-    };
-    for (const a of computeDayAssignments(view, marks)) {
-      const list = merged.get(a.date) ?? [];
-      list.push({
-        planTitle: record.title,
-        chapterName: a.chapterTitle,
-        done: a.done,
-      });
-      merged.set(a.date, list);
-    }
+  if (viewMode.value !== "month") return merged;
+  for (const day of monthDays.value) {
+    merged.set(
+      day.date,
+      day.items.map((item) => ({
+        planTitle: item.planTitle,
+        chapterName: item.chapterTitle,
+        done: item.done,
+      })),
+    );
   }
   return merged;
 });
@@ -242,52 +246,84 @@ function goToday() {
   viewDate.value = new Date();
 }
 
+// ---- 日钻取抽屉 ----
+
+const selectedDate = ref<Date | null>(null);
+const drawerOpen = ref(false);
+const drawerRef = ref<InstanceType<typeof DayDrawer> | null>(null);
+
+/** 该抽屉日是否允许打卡（今天及之前；'YYYY-MM-DD' 字典序即时间序） */
+const drawerMarkable = computed(() => {
+  if (!selectedDate.value) return false;
+  return dayKey(selectedDate.value) <= dayKey(new Date());
+});
+
+/** 抽屉分组：当月数据中该天的条目按计划分组 */
+const drawerGroups = computed<DrawerPlanGroup[]>(() => {
+  if (!selectedDate.value) return [];
+  const key = dayKey(selectedDate.value);
+  const day = monthDays.value.find((d) => d.date === key);
+  if (!day || day.items.length === 0) return [];
+  const groups = new Map<string, DrawerPlanGroup>();
+  for (const item of day.items) {
+    const group = groups.get(item.planId) ?? {
+      planId: item.planId,
+      planTitle: item.planTitle,
+      items: [] as ScheduleItem[],
+    };
+    group.items.push(item);
+    groups.set(item.planId, group);
+  }
+  return [...groups.values()];
+});
+
 /** 日钻取：打开任一天的抽屉 */
 function openDay(date: Date) {
   selectedDate.value = date;
   drawerOpen.value = true;
 }
 
-// ---- IPC 回写：打卡 / 编辑学习日（落库后本地视图态同步，分配重算）----
+// ---- IPC 回写：行级打卡 / 开始学习 / 修改学习日 ----
 
-/** 当日已学打卡开关（date 缺省 = 抽屉选中日；侧卡显式传今天） */
-async function onToggleMark(planId: string, done: boolean, date?: Date) {
-  const target = date ?? selectedDate.value;
-  if (!target) return;
-  const day = dayKey(target);
+/** 行级打卡切换（每章独立勾选；仅今天及之前，Rust 侧同样校验） */
+async function onToggleItem(planId: string, item: ScheduleItem, done: boolean) {
+  const target = selectedDate.value;
+  if (!target || saving.value) return;
   saving.value = true;
   try {
-    await saveStudyDayMark(planId, day, done);
-    const set = new Set(marksByPlan.value.get(planId) ?? []);
-    if (done) set.add(day);
-    else set.delete(day);
-    marksByPlan.value = new Map(marksByPlan.value).set(planId, set);
+    await toggleScheduleItem(
+      planId,
+      dayKey(target),
+      item.phaseIdx,
+      item.chapterIdx,
+      done,
+    );
+    invalidateCalendar();
   } catch (e) {
     loadError.value = normalizeError(e);
   } finally {
     saving.value = false;
-    drawerRef.value?.settleMark(planId);
+    drawerRef.value?.settleToggle(planId, item);
   }
 }
 
-/** 开始学习（未开始行确认）：保存学习日 + 打卡今天，计划进入学习中 */
-async function onStartPlan(planId: string) {
+/** 开始学习（未开始行【从今天开始】）：提交学习日，落定日程且不打卡今天 */
+async function onStartLearning(planId: string, days: number[]) {
   if (saving.value) return;
-  const days =
-    studyDaysByPlan.value.get(planId) ??
-    records.value.find((r) => r.id === planId)?.studyDays ??
-    [];
-  if (days.length === 0) return;
   saving.value = true;
-  const today = dayKey(new Date());
   try {
-    await savePlanStudyDays(planId, days);
-    studyDaysByPlan.value = new Map(studyDaysByPlan.value).set(planId, days);
-    await saveStudyDayMark(planId, today, true);
-    marksByPlan.value = new Map(marksByPlan.value).set(
-      planId,
-      new Set(marksByPlan.value.get(planId) ?? []).add(today),
+    await startLearning(planId, days);
+    summaries.value = summaries.value.map((s) =>
+      s.id === planId
+        ? {
+            ...s,
+            learningStatus: "active",
+            learningStartedAt: dayKey(new Date()),
+            studyDays: days,
+          }
+        : s,
     );
+    invalidateCalendar();
   } catch (e) {
     loadError.value = normalizeError(e);
   } finally {
@@ -295,28 +331,17 @@ async function onStartPlan(planId: string) {
   }
 }
 
-/** 学习日切换（进度面板 chip 点击）：乐观更新 + IPC，失败回滚；至少保留一天 */
-async function onToggleStudyDay(planId: string, day: number) {
+/** 修改学习日（学习中行「保存学习日」）：保留今天之前与今天已完成，未来重排 */
+async function onUpdateStudyDays(planId: string, days: number[]) {
   if (saving.value) return;
-  const current =
-    studyDaysByPlan.value.get(planId) ??
-    records.value.find((r) => r.id === planId)?.studyDays ??
-    [];
-  const next = current.includes(day)
-    ? current.filter((d) => d !== day)
-    : [...current, day].sort((a, b) => a - b);
-  if (next.length === 0) return; // 至少保留一个学习日
   saving.value = true;
-  studyDaysByPlan.value = new Map(studyDaysByPlan.value).set(planId, next);
   try {
-    const normalized = await savePlanStudyDays(planId, next);
-    studyDaysByPlan.value = new Map(studyDaysByPlan.value).set(
-      planId,
-      normalized,
+    await updateLearningDays(planId, days);
+    summaries.value = summaries.value.map((s) =>
+      s.id === planId ? { ...s, studyDays: days } : s,
     );
+    invalidateCalendar();
   } catch (e) {
-    // 回滚到切换前，重排随之还原
-    studyDaysByPlan.value = new Map(studyDaysByPlan.value).set(planId, current);
     loadError.value = normalizeError(e);
   } finally {
     saving.value = false;
@@ -338,8 +363,8 @@ async function onToggleStudyDay(planId: string, day: number) {
 
     <!-- 摘行（真数据；中文逗号分隔） -->
     <p class="mb-6 text-sm text-muted-foreground">
-      整体完成 {{ overallPercent }}%，本月打卡 {{ monthMarkDays }} 天，
-      {{ records.length }} 份计划进行中
+      整体完成 {{ overallPercent }}%，本月已学 {{ monthMarkedDays }} 天，
+      {{ activeCount }} 份计划学习中
     </p>
 
     <!-- 加载 / 错误 / 空态 -->
@@ -358,11 +383,11 @@ async function onToggleStudyDay(planId: string, day: number) {
       </Button>
     </div>
     <div
-      v-else-if="records.length === 0"
+      v-else-if="summaries.length === 0"
       class="rounded-lg border border-dashed border-border px-6 py-16 text-center"
     >
       <p class="text-sm text-muted-foreground">
-        还没有学习计划——去「学习计划」页生成第一份计划，日历将自动排布每日章节。
+        还没有学习计划——去「学习计划」页生成第一份计划，点「开始学习」后排定每日日程。
       </p>
     </div>
 
@@ -371,16 +396,14 @@ async function onToggleStudyDay(planId: string, day: number) {
       <div
         class="grid items-start gap-5 lg:grid-cols-[320px_minmax(0,1fr)] 2xl:grid-cols-[380px_minmax(0,1fr)]"
       >
-        <!-- 左：计划进度管理（学习日编辑入口在此，点周几即改即存） -->
+        <!-- 左：计划进度管理（三分类 + 学习日本地暂存编辑入口） -->
         <div class="order-2 lg:order-1">
           <PlanProgressPanel
-            :records="records"
-            :marks-by-plan="marksByPlan"
-            :study-days-by-plan="studyDaysByPlan"
+            :summaries="summaries"
             :saving="saving"
             @open-plan="(planId) => emit('open-plan', planId)"
-            @toggle-study-day="onToggleStudyDay"
-            @start-plan="onStartPlan"
+            @start-learning="onStartLearning"
+            @update-study-days="onUpdateStudyDays"
           />
         </div>
 
@@ -468,15 +491,16 @@ async function onToggleStudyDay(planId: string, day: number) {
       </div>
     </template>
 
-    <!-- 日钻取抽屉 -->
+    <!-- 日钻取抽屉（行级打卡；未来日期只读展示） -->
     <DayDrawer
       ref="drawerRef"
       :open="drawerOpen && !loading"
       :date="selectedDate"
       :groups="drawerGroups"
       :saving="saving"
+      :markable="drawerMarkable"
       @close="drawerOpen = false"
-      @toggle-mark="onToggleMark"
+      @toggle-item="onToggleItem"
       @open-plan="(planId) => emit('open-plan', planId)"
     />
   </div>

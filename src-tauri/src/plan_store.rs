@@ -12,7 +12,6 @@
 //! （status、chapters.content_md）逐字定义在 db_ddl，首连幂等执行。
 
 use sqlx::{PgPool, Row, Transaction};
-use std::collections::HashMap;
 use tracing::{info, warn};
 use uuid::Uuid;
 
@@ -63,91 +62,6 @@ pub async fn create_generating_plan(
 /// 的序列化兑底同语义（两侧各自展开，由 wire 单测锁定一致）
 fn vec_full_week() -> Vec<u8> {
     vec![1, 2, 3, 4, 5, 6, 7]
-}
-
-/// 更新计划的每周学习日（Task E 需求 5）：校验非空、取值 1..=7，
-/// 去重升序后 UPDATE；计划不存在报错（不静默成功）。
-/// 消费方：commands::set_plan_study_days（前端日抽屉「编辑学习日」）。
-/// 更新计划的每周学习日（Task E 需求 5）：校验非空、取值 1..=7，去重升序
-/// 后 UPDATE，返回归一化结果（前端直接采用，无需重拉）；
-/// 校验失败 / 计划不存在归一为 AgentError::Db 中文文案。
-pub async fn set_study_days(
-    pool: &PgPool,
-    plan_id: Uuid,
-    days: &[u8],
-) -> Result<Vec<u8>, AgentError> {
-    if days.is_empty() {
-        return Err(AgentError::Db("每周学习日不能为空（至少选择一天）".into()));
-    }
-    let mut normalized = days.to_vec();
-    normalized.sort_unstable();
-    normalized.dedup();
-    if let Some(bad) = normalized.iter().find(|d| !(1u8..=7).contains(*d)) {
-        return Err(AgentError::Db(format!(
-            "每周学习日取值须为 1（周一）..7（周日），实际含 {bad}"
-        )));
-    }
-    let updated = sqlx::query("UPDATE plans SET study_days = $2, updated_at = now() WHERE id = $1")
-        .bind(plan_id)
-        .bind(sqlx::types::Json(&normalized))
-        .execute(pool)
-        .await
-        .map_err(|e| fail("更新每周学习日", e))?;
-    if updated.rows_affected() == 0 {
-        return Err(AgentError::Db(format!("计划不存在或已被删除：{plan_id}")));
-    }
-    info!(%plan_id, count = normalized.len(), "每周学习日已更新");
-    Ok(normalized)
-}
-
-/// 当日已学打卡开关（Task E）：done → INSERT ON CONFLICT DO NOTHING；
-/// undone → DELETE；两路均幂等（重复调用终态一致）。
-/// 计划不存在时 INSERT 触发外键约束报错（打卡不凭空建行）。
-/// 消费方：commands::set_study_day_mark（日抽屉「当日已学」勾选）。
-pub async fn set_day_mark(
-    pool: &PgPool,
-    plan_id: Uuid,
-    day: chrono::NaiveDate,
-    done: bool,
-) -> Result<(), AgentError> {
-    if done {
-        sqlx::query(
-            "INSERT INTO study_day_marks (plan_id, day) VALUES ($1, $2)
-             ON CONFLICT (plan_id, day) DO NOTHING",
-        )
-        .bind(plan_id)
-        .bind(day)
-        .execute(pool)
-        .await
-        .map_err(|e| fail("写入当日已学打卡", e))?;
-    } else {
-        sqlx::query("DELETE FROM study_day_marks WHERE plan_id = $1 AND day = $2")
-            .bind(plan_id)
-            .bind(day)
-            .execute(pool)
-            .await
-            .map_err(|e| fail("撤销当日已学打卡", e))?;
-    }
-    info!(%plan_id, %day, done, "当日已学打卡已更新");
-    Ok(())
-}
-
-/// 读取计划的全部已打卡日（Task E）：get_plan 拼装 dayMarks wire 用；
-/// 无打卡行返回空 map。
-pub async fn load_plan_marks(
-    pool: &PgPool,
-    plan_id: Uuid,
-) -> Result<HashMap<chrono::NaiveDate, ()>, AgentError> {
-    let rows = sqlx::query("SELECT day FROM study_day_marks WHERE plan_id = $1")
-        .bind(plan_id)
-        .fetch_all(pool)
-        .await
-        .map_err(|e| fail("查询当日已学打卡", e))?;
-    let mut marks = HashMap::with_capacity(rows.len());
-    for row in rows {
-        marks.insert(row.try_get("day").map_err(db_err)?, ());
-    }
-    Ok(marks)
 }
 
 /// 大纲就绪：覆写计划标题、概述与预计总学时（title 暂为 goal 截断的占位时由
@@ -440,6 +354,25 @@ pub async fn upsert_chapter(
     .execute(&mut *tx)
     .await
     .map_err(|e| fail("推进阶段状态", e))?;
+
+    // 学习状态联动（同事务原子）：active 计划全章 complete → completed；
+    // 不全 complete（重生成破坏完整性）则保持/降回 active；not_started 不自动
+    // 流转（未开始学习的计划保持分类语义，开始学习入口仍在）
+    sqlx::query(
+        "UPDATE plans SET learning_status = CASE
+             WHEN EXISTS (
+                 SELECT 1 FROM chapters c2 JOIN phases p2 ON c2.phase_id = p2.id
+                 WHERE p2.plan_id = $1
+             ) AND NOT EXISTS (
+                 SELECT 1 FROM chapters c JOIN phases p ON c.phase_id = p.id
+                 WHERE p.plan_id = $1 AND c.status <> 'complete'
+             ) THEN 'completed' ELSE 'active' END
+         WHERE id = $1 AND learning_status = 'active'",
+    )
+    .bind(plan_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| fail("推进学习状态", e))?;
 
     tx.commit().await.map_err(|e| fail("提交单章事务", e))?;
     info!(%plan_id, phase_index, chapter_index, "单章已 upsert（status=complete）");

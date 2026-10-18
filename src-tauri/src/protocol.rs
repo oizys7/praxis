@@ -249,9 +249,6 @@ pub struct PlanRecord {
     /// serde default 兼容旧 wire 载荷（缺省空数组，前端按全周兑底）
     #[serde(default)]
     pub study_days: Vec<u8>,
-    /// 已打卡日（当日已学，'YYYY-MM-DD' 升序；Task E，仅 PlanRecord）
-    #[serde(default)]
-    pub day_marks: Vec<String>,
     #[serde(default)]
     pub favorite: bool,
     /// 保存时间（ISO 8601）
@@ -279,9 +276,66 @@ pub struct PlanSummary {
     /// 每周学习日（1=周一..7=周日；Task E，同 PlanRecord.study_days）
     #[serde(default)]
     pub study_days: Vec<u8>,
+    /// 学习状态三分类：not_started（未开始）| active（学习中）| completed（已完成）
+    #[serde(default)]
+    pub learning_status: String,
+    /// 开始学习日期（'YYYY-MM-DD'；未开始为 null）
+    #[serde(default)]
+    pub learning_started_at: Option<String>,
+    /// 章节总数 / 已完成章节数（列表页完成度，免 get_plan；生成口径）
+    #[serde(default)]
+    pub chapter_total: u32,
+    #[serde(default)]
+    pub chapter_done: u32,
+    /// 学习打卡进度（study_schedule 口径，打卡页专用）：已排日程总数
+    /// （plans 冗余计数列，应用层在开始学习/重排事务内增量维护；存量 0）
+    #[serde(default)]
+    pub study_total: u32,
+    /// 已打卡章数（plans 冗余计数列，打卡/取消打卡事务内增量维护）
+    #[serde(default)]
+    pub study_done: u32,
     #[serde(default)]
     pub favorite: bool,
     pub created_at: String,
+}
+
+// ---------------------------------------------------------------------------
+// 学习日程（打卡日历真数据）
+// ---------------------------------------------------------------------------
+
+/// 日程条目：某计划某天的单章安排（行级打卡 done 独立存 study_schedule）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduleItem {
+    pub plan_id: String,
+    pub plan_title: String,
+    pub phase_idx: u32,
+    #[serde(default)]
+    pub phase_name: String,
+    pub chapter_idx: u32,
+    #[serde(default)]
+    pub chapter_title: String,
+    pub done: bool,
+}
+
+/// 月历单日：该天全部计划的安排（查询接口按天组织）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MonthCalendarDay {
+    /// 'YYYY-MM-DD'
+    pub date: String,
+    pub items: Vec<ScheduleItem>,
+    pub total: u32,
+    pub done_count: u32,
+}
+
+/// 年热力图单日强度（total/done 由前端映射色阶）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct YearHeatmapDay {
+    pub date: String,
+    pub total: u32,
+    pub done: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -980,6 +1034,12 @@ mod tests {
             level: "beginner".into(),
             weeks: 8,
             study_days: vec![2, 4, 6],
+            learning_status: "not_started".into(),
+            learning_started_at: None,
+            chapter_total: 12,
+            chapter_done: 5,
+            study_total: 10,
+            study_done: 3,
             favorite: false,
             created_at: "2026-01-01T00:00:00Z".into(),
         })
@@ -1012,7 +1072,6 @@ mod tests {
             level: "beginner".into(),
             weeks: 8,
             study_days: vec![1, 2, 3, 4, 5, 6, 7],
-            day_marks: vec!["2026-10-16".into()],
             favorite: false,
             created_at: "2026-01-01T00:00:00Z".into(),
             plan: StudyPlan::default(),
@@ -1023,11 +1082,6 @@ mod tests {
             plan_record_value["studyDays"],
             serde_json::json!([1, 2, 3, 4, 5, 6, 7]),
             "PlanRecord.studyDays camelCase wire（Task E）"
-        );
-        assert_eq!(
-            plan_record_value["dayMarks"],
-            serde_json::json!(["2026-10-16"]),
-            "PlanRecord.dayMarks camelCase wire（Task E）"
         );
     }
 }

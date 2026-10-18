@@ -77,9 +77,7 @@ class PlanRequest(CamelModel):
         days = sorted(set(v))
         for d in days:
             if not 1 <= d <= 7:
-                raise ValueError(
-                    f"studyDays 取值须为 1（周一）..7（周日），实际含 {d}"
-                )
+                raise ValueError(f"studyDays 取值须为 1（周一）..7（周日），实际含 {d}")
         return days
 
 
@@ -108,7 +106,9 @@ class GenerationSubmit(CamelModel):
     """
 
     kind: str = Field(..., description="任务种类：plan | regen_phase | regen_chapter")
-    plan_request: PlanRequest | None = Field(default=None, description="plan 任务的载荷")
+    plan_request: PlanRequest | None = Field(
+        default=None, description="plan 任务的载荷"
+    )
     regen_request: RegenRequest | None = Field(
         default=None, description="regen 任务的载荷"
     )
@@ -120,7 +120,9 @@ class GenerationSubmit(CamelModel):
             raise ValueError(
                 f"kind 必须是 {'|'.join(sorted(allowed))}，实际为: {self.kind!r}"
             )
-        payload_present = self.plan_request is not None or self.regen_request is not None
+        payload_present = (
+            self.plan_request is not None or self.regen_request is not None
+        )
         wants_plan = self.kind == "plan"
         wants_regen = self.kind != "plan"
         if not payload_present:
@@ -129,7 +131,9 @@ class GenerationSubmit(CamelModel):
                 "regen_phase / regen_chapter 任务必须带 regenRequest"
             )
         if wants_plan and self.plan_request is None:
-            raise ValueError("kind=plan 时必须携带 planRequest（不得携带 regenRequest）")
+            raise ValueError(
+                "kind=plan 时必须携带 planRequest（不得携带 regenRequest）"
+            )
         if wants_regen and self.regen_request is None:
             raise ValueError(
                 f"kind={self.kind} 时必须携带 regenRequest（不得携带 planRequest）"

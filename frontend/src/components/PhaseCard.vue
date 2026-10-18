@@ -130,7 +130,6 @@ async function onRegenerate() {
     busy.value = false;
   }
 }
-
 </script>
 
 <template>
@@ -195,10 +194,10 @@ async function onRegenerate() {
             @click="onRegenerate"
           >
             <span
-              v-if="regenBusy"
+              v-if="busy"
               class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"
             />
-            {{ regenBusy ? "重新生成中…" : "重新生成此阶段" }}
+            {{ busy ? "重新生成中…" : "重新生成此阶段" }}
           </Button>
         </div>
       </div>
