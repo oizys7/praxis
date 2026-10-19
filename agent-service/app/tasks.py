@@ -500,6 +500,15 @@ async def _regen_event_dicts(payload: RegenRequest) -> AsyncIterator[dict[str, A
         response = PlanResponse(
             status="error", error=ErrorDetail(code="service", message=str(exc))
         )
+    except Exception as exc:
+        # 意外异常兜底：NDJSON 链路不经 WS 的 _run 翻译，异常冒泡会直接
+        # 断流，Rust reqwest 端表现为 "error decoding response body"
+        # （2026-10-16 实测）——done 必为最后一项的契约在此收口
+        logger.exception("重生成意外异常")
+        response = PlanResponse(
+            status="error",
+            error=ErrorDetail(code="service", message=f"重生成失败：{exc}"),
+        )
 
     yield {
         "type": "done",

@@ -979,11 +979,13 @@ impl StreamEventSink for RegenSink<'_> {
                     index,
                     phase_index: _,
                     chapter,
-                } if self.chapter_index.is_some() => {
-                    // 守卫已确保单章路径；目标索引以命令入口校验后的值为准
-                    // （事件值由 Python 原样回显，仅作日志显示）
-                    let Some(ci) = self.chapter_index else {
-                        return Ok(None);
+                } => {
+                    // 两路径共用（D1 后 Python 全阶段重生成也逐章发事件）：
+                    // 单章路径目标章 = 入口校验的 self.chapter_index（事件值由
+                    // Python 原样回显，仅作显示）；全阶段路径 = 事件回显 index
+                    let ci = match self.chapter_index {
+                        Some(ci) => ci,
+                        None => index,
                     };
                     if let Err(e) = plan_store::upsert_chapter(
                         self.pool,
@@ -1043,12 +1045,6 @@ impl StreamEventSink for RegenSink<'_> {
                 }
                 StreamEvent::Phase { index, .. } => {
                     warn!(%self.req_id, index, "单章重生成流出现非预期 phase 事件，已忽略");
-                    Ok(None)
-                }
-                StreamEvent::Chapter {
-                    index, phase_index, ..
-                } => {
-                    warn!(%self.req_id, index, phase_index, "全阶段重生成流出现非预期 chapter 事件，已忽略");
                     Ok(None)
                 }
                 StreamEvent::Outline { phase_count, .. } => {
