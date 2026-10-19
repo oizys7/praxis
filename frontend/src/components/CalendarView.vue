@@ -79,6 +79,22 @@ onMounted(load);
 /** 视图模式：月 = 日历网格（默认）/ 年 = 热力图 */
 const viewMode = ref<"month" | "year">("month");
 
+/** 视图切换动画名（Vue Transition name）：cal-cross = 月↔年交叉淡切，
+ * cal-slide-next/prev = 月份翻页方向感知滑动 */
+const calAnim = ref("cal-cross");
+
+/** 月/年 pill 切换：交叉淡切 */
+function switchViewMode(mode: "month" | "year") {
+  if (viewMode.value === mode) return;
+  calAnim.value = "cal-cross";
+  viewMode.value = mode;
+}
+
+/** MonthGrid 重挂载键：年月变化触发翻页动画 */
+const monthGridKey = computed(
+  () => `${viewDate.value.getFullYear()}-${viewDate.value.getMonth()}`,
+);
+
 /** 当前查看的年月（初始锚今天） */
 const viewDate = ref(new Date());
 
@@ -235,6 +251,7 @@ const viewTitle = computed(() => {
 
 /** 翻页（月视图 ±1 月，年视图 ±1 年；本地时区安全用 Date 构造平移） */
 function shiftView(delta: number) {
+  calAnim.value = delta > 0 ? "cal-slide-next" : "cal-slide-prev";
   const d = new Date(viewDate.value);
   if (viewMode.value === "month") d.setMonth(d.getMonth() + delta);
   else d.setFullYear(d.getFullYear() + delta);
@@ -243,6 +260,7 @@ function shiftView(delta: number) {
 
 /** 回到今天 */
 function goToday() {
+  if (viewMode.value === "month") calAnim.value = "cal-slide-next";
   viewDate.value = new Date();
 }
 
@@ -424,7 +442,7 @@ async function onUpdateStudyDays(planId: string, days: number[]) {
                     : 'text-muted-foreground hover:text-foreground'
                 "
                 :aria-pressed="viewMode === 'month'"
-                @click="viewMode = 'month'"
+                @click="switchViewMode('month')"
               >
                 月
               </button>
@@ -437,7 +455,7 @@ async function onUpdateStudyDays(planId: string, days: number[]) {
                     : 'text-muted-foreground hover:text-foreground'
                 "
                 :aria-pressed="viewMode === 'year'"
-                @click="viewMode = 'year'"
+                @click="switchViewMode('year')"
               >
                 年
               </button>
@@ -474,17 +492,21 @@ async function onUpdateStudyDays(planId: string, days: number[]) {
           </div>
           <Card>
             <CardContent class="p-3 sm:p-4">
-              <!-- 月视图：日历网格 -->
-              <MonthGrid
-                v-if="viewMode === 'month'"
-                :year="viewDate.getFullYear()"
-                :month="viewDate.getMonth()"
-                :stats="dayStats"
-                :events="calendarEvents"
-                @select-day="openDay"
-              />
-              <!-- 年视图：热力图 -->
-              <YearHeatmap v-else :stats="dayStats" @select-day="openDay" />
+              <!-- 月↔年交叉淡切 / 月份翻页方向滑动（out-in 不叠影） -->
+              <Transition :name="calAnim" mode="out-in">
+                <!-- 月视图：日历网格 -->
+                <MonthGrid
+                  v-if="viewMode === 'month'"
+                  :key="monthGridKey"
+                  :year="viewDate.getFullYear()"
+                  :month="viewDate.getMonth()"
+                  :stats="dayStats"
+                  :events="calendarEvents"
+                  @select-day="openDay"
+                />
+                <!-- 年视图：热力图 -->
+                <YearHeatmap v-else :stats="dayStats" @select-day="openDay" />
+              </Transition>
             </CardContent>
           </Card>
         </div>

@@ -172,3 +172,45 @@ button:not(:disabled) {
 button:not(:disabled):active {
   transform: scale(0.97);
 }
+
+/* ---------------------------------------------------------------------------
+ * 日历年月切换动画（CalendarView，v-tip 交互区同族）
+ * cal-cross = 月↔年交叉淡切；cal-slide-next/prev = 翻页方向感知滑动。
+ * reduced-motion 全局块会将其即时化（瞬切）。
+ * ------------------------------------------------------------------------- */
+.cal-cross-enter-active,
+.cal-cross-leave-active,
+.cal-slide-next-enter-active,
+.cal-slide-next-leave-active,
+.cal-slide-prev-enter-active,
+.cal-slide-prev-leave-active {
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease;
+}
+
+.cal-cross-enter-from,
+.cal-cross-leave-to {
+  opacity: 0;
+  transform: scale(0.99);
+}
+
+.cal-slide-next-enter-from {
+  opacity: 0;
+  transform: translateX(16px);
+}
+
+.cal-slide-next-leave-to {
+  opacity: 0;
+  transform: translateX(-16px);
+}
+
+.cal-slide-prev-enter-from {
+  opacity: 0;
+  transform: translateX(-16px);
+}
+
+.cal-slide-prev-leave-to {
+  opacity: 0;
+  transform: translateX(16px);
+}
