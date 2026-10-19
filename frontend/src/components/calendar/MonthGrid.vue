@@ -190,7 +190,7 @@ function cellLabel(cell: CalendarCell): string {
                   ? 'border-transparent bg-success/20 text-success'
                   : 'border-primary/30 bg-primary/[0.08] text-foreground/90'
               "
-              :title="`${ev.planTitle} · ${ev.chapterName}`"
+              v-tip="`${ev.planTitle} — ${ev.chapterName}`"
             >
               {{ ev.chapterName }}
             </li>

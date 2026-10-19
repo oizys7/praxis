@@ -233,7 +233,7 @@ function formatTime(iso: string): string {
         <button
           class="shrink-0 text-muted-foreground/50 transition-colors hover:text-amber-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           :class="item.favorite ? 'text-amber-400 hover:text-amber-500' : ''"
-          :title="item.favorite ? '取消收藏' : '收藏'"
+          v-tip="item.favorite ? '取消收藏' : '收藏'"
           :aria-label="
             item.favorite ? `取消收藏：${item.title}` : `收藏：${item.title}`
           "
@@ -302,7 +302,7 @@ function formatTime(iso: string): string {
             variant="ghost"
             size="sm"
             class="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
-            :title="`删除：${item.title}`"
+            v-tip="`删除：${item.title}`"
             :aria-label="`删除：${item.title}`"
             @click.stop="onDelete(item)"
           >

@@ -447,7 +447,7 @@ async function onUpdateStudyDays(planId: string, days: number[]) {
                 type="button"
                 class="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-border text-muted-foreground transition-colors duration-200 hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 aria-label="上一月"
-                title="上一月"
+                v-tip="'上一月'"
                 @click="shiftView(-1)"
               >
                 <ChevronLeft class="h-4 w-4" aria-hidden="true" />
@@ -456,7 +456,7 @@ async function onUpdateStudyDays(planId: string, days: number[]) {
                 type="button"
                 class="flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border border-border text-muted-foreground transition-colors duration-200 hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 aria-label="下一月"
-                title="下一月"
+                v-tip="'下一月'"
                 @click="shiftView(1)"
               >
                 <ChevronRight class="h-4 w-4" aria-hidden="true" />

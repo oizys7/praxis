@@ -121,3 +121,54 @@
     transition-duration: 0.01ms !important;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * 全局统一 tooltip（v-tip 指令，src/directives/tip.ts）
+ * 深墨蓝气泡 + 纸色文字，跟随明暗主题；fixed 定位挂 body。
+ * ------------------------------------------------------------------------- */
+.praxis-tip {
+  position: fixed;
+  z-index: 9999;
+  max-width: min(280px, calc(100vw - 16px));
+  padding: 6px 10px;
+  border-radius: 8px;
+  background-color: var(--primary);
+  color: var(--primary-foreground);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.16);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(2px);
+  transition:
+    opacity 0.14s ease,
+    transform 0.14s ease;
+}
+
+.praxis-tip--show {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+/* 隐形测量阶段：禁用过渡，避免首帧闪跳 */
+.praxis-tip--measure {
+  transition: none;
+}
+
+/* ---------------------------------------------------------------------------
+ * 全局按钮按压反馈：按下轻微缩放 + 统一过渡收编。
+ * unlayered 声明优先于工具层（覆盖 Button variants 的 transition-colors
+ * 为超集列表，颜色/阴影/位移/内边距过渡全部保留）。
+ * ------------------------------------------------------------------------- */
+button:not(:disabled) {
+  transition-property:
+    color, background-color, border-color, box-shadow, transform, opacity,
+    padding;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+button:not(:disabled):active {
+  transform: scale(0.97);
+}

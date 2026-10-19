@@ -73,7 +73,7 @@ const ITEM_BTN_CLASS =
             ? 'relative bg-secondary/60 font-semibold text-primary'
             : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
         ]"
-        :title="collapsed ? item.label : undefined"
+        v-tip="collapsed ? item.label : undefined"
         :aria-current="item.id === modelValue ? 'page' : undefined"
         @click="emit('update:modelValue', item.id)"
       >
@@ -104,7 +104,7 @@ const ITEM_BTN_CLASS =
       <button
         type="button"
         class="flex w-full items-center justify-center rounded-lg px-3 py-2 text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
-        :title="collapsed ? '展开菜单' : '折叠菜单'"
+        v-tip="collapsed ? '展开菜单' : '折叠菜单'"
         @click="toggleCollapsed"
       >
         <ChevronLeft

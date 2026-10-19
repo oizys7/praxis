@@ -207,7 +207,7 @@ function cellLabel(cell: HeatCell): string {
                 @focus="showCard(cell, $event)"
                 @mouseleave="hideCard"
                 @blur="hideCard"
-                :title="cellLabel(cell)"
+                v-tip="cellLabel(cell)"
                 :aria-label="`${cellLabel(cell)}${dayKey(cell.date) === todayKey ? '（今日）' : ''}，点击查看当天安排`"
                 @click="emit('select-day', cell.date)"
               />

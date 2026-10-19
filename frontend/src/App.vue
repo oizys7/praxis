@@ -133,7 +133,7 @@ onUnmounted(() => disposeProgressListener());
             type="button"
             class="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
             :aria-label="isDark ? '切换到亮色主题' : '切换到暗色主题'"
-            :title="isDark ? '切换到亮色主题' : '切换到暗色主题'"
+            v-tip="isDark ? '切换到亮色主题' : '切换到暗色主题'"
             @click="toggleTheme"
           >
             <Sun v-if="isDark" class="h-4 w-4" />

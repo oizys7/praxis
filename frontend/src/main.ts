@@ -1,5 +1,6 @@
 import { createApp } from "vue";
 import App from "./App.vue";
+import vTip from "./directives/tip";
 import "./assets/index.css";
 
 /** 主题持久化键（'dark' | 'light'；与 App 顶栏切换按钮共用） */
@@ -22,4 +23,4 @@ function initTheme(): void {
 
 // Praxis 前端入口
 initTheme();
-createApp(App).mount("#app");
+createApp(App).directive("tip", vTip).mount("#app");

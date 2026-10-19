@@ -223,7 +223,7 @@ function toggleStart(planId: string) {
               <button
                 type="button"
                 class="min-w-0 flex-1 cursor-pointer truncate text-left text-sm font-medium text-foreground transition-colors hover:text-primary hover:underline hover:underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                :title="`打开计划详情：${row.summary.title}`"
+                v-tip="`打开计划详情：${row.summary.title}`"
                 :aria-label="`打开计划详情：${row.summary.title}，已学 ${row.summary.studyDone} 章，共排 ${row.summary.studyTotal} 章`"
                 @click="emit('open-plan', row.summary.id)"
               >
@@ -302,7 +302,9 @@ function toggleStart(planId: string) {
                 v-if="group.key === 'active'"
                 type="button"
                 class="ml-auto rounded-md bg-primary px-2 py-1 text-[11px] font-medium text-primary-foreground transition-opacity duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
-                :class="row.dirty ? 'opacity-100' : 'pointer-events-none opacity-0'"
+                :class="
+                  row.dirty ? 'opacity-100' : 'pointer-events-none opacity-0'
+                "
                 :aria-hidden="!row.dirty"
                 :tabindex="row.dirty ? 0 : -1"
                 :aria-label="`保存学习日：${row.summary.title}，今天之前与今天已完成不动`"

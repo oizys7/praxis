@@ -182,7 +182,7 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
               <button
                 type="button"
                 class="min-w-0 cursor-pointer truncate text-left text-sm font-medium text-foreground transition-colors hover:text-primary hover:underline hover:underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                :title="`打开计划详情：${group.planTitle}`"
+                v-tip="`打开计划详情：${group.planTitle}`"
                 :aria-label="`打开计划详情：${group.planTitle}`"
                 @click="emit('open-plan', group.planId)"
               >

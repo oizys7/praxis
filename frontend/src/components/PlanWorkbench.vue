@@ -719,7 +719,7 @@ function onPlanRefreshed(plan: StudyPlan) {
       variant="outline"
       size="sm"
       class="fixed bottom-6 right-8 z-30 h-9 w-9 rounded-full p-0 text-muted-foreground transition-colors hover:border-primary/40 hover:bg-muted hover:text-primary"
-      title="回到顶部"
+      v-tip="'回到顶部'"
       aria-label="回到顶部"
       @click="scrollPlanToTop"
     >
@@ -746,7 +746,7 @@ function onPlanRefreshed(plan: StudyPlan) {
               ? 'h-2.5 bg-primary group-hover:bg-primary/60'
               : 'h-1.5 bg-border/70 group-hover:bg-primary/30'
           "
-          :title="`${pi + 1}. ${phase.name}`"
+          v-tip="`${pi + 1}. ${phase.name}`"
           :aria-label="`跳转到阶段 ${pi + 1}：${phase.name}`"
           @click="openPhaseFromToc(pi)"
         />
@@ -763,7 +763,7 @@ function onPlanRefreshed(plan: StudyPlan) {
           <button
             class="w-full truncate rounded-lg px-2 py-1.5 text-left text-xs font-semibold transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             :class="pi === activePhase ? 'text-primary' : ''"
-            title="跳转并展开该阶段"
+            v-tip="'跳转并展开该阶段'"
             @click="openPhaseFromToc(pi)"
           >
             {{ pi + 1 }}. {{ phase.name }}
@@ -774,7 +774,7 @@ function onPlanRefreshed(plan: StudyPlan) {
               v-for="(chapter, ci) in phase.chapters || []"
               :key="ci"
               class="w-full truncate rounded-lg px-2 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              :title="chapter.title"
+              v-tip="chapter.title"
               @click="openChapterFromToc(pi, ci)"
             >
               {{ pi + 1 }}.{{ ci + 1 }} {{ chapter.title }}
