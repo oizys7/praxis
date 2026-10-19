@@ -434,10 +434,33 @@ async def _regen_event_dicts(payload: RegenRequest) -> AsyncIterator[dict[str, A
         return
 
     try:
-        if payload.chapter_index is None:  # 全阶段重生成
-            phase = await nodes.regenerate_phase(
+        if payload.chapter_index is None:  # 全阶段重生成：串行逐章
+            # 每章前发 chapterStart（Rust 置该章 generating 落库 + 推前端
+            # 转圈），完成后发 chapter——逐章动画推进（2026-10-16 反馈④）；
+            # 全部章完成后一次轻量调用补阶段轻装，组装整阶段 phase 收尾
+            # （upsert_phase 整体替换落库，practice/assignments/project 齐备）
+            chapter_titles = phase_outline.get("chapterTitles") or []
+            chapters: list[dict[str, Any]] = []
+            for ci in range(len(chapter_titles)):
+                yield {
+                    "type": "chapterStart",
+                    "phaseIndex": phase_index,
+                    "chapterIndex": ci,
+                }
+                chapter = await nodes.regenerate_chapter(
+                    request_dict, outline_dict, phase_index, ci
+                )
+                chapters.append(chapter)
+                yield {
+                    "type": "chapter",
+                    "index": ci,
+                    "phaseIndex": phase_index,
+                    "chapter": chapter,
+                }
+            extras = await nodes.regenerate_phase_extras(
                 request_dict, outline_dict, phase_index
             )
+            phase = {**phase_outline, "chapters": chapters, **extras}
             yield {"type": "phase", "index": phase_index, "phase": phase}
             response = PlanResponse(status="plan")
         else:  # 单章重生成
@@ -455,6 +478,12 @@ async def _regen_event_dicts(payload: RegenRequest) -> AsyncIterator[dict[str, A
                     ),
                 )
             else:
+                # 动画与全阶段路径一致：先 chapterStart 再 chapter（反馈②）
+                yield {
+                    "type": "chapterStart",
+                    "phaseIndex": phase_index,
+                    "chapterIndex": chapter_index,
+                }
                 chapter = await nodes.regenerate_chapter(
                     request_dict, outline_dict, phase_index, chapter_index
                 )

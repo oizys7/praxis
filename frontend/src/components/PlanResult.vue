@@ -43,6 +43,16 @@ const props = defineProps<{
 const emit = defineEmits<{ refreshed: [plan: StudyPlan] }>();
 
 /** 章节总数（反馈③：hero 元信息行展示「共 N 阶段 / M 章节」） */
+/** 全局重生成互斥（2026-10-16 反馈③）：任一阶段/章节 DB 状态为 generating
+ * （含退出重进后从库读回的持久态）→ 全站重生成入口禁用置灰 */
+const regenLocked = computed(() =>
+  props.plan.phases.some(
+    (p) =>
+      p.status === "generating" ||
+      p.chapters?.some((c) => c.status === "generating"),
+  ),
+);
+
 const chapterTotal = computed(() =>
   props.plan.phases.reduce((n, p) => n + (p.chapters?.length ?? 0), 0),
 );
@@ -168,6 +178,7 @@ const resourceTypeLabels: Record<string, string> = {
           :index="i"
           :plan-id="planId"
           :row-status="rowStatus"
+          :regen-locked="regenLocked"
           :default-open="i === 0"
           @refreshed="(p) => emit('refreshed', p)"
         />

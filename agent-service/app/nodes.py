@@ -423,6 +423,26 @@ async def _expand_phase_extras(
     return extras.model_dump(mode="json", by_alias=True)
 
 
+async def regenerate_phase_extras(
+    request: dict[str, Any],
+    outline: dict[str, Any],
+    phase_index: int,
+) -> dict[str, Any]:
+    """重生成端点专用：阶段轻装（practice / assignments / project）。
+
+    串行逐章重生成（tasks._regen_event_dicts）收尾时调用，与图内
+    expand_phase_wrap_node 同源上下文注入；评审意见注入占位文案。
+    """
+    phase_outline = _phase_outline_at(outline, phase_index)
+    return await _expand_phase_extras(
+        request,
+        phase_outline,
+        phase_index,
+        plan_context=build_plan_context(outline, phase_index),
+        review_notes=_FIRST_EXPAND_REVIEW_NOTES,
+    )
+
+
 def _chapter_failed(chapter: dict[str, Any]) -> bool:
     """章级软校验：contentMd trim 空或不足 validators 硬底线 → 失败可重扩。
 

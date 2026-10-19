@@ -42,6 +42,9 @@ export interface GenerationObservation {
    * 判定（isObservationTerminal 依旧只看 phaseStatuses 覆盖）。
    */
   chapterDone: Record<string, true>;
+  /** 生成中章节点集合（key "<phaseIndex>:<chapterIndex>"）：chapterStart 点亮
+   * / chapterDone 撤销（2026-10-16 反馈④逐章动画，regen 链路经 applyRegenChapterEvent） */
+  chapterGenerating: Record<string, true>;
   /** 最近一次 storageIssue 提示（云端入库异常，不中断生成） */
   storageIssue: string | null;
   /** 最近一次进度事件到达时间戳（静默判定与对账节奏依据） */
@@ -107,6 +110,7 @@ function newObservation(planId: string): GenerationObservation {
     phases: [],
     phaseStatuses: {},
     chapterDone: {},
+    chapterGenerating: {},
     storageIssue: null,
     lastEventAt: Date.now(),
     lastPollAt: 0,
@@ -175,9 +179,17 @@ function applyProgressEvent(
       obs.phaseStatuses[payload.index] = "complete";
       break;
     }
+    case "chapterStart": {
+      // 2026-10-16 反馈④逐章动画：章开始生成即点亮（regen 链路经
+      // applyRegenChapterEvent 到此，generate 链路无此事件）
+      obs.chapterGenerating[`${payload.phaseIndex}:${payload.chapterIndex}`] = true;
+      break;
+    }
     case "chapterDone": {
       // D1 章级扇出：初生链路逐章产 chapterDone。仅点亮骨架树章级打点，
-      // 不触碰 phaseStatuses（PhaseDone 计数时序与终态判定保持不变）。
+      // 不触碰 phaseStatuses（PhaseDone 计数时序与终态判定保持不变）；
+      // 同时撤销 chapterStart 的生成中点亮（章已完成）
+      delete obs.chapterGenerating[`${payload.phaseIndex}:${payload.chapterIndex}`];
       obs.chapterDone[`${payload.phaseIndex}:${payload.chapterIndex}`] = true;
       break;
     }
@@ -190,6 +202,41 @@ function applyProgressEvent(
       break;
   }
   if (isObservationTerminal(obs)) notifyTerminal(obs);
+}
+
+/**
+ * 重生成链路的章级事件记账（2026-10-16 反馈④）：regen 走 IPC Channel 直推
+ * useAgent 回调、不经全局 listen，由 useAgent 转发至此。chapterStart 点亮
+ * 该章「生成中」、chapterDone 撤销——退出重进由 DB status=generating 兜底。
+ */
+export function applyRegenChapterEvent(
+  planId: string,
+  payload:
+    | { type: "chapterStart"; phaseIndex: number; chapterIndex: number }
+    | { type: "chapterDone"; phaseIndex: number; chapterIndex: number },
+) {
+  if (!observations.value[planId]) {
+    observations.value[planId] = newObservation(planId);
+  }
+  const obs = observations.value[planId]!;
+  const key = `${payload.phaseIndex}:${payload.chapterIndex}`;
+  if (payload.type === "chapterStart") {
+    obs.chapterGenerating[key] = true;
+  } else {
+    delete obs.chapterGenerating[key];
+  }
+}
+
+/** 指定章节是否正在生成中（事件点亮 + DB status 双通道，响应式） */
+export function isChapterGenerating(
+  planId: string | undefined,
+  phaseIndex: number | undefined,
+  chapterIndex: number | undefined,
+): boolean {
+  if (!planId || phaseIndex === undefined || chapterIndex === undefined) {
+    return false;
+  }
+  return !!observations.value[planId]?.chapterGenerating[`${phaseIndex}:${chapterIndex}`];
 }
 
 /** 模块级一次性注册：resolve 后 UnlistenFn 存 module 局部（dispose 用） */

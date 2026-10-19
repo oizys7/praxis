@@ -806,6 +806,11 @@ impl WsEventSink for GenerationConsumer {
                     );
                     Ok(false)
                 }
+                // 生成链路不发 chapterStart（仅重生成链），防御性忽略
+                StreamEvent::ChapterStart { .. } => {
+                    warn!(req_id = %self.req_id, "生成流出现非预期 chapterStart 事件，已忽略");
+                    Ok(false)
+                }
                 StreamEvent::Done { response: envelope } => {
                     self.terminal = true;
                     if let Some(s) = &self.storage {
@@ -1009,6 +1014,33 @@ impl StreamEventSink for RegenSink<'_> {
                     }
                     Ok(None)
                 }
+                StreamEvent::ChapterStart {
+                    phase_index: _,
+                    chapter_index,
+                } => {
+                    // 逐章动画（2026-10-16 反馈④）：章开始生成即落库 generating
+                    // （持久，退出重进保持）并推前端转圈；目标索引以入口校验值
+                    // 为准（单章路径 chapter_index=Some(ci)，事件回显仅作参考）
+                    let ci = self.chapter_index.unwrap_or(chapter_index);
+                    if let Err(e) = plan_store::set_chapter_generating(
+                        self.pool,
+                        self.plan_id,
+                        self.phase_index,
+                        ci,
+                    )
+                    .await
+                    {
+                        warn!(%self.req_id, chapter_index = ci, error = %e, "章节置 generating 失败，不中断流");
+                    }
+                    notify(
+                        self.progress,
+                        PlanProgressEvent::ChapterStart {
+                            phase_index: self.phase_index,
+                            chapter_index: ci,
+                        },
+                    );
+                    Ok(None)
+                }
                 StreamEvent::Phase { index, .. } => {
                     warn!(%self.req_id, index, "单章重生成流出现非预期 phase 事件，已忽略");
                     Ok(None)
@@ -1032,7 +1064,7 @@ impl StreamEventSink for RegenSink<'_> {
 /// regenerate 双命令的共享编排（regenerate_phase / regenerate_chapter 仅
 /// chapter_index 与 mark pending 粒度不同）：
 /// ①plans 七字段 + 大纲骨架读回，重建 PlanRequest / RegenOutline；
-/// ②目标行置 pending（前端即时转「生成中」）；
+/// ②目标行置 generating（前端即时转「生成中」，落库持久可跨页面保持）；
 /// ③POST /api/regenerate/stream 并消费流（共享 consume_ndjson_stream 骨架）；
 /// ④done(plan) → 计划行章级收尾（finalize_regen_complete：全章节 complete
 /// 才翻 complete，含 failed 行——2026-10-16 修复重生成补齐后 failed 卡死）；
@@ -1110,14 +1142,15 @@ async fn run_regen(
         }
     };
 
-    // ② 目标行置 pending（前端即时可见；失败仅提示不阻塞——与 generate_plan
+    // ② 目标行置 generating（前端即时转「生成中」且落库持久——退出再进入
+    //    保持，2026-10-16 反馈①；失败仅提示不阻塞——与 generate_plan
     //    入库容错口径一致，后续成功入库 / 失败收尾均会覆写状态）
     let mark_result = match chapter_index {
-        None => plan_store::mark_phase_pending(&pool, plan_id, phase_index).await,
-        Some(ci) => plan_store::mark_chapter_pending(&pool, plan_id, phase_index, ci).await,
+        None => plan_store::mark_phase_generating(&pool, plan_id, phase_index).await,
+        Some(ci) => plan_store::mark_chapter_generating(&pool, plan_id, phase_index, ci).await,
     };
     if let Err(e) = mark_result {
-        warn!(%req_id, error = %e, "重生成目标状态置 pending 失败，不影响生成");
+        warn!(%req_id, error = %e, "重生成目标状态置 generating 失败，不影响生成");
         notify(
             progress,
             PlanProgressEvent::StorageIssue {
@@ -1746,6 +1779,7 @@ mod tests {
                     StreamEvent::Outline { .. } => "outline",
                     StreamEvent::Phase { .. } => "phase",
                     StreamEvent::Chapter { .. } => "chapter",
+                    StreamEvent::ChapterStart { .. } => "chapterStart",
                     StreamEvent::Done { .. } => "done",
                 };
                 self.events.push((seq, tag));

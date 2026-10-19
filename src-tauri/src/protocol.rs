@@ -389,6 +389,11 @@ pub enum PlanProgressEvent {
         phase_index: u32,
         chapter_index: u32,
     },
+    /// 章节开始生成（2026-10-16 逐章动画）：前端点亮该章「生成中」转圈
+    ChapterStart {
+        phase_index: u32,
+        chapter_index: u32,
+    },
     /// 存储层异常提示（生成不中断，前端降级提示）
     StorageIssue { message: String },
 }
@@ -427,6 +432,15 @@ pub enum StreamEvent {
         index: u32,
         phase_index: u32,
         chapter: ChapterDef,
+    },
+    /// 章节开始生成（2026-10-16 逐章动画）：重生成流在每章 LLM 调用前发出，
+    /// Rust 置该章 generating 落库并推前端转圈——状态退出重进可保持。
+    /// phase_index 为 wire 完整性保留（Python 回显）；Rust 消费一律以入口
+    /// 校验后的目标值为准，本字段不读——防御性豁免 dead_code。
+    ChapterStart {
+        #[allow(dead_code)]
+        phase_index: u32,
+        chapter_index: u32,
     },
     /// 终态：统一包络（plan / clarification / error），必为最后一行
     Done { response: PlanResponse },
@@ -711,6 +725,23 @@ mod tests {
                 assert!(chapter.content_md.contains("```mermaid"));
             }
             other => panic!("应为 Chapter 事件，实际：{other:?}"),
+        }
+    }
+
+    /// 章节开始事件（2026-10-16 逐章动画）：chapterStart + phaseIndex/chapterIndex
+    #[test]
+    fn parse_ndjson_line_accepts_chapter_start_event() {
+        let event = parse_ndjson_line(r#"{"type":"chapterStart","phaseIndex":1,"chapterIndex":2}"#)
+            .expect("chapterStart 事件行应解析成功");
+        match event {
+            StreamEvent::ChapterStart {
+                phase_index,
+                chapter_index,
+            } => {
+                assert_eq!(phase_index, 1);
+                assert_eq!(chapter_index, 2);
+            }
+            other => panic!("应为 ChapterStart 事件，实际：{other:?}"),
         }
     }
 

@@ -64,10 +64,21 @@ async def test_regen_phase_stream(monkeypatch):
         {"request": VALID_REQUEST, "outline": outline, "phaseIndex": 0},
     )
 
-    assert [event["type"] for event in events] == ["phase", "done"]
-    phase_event = events[0]
+    # 串行逐章：chapterStart→chapter 交替 ×N，收尾 phase（轻装补齐）+ done
+    types = [event["type"] for event in events]
+    assert types[0] == "chapterStart", "首事件必须是 chapterStart"
+    assert types[-1] == "done"
+    assert types[-2] == "phase", "phase 收尾事件必须倒数第二"
+    body = types[:-2]
+    assert body.count("chapterStart") == body.count("chapter") > 0, (
+        f"chapterStart 与 chapter 必须成对且非空：{body}"
+    )
+    assert body[0::2] == ["chapterStart"] * (len(body) // 2), f"交替序错乱：{body}"
+    assert body[1::2] == ["chapter"] * (len(body) // 2), f"交替序错乱：{body}"
+    phase_event = events[-2]
     assert phase_event["index"] == 0, "phase 事件的 index 必须等于请求的 phaseIndex"
     assert phase_event["phase"]["chapters"], "重生成的阶段必须携带章节正文"
+    assert phase_event["phase"].get("practice"), "phase 收尾必须携带轻装（practice）"
     done = events[-1]
     assert done["response"]["status"] == "plan"
 
@@ -89,8 +100,14 @@ async def test_regen_chapter_stream(monkeypatch):
         },
     )
 
-    assert [event["type"] for event in events] == ["chapter", "done"]
-    chapter_event = events[0]
+    assert [event["type"] for event in events] == [
+        "chapterStart",
+        "chapter",
+        "done",
+    ]
+    assert events[0]["chapterIndex"] == chapter_index
+    assert events[0]["phaseIndex"] == 1
+    chapter_event = events[1]
     assert chapter_event["index"] == chapter_index
     assert chapter_event["phaseIndex"] == 1
     # by_alias camelCase dump：Pydantic 模型（snake_case 属性名）可直接回解析
@@ -135,8 +152,9 @@ async def test_regen_service_error_yields_error_done(monkeypatch):
         },
     )
 
-    assert [event["type"] for event in events] == ["done"]
-    response = events[0]["response"]
+    # chapterStart 先行（点击即转圈），业务异常 → done(error) 收尾
+    assert [event["type"] for event in events] == ["chapterStart", "done"]
+    response = events[-1]["response"]
     assert response["status"] == "error"
     assert response["error"]["code"] == "service"
     assert response["error"]["message"], "error 包络必须携带异常信息"

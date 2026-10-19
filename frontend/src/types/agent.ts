@@ -50,7 +50,8 @@ export interface PhaseProject {
  * - failed：生成失败终态。
  * undefined = 旧 plan_json / 缺省流式载荷（无徽标语义）。
  */
-export type PhaseStatus = "pending" | "complete" | "failed";
+/** generating = 重生成中（2026-10-16 反馈①：落库持久，退出重进保持） */
+export type PhaseStatus = "pending" | "generating" | "complete" | "failed";
 
 /** 阶段内的学习章节：完整 markdown 正文（status 见 PhaseStatus；图示内联 ```mermaid 码块） */
 export interface Chapter {
@@ -106,6 +107,8 @@ export type PlanProgressEvent =
       phases?: OutlinePhasePayload[];
     }
   | { type: "phaseDone"; index: number; total: number }
+  /** 章节开始生成（2026-10-16 反馈④逐章动画）：与 protocol.rs ChapterStart 逐字对齐 */
+  | { type: "chapterStart"; phaseIndex: number; chapterIndex: number }
   /** 单章重生成完成（task-B）：与 protocol.rs ChapterDone 变体逐字对齐 */
   | { type: "chapterDone"; phaseIndex: number; chapterIndex: number }
   | { type: "storageIssue"; message: string };

@@ -4,7 +4,8 @@
 //! - db.rs：连接池管理、首连建表（ensure_schema -> db_ddl）
 //! - 本模块：流式生成链路（任务 10）的存储层——create_generating_plan /
 //!   update_outline_meta / seed_outline / upsert_phase / upsert_chapter /
-//!   mark_phase_pending / mark_chapter_pending / finalize_plan / finalize_failed /
+//!   mark_phase_generating / mark_chapter_generating / set_chapter_generating /
+//!   finalize_plan / finalize_failed /
 //!   delete_plan_full，以及 get_plan 新路径的多表重组读取（load_study_plan +
 //!   纯函数 reassemble_plan）与重生成上下文读取（load_plan_request_meta / load_plan_outline）
 //!
@@ -379,28 +380,29 @@ pub async fn upsert_chapter(
     Ok(())
 }
 
-/// 阶段重置为 pending（regenerate_phase 开始时调用，前端即时转「生成中」）；
-/// 阶段内容（chapters）不动，重生成成功后由 upsert_phase 整体替换。
-/// 消费方：regenerate_phase（任务 15）。
-pub async fn mark_phase_pending(
+/// 阶段置 generating（regenerate_phase 开始时调用，前端即时转「生成中」；
+/// 落库持久——退出再进入仍显示生成中，2026-10-16 反馈①）；
+/// 阶段内容（chapters）不动，各章由 chapterStart 事件逐章点亮；
+/// 重生成成功后由 upsert_phase 整体替换。消费方：regenerate_phase。
+pub async fn mark_phase_generating(
     pool: &PgPool,
     plan_id: Uuid,
     phase_index: u32,
 ) -> Result<(), AgentError> {
-    sqlx::query("UPDATE phases SET status = 'pending' WHERE plan_id = $1 AND idx = $2")
+    sqlx::query("UPDATE phases SET status = 'generating' WHERE plan_id = $1 AND idx = $2")
         .bind(plan_id)
         .bind(i32::try_from(phase_index).unwrap_or(0))
         .execute(pool)
         .await
-        .map_err(|e| fail("重置阶段状态", e))?;
-    info!(%plan_id, phase_index, "阶段已置回 pending");
+        .map_err(|e| fail("置阶段生成中", e))?;
+    info!(%plan_id, phase_index, "阶段已置 generating");
     Ok(())
 }
 
-/// 章节重置为 pending（regenerate_chapter 开始时调用）；注意同时把所属阶段回置
-/// pending——单章重生成会让阶段显示「生成中」，完成后由 upsert_chapter 阶段联动翻牌。
-/// 消费方：regenerate_chapter（任务 15）。
-pub async fn mark_chapter_pending(
+/// 章节置 generating（regenerate_chapter 开始时调用）；注意同时把所属阶段置
+/// generating——单章重生成会让阶段显示「生成中」，完成后由 upsert_chapter
+/// 阶段联动翻牌。状态落库持久（2026-10-16 反馈①）。消费方：regenerate_chapter。
+pub async fn mark_chapter_generating(
     pool: &PgPool,
     plan_id: Uuid,
     phase_index: u32,
@@ -409,7 +411,7 @@ pub async fn mark_chapter_pending(
     let phase_i32 = i32::try_from(phase_index).unwrap_or(0);
     let chapter_i32 = i32::try_from(chapter_index).unwrap_or(0);
     sqlx::query(
-        "UPDATE chapters c SET status = 'pending'
+        "UPDATE chapters c SET status = 'generating'
          FROM phases p WHERE c.phase_id = p.id AND p.plan_id = $1 AND p.idx = $2 AND c.idx = $3",
     )
     .bind(plan_id)
@@ -417,14 +419,37 @@ pub async fn mark_chapter_pending(
     .bind(chapter_i32)
     .execute(pool)
     .await
-    .map_err(|e| fail("重置章节状态", e))?;
-    sqlx::query("UPDATE phases SET status = 'pending' WHERE plan_id = $1 AND idx = $2")
+    .map_err(|e| fail("置章节生成中", e))?;
+    sqlx::query("UPDATE phases SET status = 'generating' WHERE plan_id = $1 AND idx = $2")
         .bind(plan_id)
         .bind(phase_i32)
         .execute(pool)
         .await
-        .map_err(|e| fail("重置所属阶段状态", e))?;
-    info!(%plan_id, phase_index, chapter_index, "章节及所属阶段已置回 pending");
+        .map_err(|e| fail("置所属阶段生成中", e))?;
+    info!(%plan_id, phase_index, chapter_index, "章节及所属阶段已置 generating");
+    Ok(())
+}
+
+/// 单章置 generating（chapterStart 事件到达时逐章点亮，2026-10-16 反馈④）：
+/// 全阶段重生成中当前章开始生成即落库转圈；所属阶段已在入口由
+/// mark_phase_generating 置过，不再重复写。消费方：RegenSink ChapterStart 分支。
+pub async fn set_chapter_generating(
+    pool: &PgPool,
+    plan_id: Uuid,
+    phase_index: u32,
+    chapter_index: u32,
+) -> Result<(), AgentError> {
+    sqlx::query(
+        "UPDATE chapters c SET status = 'generating'
+         FROM phases p WHERE c.phase_id = p.id AND p.plan_id = $1 AND p.idx = $2 AND c.idx = $3",
+    )
+    .bind(plan_id)
+    .bind(i32::try_from(phase_index).unwrap_or(0))
+    .bind(i32::try_from(chapter_index).unwrap_or(0))
+    .execute(pool)
+    .await
+    .map_err(|e| fail("置章节生成中", e))?;
+    info!(%plan_id, phase_index, chapter_index, "章节已置 generating");
     Ok(())
 }
 
@@ -513,20 +538,22 @@ pub async fn sweep_stale_generating(pool: &PgPool) -> Result<(u64, u64), AgentEr
 /// complete 永不被 failed 覆盖（状态机不变量：失败收尾只动 pending）。
 /// 消费方：finalize_plan(status=failed) / regenerate 失败路径（任务 15）。
 pub async fn finalize_failed(pool: &PgPool, plan_id: Uuid) -> Result<(), AgentError> {
-    sqlx::query("UPDATE phases SET status = 'failed' WHERE plan_id = $1 AND status = 'pending'")
+    sqlx::query(
+        "UPDATE phases SET status = 'failed' WHERE plan_id = $1 AND status IN ('pending', 'generating')",
+    )
         .bind(plan_id)
         .execute(pool)
         .await
         .map_err(|e| fail("收尾失败阶段状态", e))?;
     sqlx::query(
         "UPDATE chapters c SET status = 'failed' FROM phases p
-         WHERE c.phase_id = p.id AND p.plan_id = $1 AND c.status = 'pending'",
+         WHERE c.phase_id = p.id AND p.plan_id = $1 AND c.status IN ('pending', 'generating')",
     )
     .bind(plan_id)
     .execute(pool)
     .await
     .map_err(|e| fail("收尾失败章节状态", e))?;
-    info!(%plan_id, "pending 阶段/章节已置 failed（complete 不受影响）");
+    info!(%plan_id, "pending/generating 阶段与章节已置 failed（complete 不受影响）");
     Ok(())
 }
 

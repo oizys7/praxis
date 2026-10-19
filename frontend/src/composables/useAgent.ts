@@ -1,5 +1,6 @@
 import { ref, shallowRef } from "vue";
 import { Channel, invoke } from "@tauri-apps/api/core";
+import { applyRegenChapterEvent } from "@/composables/useGenerationProgress";
 import type {
   CommandError,
   PlanProgressEvent,
@@ -68,7 +69,13 @@ export async function regeneratePhase(
   regenScopes.value.add(scope);
   try {
     const channel = new Channel<PlanProgressEvent>();
-    channel.onmessage = (event) => onProgress?.(event);
+    channel.onmessage = (event) => {
+      // 章级开始/完成事件转发模块级记账（2026-10-16 反馈④逐章动画）
+      if (event.type === "chapterStart" || event.type === "chapterDone") {
+        applyRegenChapterEvent(planId, event);
+      }
+      onProgress?.(event);
+    };
     // 参数名对应 Rust 端 regenerate_phase(planId, phaseIndex, channel?)（camelCase）
     return await invoke<PlanResponse>("regenerate_phase", {
       planId,
@@ -96,7 +103,12 @@ export async function regenerateChapter(
   regenScopes.value.add(scope);
   try {
     const channel = new Channel<PlanProgressEvent>();
-    channel.onmessage = (event) => onProgress?.(event);
+    channel.onmessage = (event) => {
+      if (event.type === "chapterStart" || event.type === "chapterDone") {
+        applyRegenChapterEvent(planId, event);
+      }
+      onProgress?.(event);
+    };
     // 参数名对应 Rust 端 regenerate_chapter(planId, phaseIndex, chapterIndex, channel?)
     return await invoke<PlanResponse>("regenerate_chapter", {
       planId,
