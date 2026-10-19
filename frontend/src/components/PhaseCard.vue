@@ -35,6 +35,8 @@ const props = defineProps<{
   planId?: string;
   /** 行级生成状态（generating/failed/complete）：驱动「生成中」徽章与重生成抑制 */
   rowStatus?: string;
+  /** 全局重生成互斥（反馈③）：计划内任一阶段/章节 generating 时全站入口禁用 */
+  regenLocked?: boolean;
 }>();
 
 /** 子组件（Section）重生成完成：刷新后的计划整体上抛供调用方替换 */
@@ -48,6 +50,9 @@ const statusBadge = computed<{
   switch (props.phase.status) {
     case "complete":
       return { label: "✓ 已完成", variant: "success" };
+    case "generating":
+      // 重生成落库的持久态（反馈①）：退出重进也由 DB 驱动转圈，不再落空
+      return { label: "⟳ 生成中", variant: "secondary" };
     case "failed":
       return { label: "✗ 失败", variant: "destructive" };
     case "pending":
@@ -66,6 +71,7 @@ const canRegenerate = computed(
   () =>
     !!props.planId &&
     props.rowStatus !== "generating" &&
+    props.phase.status !== "generating" &&
     (props.phase.status === "failed" || props.phase.status === "pending"),
 );
 
@@ -87,9 +93,16 @@ watch(
 
 /** 本组件自身是否正在重生成（spinner；在飞锁另有模块级 regenScopes） */
 const busy = ref(false);
+/** 本阶段是否正在生成中（DB status=generating 持久 ∪ 本组件点击乐观）：
+ * spinner 动画与文案判据（2026-10-16 反馈①③） */
+const phaseRegenerating = computed(
+  () => props.phase.status === "generating" || busy.value,
+);
 /** 本计划任意阶段/章节的重生成是否在飞（含非本 scope；按钮禁用与文案判据） */
 const regenBusy = computed(
-  () => busy.value || (!!props.planId && isRegenInFlight(props.planId)),
+  () =>
+    (!!props.planId && isRegenInFlight(props.planId)) ||
+    (!!props.regenLocked && !phaseRegenerating.value),
 );
 /** 重生成过程的反馈信息（入库提示 / 失败原因；null = 无） */
 const regenError = ref<string | null>(null);
@@ -187,10 +200,10 @@ async function onRegenerate() {
             {{ statusBadge.label }}
           </Badge>
           <Button
-            v-if="canRegenerate"
+            v-if="canRegenerate || phaseRegenerating"
             variant="outline"
             size="sm"
-            :disabled="!props.planId || regenBusy"
+            :disabled="!props.planId || regenBusy || phaseRegenerating"
             @click="onRegenerate"
           >
             <span
@@ -238,6 +251,8 @@ async function onRegenerate() {
                 :chapter-index="ci"
                 :row-status="props.rowStatus"
                 @refreshed="(p) => emit('refreshed', p)"
+                :phase-status="phase.status"
+                :regen-locked="regenLocked"
               />
             </div>
           </div>

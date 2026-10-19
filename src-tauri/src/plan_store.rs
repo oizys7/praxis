@@ -344,12 +344,23 @@ pub async fn upsert_chapter(
     // 单章写入（章节行冲突即更新，status 由 content_md 定价）
     insert_chapter_row(&mut tx, phase_id, chapter_index as i64, chapter).await?;
 
-    // 阶段联动（同一事务原子）：全部章节 complete 时把阶段推到 complete
+    // 阶段联动（同一事务原子）：状态 = 子章汇总纯函数——有生成中章 →
+    // generating（逐章推进动画）；全 complete → complete；有 failed → failed；
+    // 否则 pending。单章成功但阶段未全完成时从 generating 正确回落，
+    // 不再悬挂（2026-10-16 反馈①回归：退出重进徽章消失）
     sqlx::query(
-        "UPDATE phases SET status = 'complete'
-         WHERE id = $1 AND NOT EXISTS (
-             SELECT 1 FROM chapters c WHERE c.phase_id = phases.id AND c.status <> 'complete'
-         )",
+        "UPDATE phases SET status = CASE
+             WHEN EXISTS (
+                 SELECT 1 FROM chapters c WHERE c.phase_id = phases.id AND c.status = 'generating'
+             ) THEN 'generating'
+             WHEN NOT EXISTS (
+                 SELECT 1 FROM chapters c WHERE c.phase_id = phases.id AND c.status <> 'complete'
+             ) THEN 'complete'
+             WHEN EXISTS (
+                 SELECT 1 FROM chapters c WHERE c.phase_id = phases.id AND c.status = 'failed'
+             ) THEN 'failed'
+             ELSE 'pending' END
+         WHERE id = $1",
     )
     .bind(phase_id)
     .execute(&mut *tx)

@@ -11,6 +11,7 @@ import {
   regenerateChapter,
 } from "@/composables/useAgent";
 import { fetchPlanRecord } from "@/composables/usePlanHistory";
+import { isChapterGenerating } from "@/composables/useGenerationProgress";
 import type { Chapter, StudyPlan } from "@/types/agent";
 
 /**
@@ -30,6 +31,10 @@ const props = defineProps<{
   chapterIndex?: number;
   /** 行级生成状态（generating/failed/complete）：驱动「生成中」徽章与重生成抑制 */
   rowStatus?: string;
+  /** 所属阶段状态（generating = 阶段重生成中，反馈④逐章动画上下文） */
+  phaseStatus?: string;
+  /** 全局重生成互斥（反馈③）：计划内任一阶段/章节 generating 时全站入口禁用 */
+  regenLocked?: boolean;
 }>();
 
 /** 重生成完成：刷新后的计划整体上抛供调用方替换 */
@@ -54,14 +59,19 @@ const statusBadge = computed<{
   variant: "secondary" | "destructive";
 } | null>(() => {
   switch (props.chapter.status) {
+    case "generating":
+      // 重生成落库的持久态（反馈①）或 chapterStart 事件点亮（反馈④）
+      return { label: "⟳ 生成中", variant: "secondary" };
     case "failed":
       // 阶段重生成中失败章节会被重做 → 显示生成中而非失败
-      return phaseRegenInFlight.value
+      return phaseRegenInFlight.value || chapterRegenerating.value
         ? { label: "⟳ 生成中", variant: "secondary" }
         : { label: "✗ 失败", variant: "destructive" };
     case "pending":
       // 行还在 generating 时 pending ≠ 未开始，而是「正在生成本章节」（反馈③区分）
-      return props.rowStatus === "generating" || phaseRegenInFlight.value
+      return props.rowStatus === "generating" ||
+        phaseRegenInFlight.value ||
+        chapterRegenerating.value
         ? { label: "⟳ 生成中", variant: "secondary" }
         : { label: "◌ 未生成", variant: "secondary" };
     default:
@@ -75,6 +85,7 @@ const canRegenerate = computed(
   () =>
     !!props.planId &&
     props.rowStatus !== "generating" &&
+    props.chapter.status !== "generating" &&
     (props.chapter.status === "failed" || props.chapter.status === "pending"),
 );
 
@@ -109,6 +120,15 @@ const regenScopeInFlight = computed(() =>
 
 /** 本组件自身点击发起的在飞标志（供 finally 与守卫双保险） */
 const busy = ref(false);
+/** 本章是否正在生成中（2026-10-16 反馈④）：chapterStart 事件点亮（内存）
+ * ∪ DB status=generating（持久，退出重进保持）∪ 本组件点击乐观 */
+const chapterRegenerating = computed(
+  () =>
+    isChapterGenerating(props.planId, props.phaseIndex, props.chapterIndex) ||
+    props.chapter.status === "generating" ||
+    busy.value ||
+    regenScopeInFlight.value,
+);
 /** 重生成过程的反馈信息（入库提示 / 失败原因；null = 无） */
 const regenError = ref<string | null>(null);
 
@@ -199,17 +219,21 @@ const collapsed = ref(false);
           {{ statusBadge.label }}
         </Badge>
         <Button
-          v-if="canRegenerate"
+          v-if="canRegenerate || chapterRegenerating"
           variant="outline"
           size="sm"
-          :disabled="planRegenInFlight"
+          :disabled="
+            ((planRegenInFlight || props.regenLocked) &&
+              !chapterRegenerating) ||
+            chapterRegenerating
+          "
           @click="onRegenerate"
         >
           <span
-            v-if="busy"
+            v-if="chapterRegenerating"
             class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-current border-t-transparent"
           />
-          {{ busy ? "重新生成中…" : "重新生成此章" }}
+          {{ chapterRegenerating ? "重新生成中…" : "重新生成此章" }}
         </Button>
       </div>
     </header>
