@@ -132,8 +132,9 @@
   max-width: min(280px, calc(100vw - 16px));
   padding: 6px 10px;
   border-radius: 8px;
-  background-color: var(--primary);
-  color: var(--primary-foreground);
+  /* 反色实心气泡（墨底纸字 / 暗色下纸底墨字）：不透、高对比、看得清 */
+  background-color: var(--foreground);
+  color: var(--background);
   font-size: 12px;
   line-height: 1.6;
   overflow-wrap: anywhere;
