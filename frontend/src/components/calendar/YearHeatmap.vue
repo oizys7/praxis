@@ -11,23 +11,17 @@
  *   编码传达强度——色弱用户可从文字获得同等信息）
  * - 数据由宿主注入（dayKey → DayStat，真计划分配聚合）
  */
-import { computed, ref } from "vue";
+import { computed } from "vue";
 import {
   dayKey,
   intensityLevel,
   type DayStat,
 } from "@/composables/useStudyAllocation";
-import type { CalendarEvent } from "@/components/calendar/MonthGrid.vue";
 
-const props = withDefaults(
-  defineProps<{
-    /** 日子键 → 当日统计（宿主聚合自真计划分配） */
-    stats: Map<string, DayStat>;
-    /** 日子键 → 当日章节事件块（悬浮卡任务清单） */
-    events?: Map<string, CalendarEvent[]>;
-  }>(),
-  { events: () => new Map<string, CalendarEvent[]>() },
-);
+const props = defineProps<{
+  /** 日子键 → 当日统计（宿主聚合自真计划分配） */
+  stats: Map<string, DayStat>;
+}>();
 
 const emit = defineEmits<{ (e: "select-day", date: Date): void }>();
 
@@ -113,38 +107,7 @@ const monthLabels = computed<string[]>(() =>
 /** 「今天」的日子键（描边圈高亮 + aria 标注用，本地时区安全） */
 const todayKey = dayKey(new Date());
 
-// ---- 悬浮详情卡（Teleport 到 body，滚动时收起）----
-
-/** 悬浮卡状态：锚格 + 以 fixed 视口坐标定位（不受横向滚动容器剪裁） */
-const hovered = ref<{
-  date: Date;
-  events: CalendarEvent[];
-  x: number;
-  y: number;
-} | null>(null);
-
-const CARD_WIDTH = 256;
-
-/** 悬停/聚焦格子：记录锚点并把浮卡定位在格上方（左右出界向内收敛） */
-function showCard(cell: HeatCell, e: MouseEvent | FocusEvent) {
-  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-  const x = Math.min(
-    Math.max(rect.left + rect.width / 2, CARD_WIDTH / 2 + 8),
-    window.innerWidth - CARD_WIDTH / 2 - 8,
-  );
-  hovered.value = {
-    date: cell.date,
-    events: props.events?.get(dayKey(cell.date)) ?? [],
-    x,
-    y: rect.top - 10,
-  };
-}
-
-function hideCard() {
-  hovered.value = null;
-}
-
-/** 每格 aria-label / title：「10 月 14 日，3 章中已完成 2」式 */
+/** 每格 aria-label / 悬浮提示：「10 月 14 日，3 章中已完成 2」式 */
 function cellLabel(cell: HeatCell): string {
   const base = `${cell.date.getMonth() + 1} 月 ${cell.date.getDate()} 日`;
   if (cell.total === 0) return `${base}，无学习安排`;
@@ -155,7 +118,7 @@ function cellLabel(cell: HeatCell): string {
 <template>
   <div>
     <!-- 横向滚动容器（近一年 53 列在窄视口下可平移） -->
-    <div class="overflow-x-auto pb-1" @scroll.capture="hideCard">
+    <div class="overflow-x-auto pb-1">
       <div class="min-w-max">
         <!-- 列顶月份标签（与列位对齐） -->
         <div class="mb-1 flex items-end gap-[3px]" aria-hidden="true">
@@ -203,10 +166,6 @@ function cellLabel(cell: HeatCell): string {
                     ? 'ring-[1.5px] ring-inset ring-primary'
                     : '',
                 ]"
-                @mouseenter="showCard(cell, $event)"
-                @focus="showCard(cell, $event)"
-                @mouseleave="hideCard"
-                @blur="hideCard"
                 v-tip="cellLabel(cell)"
                 :aria-label="`${cellLabel(cell)}${dayKey(cell.date) === todayKey ? '（今日）' : ''}，点击查看当天安排`"
                 @click="emit('select-day', cell.date)"
@@ -216,63 +175,6 @@ function cellLabel(cell: HeatCell): string {
         </div>
       </div>
     </div>
-
-    <!-- 悬浮详情卡：日期 + 当日各小任务（点任务条 = 打开当天抽屉） -->
-    <Teleport to="body">
-      <div
-        v-if="hovered"
-        class="pointer-events-auto fixed z-50 w-64 max-w-[16rem] rounded-lg border border-border bg-popover p-3 shadow-md"
-        :style="{
-          left: `${hovered.x}px`,
-          top: `${hovered.y}px`,
-          transform: 'translate(-50%, -100%)',
-        }"
-        role="tooltip"
-        @mouseleave="hideCard"
-      >
-        <p class="font-display text-sm font-semibold tabular-nums">
-          {{ hovered.date.getMonth() + 1 }} 月 {{ hovered.date.getDate() }} 日
-        </p>
-        <p
-          v-if="hovered.events.length === 0"
-          class="mt-1 text-xs text-muted-foreground"
-        >
-          该日无学习安排
-        </p>
-        <ul v-else class="mt-2 space-y-1.5">
-          <li v-for="(ev, i) in hovered.events" :key="i">
-            <button
-              type="button"
-              class="flex w-full cursor-pointer items-center justify-between gap-2 rounded-md px-1.5 py-1 text-left text-xs transition-colors duration-200 hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              :aria-label="`打开 ${hovered.date.getMonth() + 1} 月 ${hovered.date.getDate()} 日 ${ev.planTitle} 的 ${ev.chapterName} 详情`"
-              @click="
-                emit('select-day', hovered.date);
-                hideCard();
-              "
-            >
-              <span class="min-w-0 truncate">
-                <span
-                  :class="ev.done ? 'text-success' : 'text-primary'"
-                  class="mr-1"
-                  aria-hidden="true"
-                >
-                  {{ ev.done ? "✓" : "◌" }}
-                </span>
-                {{ ev.chapterName }}
-              </span>
-              <span class="shrink-0 text-[10px] text-muted-foreground">
-                {{ ev.planTitle }}
-              </span>
-            </button>
-          </li>
-        </ul>
-        <p
-          class="mt-2 border-t border-border/60 pt-1.5 text-[10px] text-muted-foreground"
-        >
-          点击格子查看当天完整安排
-        </p>
-      </div>
-    </Teleport>
 
     <!-- 图例：五档色阶（数值型 legend，非纯色编码） -->
     <div
