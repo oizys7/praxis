@@ -132,9 +132,11 @@
   max-width: min(280px, calc(100vw - 16px));
   padding: 6px 10px;
   border-radius: 8px;
-  /* 反色实心气泡（墨底纸字 / 暗色下纸底墨字）：不透、高对比、看得清 */
-  background-color: var(--foreground);
-  color: var(--background);
+  /* 反色实心气泡（墨底纸字 / 暗色下纸底墨字）：不透、高对比、看得清。
+   * 变量是 HSL 通道值（tailwind 约定），必须 hsl() 包装——裸 var() 是
+   * 非法颜色值被整条丢弃，此前气泡一直因此全透明。 */
+  background-color: hsl(var(--foreground));
+  color: hsl(var(--background));
   font-size: 12px;
   line-height: 1.6;
   overflow-wrap: anywhere;
