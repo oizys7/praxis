@@ -618,8 +618,8 @@ function onPlanRefreshed(plan: StudyPlan) {
             @refreshed="onPlanRefreshed"
           />
 
-          <!-- 空态 -->
-          <Card v-else class="border-dashed">
+          <!-- 空态（跨页打开详情的加载窗口由顶部 LoadingState 承担，此处不闪） -->
+          <Card v-else-if="!openingDetail" class="border-dashed">
             <CardContent
               class="flex flex-col items-center gap-2 p-6 text-center"
             >
@@ -732,7 +732,7 @@ function onPlanRefreshed(plan: StudyPlan) {
          跟随外部阅读状态：当前阶段自动展开、其余折叠（滚动监读驱动，目录
          内不自选状态）；本组件根无 transform，fixed 恒等于视口定位 -->
     <div
-      v-if="result?.status === 'plan'"
+      v-if="planView === 'create' && result?.status === 'plan'"
       class="group fixed right-3 top-1/2 z-30 -translate-y-1/2 select-none py-6 pr-1"
     >
       <!-- 折叠态：每阶段一小条；hover 面板遮计时保持整组可触发 -->

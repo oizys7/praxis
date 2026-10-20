@@ -166,12 +166,36 @@ watch(
   { immediate: true },
 );
 
-/** 任何日程变更（打卡/开始学习/改学习日）后失效全部月/年缓存并重拉当前视图 */
-function invalidateCalendar() {
-  monthCache.value = new Map();
-  yearCache.value = new Map();
-  if (viewMode.value === "month") void ensureMonthData();
-  else void ensureYearData();
+/** 任何日程变更（打卡/开始学习/改学习日）后刷新日历数据：
+ *  先拉新数据再替换缓存，当前视图保留旧值直到新值到达（stale-while-revalidate）
+ *  ——直接清空会让 monthDays/yearDays 短暂为空，日历与学习日 chips 闪一下。
+ *  非当前视图的缓存直接失效，下次切换过去时重拉。 */
+async function invalidateCalendar() {
+  if (viewMode.value === "month") {
+    // 年视图数据全部失效（热力图口径随打卡变化）
+    yearCache.value = new Map();
+    const key = currentMonthKey.value;
+    const [year, month] = key.split("-").map(Number);
+    try {
+      const days = await queryMonthCalendar(year, month);
+      monthCache.value = new Map(
+        [...monthCache.value].filter(([k]) => k === key),
+      ).set(key, days);
+    } catch (e) {
+      loadError.value = normalizeError(e);
+    }
+  } else {
+    monthCache.value = new Map();
+    const key = String(viewDate.value.getFullYear());
+    try {
+      const days = await queryYearHeatmap(Number(key));
+      yearCache.value = new Map(
+        [...yearCache.value].filter(([k]) => k === key),
+      ).set(key, days);
+    } catch (e) {
+      loadError.value = normalizeError(e);
+    }
+  }
 }
 
 // ---- 第一屏：进度统计（summary 自足，零 get_plan）----
@@ -316,7 +340,7 @@ async function onToggleItem(planId: string, item: ScheduleItem, done: boolean) {
       item.chapterIdx,
       done,
     );
-    invalidateCalendar();
+    await invalidateCalendar();
   } catch (e) {
     loadError.value = normalizeError(e);
   } finally {
@@ -341,7 +365,7 @@ async function onStartLearning(planId: string, days: number[]) {
           }
         : s,
     );
-    invalidateCalendar();
+    await invalidateCalendar();
   } catch (e) {
     loadError.value = normalizeError(e);
   } finally {
@@ -358,7 +382,7 @@ async function onUpdateStudyDays(planId: string, days: number[]) {
     summaries.value = summaries.value.map((s) =>
       s.id === planId ? { ...s, studyDays: days } : s,
     );
-    invalidateCalendar();
+    await invalidateCalendar();
   } catch (e) {
     loadError.value = normalizeError(e);
   } finally {
