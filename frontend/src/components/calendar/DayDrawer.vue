@@ -11,7 +11,7 @@
  * - 数据全部来自宿主注入的月历查询真数据（query_month_calendar 按天组织）
  */
 import { computed, nextTick, onUnmounted, ref, watch } from "vue";
-import { Circle, X } from "lucide-vue-next";
+import { Check, Circle, LoaderCircle, X } from "lucide-vue-next";
 import type { ScheduleItem } from "@/types/agent";
 
 /** 按计划分组的当日安排（来自月历数据的该天条目） */
@@ -89,6 +89,23 @@ function settleToggle(planId: string, item: ScheduleItem) {
   togglingKeys.value = next;
 }
 defineExpose({ settleToggle });
+
+/** 该行打卡是否在飞（圈内换 spinner） */
+function isToggling(planId: string, item: ScheduleItem): boolean {
+  return togglingKeys.value.has(itemKey(planId, item));
+}
+
+/**
+ * 印章态（自助习室纸面调色板的打卡隐喻）：已学 = 书绿实心章 + 纸白对勾，
+ * 未学 = 细描边空心圈，行 hover 时描边转墨蓝、对勾淡显暗示可点。
+ * 只做颜色/变换过渡（150-300ms），按压反馈由全局 button:active 提供。
+ */
+function stampClass(item: ScheduleItem): string {
+  if (item.done) {
+    return "border-success bg-success text-primary-foreground shadow-sm hover:border-success/70";
+  }
+  return "border-border bg-background text-transparent group-hover/row:border-primary/60 group-hover/row:text-primary/25";
+}
 
 function requestClose() {
   emit("close");
@@ -204,11 +221,14 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
               <li
                 v-for="item in group.items"
                 :key="`${item.phaseIdx}-${item.chapterIdx}`"
-                class="border-b border-border/60 py-2.5 last:border-b-0"
+                class="border-b border-border/60 last:border-b-0"
               >
                 <label
-                  class="flex cursor-pointer items-start justify-between gap-3"
-                  :class="{ 'cursor-not-allowed opacity-60': !markable }"
+                  class="group/row -mx-2 flex cursor-pointer items-center justify-between gap-3 rounded-lg px-2 py-2.5 transition-colors duration-200 hover:bg-muted/50"
+                  :class="{
+                    'cursor-not-allowed opacity-60 hover:bg-transparent':
+                      !markable,
+                  }"
                 >
                   <div class="min-w-0">
                     <p class="truncate text-sm">
@@ -220,20 +240,46 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
                       阶段 {{ item.phaseIdx + 1 }} · {{ item.phaseName }}
                     </p>
                   </div>
-                  <span class="flex shrink-0 items-center gap-1.5">
+                  <span class="flex shrink-0 items-center gap-2">
                     <input
                       type="checkbox"
-                      class="h-4 w-4 accent-success"
+                      class="peer sr-only"
                       :checked="item.done"
                       :disabled="
-                        !markable ||
-                        saving ||
-                        togglingKeys.has(itemKey(group.planId, item))
+                        !markable || saving || isToggling(group.planId, item)
                       "
                       :aria-label="`${item.chapterTitle} 已学打卡`"
                       @change="onToggleItem(group, item)"
                     />
-                    <span class="text-xs text-muted-foreground">
+                    <!-- 印章：已学实心盖章 / 未学空心待盖；对勾弹入（scale+opacity） -->
+                    <span
+                      class="flex h-7 w-7 items-center justify-center rounded-full border transition-all duration-200 peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-background"
+                      :class="stampClass(item)"
+                      aria-hidden="true"
+                    >
+                      <LoaderCircle
+                        v-if="isToggling(group.planId, item)"
+                        class="h-3.5 w-3.5 animate-spin"
+                      />
+                      <Check
+                        v-else
+                        class="h-4 w-4 transition-[opacity,transform] duration-200"
+                        :class="
+                          item.done
+                            ? 'scale-100 opacity-100'
+                            : 'scale-50 opacity-0'
+                        "
+                        stroke-width="3"
+                      />
+                    </span>
+                    <span
+                      class="w-8 text-xs transition-colors duration-200"
+                      :class="
+                        item.done
+                          ? 'font-medium text-success'
+                          : 'text-muted-foreground/70'
+                      "
+                    >
                       {{ item.done ? "已学" : "未学" }}
                     </span>
                   </span>
