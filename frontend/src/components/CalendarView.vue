@@ -60,6 +60,10 @@ const loadError = ref<CommandError | null>(null);
 
 /** 打卡 / 学习日提交请求在飞（抽屉与面板控件禁用与防抖） */
 const saving = ref(false);
+/** 学习日提交在飞（开始学习/保存学习日）：与抽屉打卡的 saving 分开——
+ *  共享一个标志会让打卡时进度面板的学习日 chips 与「保存学习日」按钮
+ *  随 disabled:opacity-60 一起变淡再恢复（视觉闪烁） */
+const daysSaving = ref(false);
 
 async function load() {
   loading.value = true;
@@ -351,8 +355,8 @@ async function onToggleItem(planId: string, item: ScheduleItem, done: boolean) {
 
 /** 开始学习（未开始行【从今天开始】）：提交学习日，落定日程且不打卡今天 */
 async function onStartLearning(planId: string, days: number[]) {
-  if (saving.value) return;
-  saving.value = true;
+  if (daysSaving.value) return;
+  daysSaving.value = true;
   try {
     await startLearning(planId, days);
     summaries.value = summaries.value.map((s) =>
@@ -369,14 +373,14 @@ async function onStartLearning(planId: string, days: number[]) {
   } catch (e) {
     loadError.value = normalizeError(e);
   } finally {
-    saving.value = false;
+    daysSaving.value = false;
   }
 }
 
 /** 修改学习日（学习中行「保存学习日」）：保留今天之前与今天已完成，未来重排 */
 async function onUpdateStudyDays(planId: string, days: number[]) {
-  if (saving.value) return;
-  saving.value = true;
+  if (daysSaving.value) return;
+  daysSaving.value = true;
   try {
     await updateLearningDays(planId, days);
     summaries.value = summaries.value.map((s) =>
@@ -386,7 +390,7 @@ async function onUpdateStudyDays(planId: string, days: number[]) {
   } catch (e) {
     loadError.value = normalizeError(e);
   } finally {
-    saving.value = false;
+    daysSaving.value = false;
   }
 }
 </script>
@@ -442,7 +446,7 @@ async function onUpdateStudyDays(planId: string, days: number[]) {
         <div class="order-2 lg:order-1">
           <PlanProgressPanel
             :summaries="summaries"
-            :saving="saving"
+            :saving="daysSaving"
             @open-plan="(planId) => emit('open-plan', planId)"
             @start-learning="onStartLearning"
             @update-study-days="onUpdateStudyDays"
