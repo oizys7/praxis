@@ -219,3 +219,27 @@ button:not(:disabled):active {
   opacity: 0;
   transform: translateX(16px);
 }
+
+/* ---------------------------------------------------------------
+ * 抽屉打卡「盖章」动画（DayDrawer）：从未学 → 已学时印章压下。
+ * 略微过冲后落定（scale + 小角度旋转），240ms 弹性曲线；
+ * 印章元素以 item.done 为 key 重建，保证每次打卡都重放一次。
+ * reduced-motion 全局块会把动画时长压到 0.01ms（无动效不算失败态）。
+ * --------------------------------------------------------------- */
+@keyframes stamp-in {
+  0% {
+    transform: scale(0.55) rotate(-14deg);
+    opacity: 0.35;
+  }
+  55% {
+    transform: scale(1.15) rotate(3deg);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+.stamp-in {
+  animation: stamp-in 240ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}

@@ -251,29 +251,31 @@ onUnmounted(() => document.removeEventListener("keydown", onKeydown));
                       :aria-label="`${item.chapterTitle} 已学打卡`"
                       @change="onToggleItem(group, item)"
                     />
-                    <!-- 印章：已学实心盖章 / 未学空心待盖；对勾弹入（scale+opacity） -->
+                    <!-- 印章：已学实心盖章 / 未学空心待盖。以 done 为 key 重建，
+                         打卡成功那一刻重放 stamp-in（盖章压下，240ms 弹性曲线） -->
                     <span
-                      class="flex h-7 w-7 items-center justify-center rounded-full border transition-all duration-200 peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-background"
-                      :class="stampClass(item)"
+                      :key="item.done ? 'done' : 'todo'"
+                      class="flex h-6 w-6 items-center justify-center rounded-full border transition-all duration-200 peer-focus-visible:ring-2 peer-focus-visible:ring-ring peer-focus-visible:ring-offset-2 peer-focus-visible:ring-offset-background"
+                      :class="[stampClass(item), item.done ? 'stamp-in' : '']"
                       aria-hidden="true"
                     >
                       <LoaderCircle
                         v-if="isToggling(group.planId, item)"
-                        class="h-3.5 w-3.5 animate-spin"
+                        class="h-3 w-3 animate-spin"
                       />
                       <Check
                         v-else
-                        class="h-4 w-4 transition-[opacity,transform] duration-200"
+                        class="h-3 w-3 transition-[opacity,transform] duration-200"
                         :class="
                           item.done
                             ? 'scale-100 opacity-100'
                             : 'scale-50 opacity-0'
                         "
-                        stroke-width="3"
+                        stroke-width="3.5"
                       />
                     </span>
                     <span
-                      class="w-8 text-xs transition-colors duration-200"
+                      class="w-7 text-xs transition-colors duration-200"
                       :class="
                         item.done
                           ? 'font-medium text-success'
