@@ -456,17 +456,26 @@ async function onUpdateStudyDays(planId: string, days: number[]) {
         <!-- 右：视图控件行 + 日历主体 -->
         <div class="order-1 space-y-3 lg:order-2">
           <div class="flex flex-wrap items-center justify-between gap-3">
+            <!-- 分段控件：滑块在两格间滑动（弹性曲线，300ms），
+                 文字色随之过渡；两按钮等宽（单字 + 同 padding） -->
             <div
-              class="flex items-center rounded-full bg-muted/40 p-1"
+              class="relative flex items-center rounded-full bg-muted/40 p-1"
               role="group"
               aria-label="日历视图切换"
             >
+              <span
+                aria-hidden="true"
+                class="pointer-events-none absolute inset-y-1 left-1 w-[calc(50%_-_0.25rem)] rounded-full bg-card shadow-sm transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+                :class="
+                  viewMode === 'year' ? 'translate-x-full' : 'translate-x-0'
+                "
+              />
               <button
                 type="button"
-                class="cursor-pointer rounded-full px-3.5 py-1 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                class="relative z-10 cursor-pointer rounded-full px-3.5 py-1 text-sm transition-colors duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 :class="
                   viewMode === 'month'
-                    ? 'bg-card font-medium text-foreground shadow-sm'
+                    ? 'font-medium text-foreground'
                     : 'text-muted-foreground hover:text-foreground'
                 "
                 :aria-pressed="viewMode === 'month'"
@@ -476,10 +485,10 @@ async function onUpdateStudyDays(planId: string, days: number[]) {
               </button>
               <button
                 type="button"
-                class="cursor-pointer rounded-full px-3.5 py-1 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                class="relative z-10 cursor-pointer rounded-full px-3.5 py-1 text-sm transition-colors duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 :class="
                   viewMode === 'year'
-                    ? 'bg-card font-medium text-foreground shadow-sm'
+                    ? 'font-medium text-foreground'
                     : 'text-muted-foreground hover:text-foreground'
                 "
                 :aria-pressed="viewMode === 'year'"
