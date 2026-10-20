@@ -530,20 +530,24 @@ async function onUpdateStudyDays(planId: string, days: number[]) {
           <Card>
             <CardContent class="p-3 sm:p-4">
               <!-- 月↔年交叉淡切 / 月份翻页方向滑动（out-in 不叠影） -->
-              <Transition :name="calAnim" mode="out-in">
-                <!-- 月视图：日历网格 -->
-                <MonthGrid
-                  v-if="viewMode === 'month'"
-                  :key="monthGridKey"
-                  :year="viewDate.getFullYear()"
-                  :month="viewDate.getMonth()"
-                  :stats="dayStats"
-                  :events="calendarEvents"
-                  @select-day="openDay"
-                />
-                <!-- 年视图：热力图 -->
-                <YearHeatmap v-else :stats="dayStats" @select-day="openDay" />
-              </Transition>
+              <!-- 交叉淡化容器：两视图在同一 grid 格叠加，leave 期间仍占位，
+                   高度取较大者 → 切换中容器不塌陷；配合分层时长的进入/退出 -->
+              <div class="grid [&>*]:col-start-1 [&>*]:row-start-1">
+                <Transition :name="calAnim">
+                  <!-- 月视图：日历网格 -->
+                  <MonthGrid
+                    v-if="viewMode === 'month'"
+                    :key="monthGridKey"
+                    :year="viewDate.getFullYear()"
+                    :month="viewDate.getMonth()"
+                    :stats="dayStats"
+                    :events="calendarEvents"
+                    @select-day="openDay"
+                  />
+                  <!-- 年视图：热力图 -->
+                  <YearHeatmap v-else :stats="dayStats" @select-day="openDay" />
+                </Transition>
+              </div>
             </CardContent>
           </Card>
         </div>
