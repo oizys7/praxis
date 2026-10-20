@@ -465,14 +465,14 @@ async function onUpdateStudyDays(planId: string, days: number[]) {
             >
               <span
                 aria-hidden="true"
-                class="pointer-events-none absolute inset-y-1 left-1 w-[calc(50%_-_0.25rem)] rounded-full bg-card shadow-sm transition-transform duration-300 ease-[cubic-bezier(0.34,1.56,0.64,1)]"
+                class="pointer-events-none absolute inset-y-1 left-1 w-[calc(50%_-_0.25rem)] rounded-full bg-card shadow-sm transition-transform duration-[220ms] ease-[cubic-bezier(0.32,0.72,0,1)]"
                 :class="
                   viewMode === 'year' ? 'translate-x-full' : 'translate-x-0'
                 "
               />
               <button
                 type="button"
-                class="relative z-10 cursor-pointer rounded-full px-3.5 py-1 text-sm transition-colors duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                class="relative z-10 cursor-pointer rounded-full px-3.5 py-1 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 :class="
                   viewMode === 'month'
                     ? 'font-medium text-foreground'
@@ -485,7 +485,7 @@ async function onUpdateStudyDays(planId: string, days: number[]) {
               </button>
               <button
                 type="button"
-                class="relative z-10 cursor-pointer rounded-full px-3.5 py-1 text-sm transition-colors duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                class="relative z-10 cursor-pointer rounded-full px-3.5 py-1 text-sm transition-colors duration-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                 :class="
                   viewMode === 'year'
                     ? 'font-medium text-foreground'
@@ -530,24 +530,22 @@ async function onUpdateStudyDays(planId: string, days: number[]) {
           <Card>
             <CardContent class="p-3 sm:p-4">
               <!-- 月↔年交叉淡切 / 月份翻页方向滑动（out-in 不叠影） -->
-              <!-- 交叉淡化容器：两视图在同一 grid 格叠加，leave 期间仍占位，
-                   高度取较大者 → 切换中容器不塌陷；配合分层时长的进入/退出 -->
-              <div class="grid [&>*]:col-start-1 [&>*]:row-start-1">
-                <Transition :name="calAnim">
-                  <!-- 月视图：日历网格 -->
-                  <MonthGrid
-                    v-if="viewMode === 'month'"
-                    :key="monthGridKey"
-                    :year="viewDate.getFullYear()"
-                    :month="viewDate.getMonth()"
-                    :stats="dayStats"
-                    :events="calendarEvents"
-                    @select-day="openDay"
-                  />
-                  <!-- 年视图：热力图 -->
-                  <YearHeatmap v-else :stats="dayStats" @select-day="openDay" />
-                </Transition>
-              </div>
+              <!-- 一次只交接一个视图（out-in）：月历与热力图布局差异大，
+                   叠层交叉会出现两层内容重影；leave 极短、enter 顺滑收住 -->
+              <Transition :name="calAnim" mode="out-in">
+                <!-- 月视图：日历网格 -->
+                <MonthGrid
+                  v-if="viewMode === 'month'"
+                  :key="monthGridKey"
+                  :year="viewDate.getFullYear()"
+                  :month="viewDate.getMonth()"
+                  :stats="dayStats"
+                  :events="calendarEvents"
+                  @select-day="openDay"
+                />
+                <!-- 年视图：热力图 -->
+                <YearHeatmap v-else :stats="dayStats" @select-day="openDay" />
+              </Transition>
             </CardContent>
           </Card>
         </div>

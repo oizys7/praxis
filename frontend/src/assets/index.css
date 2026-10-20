@@ -180,57 +180,72 @@ button:not(:disabled):active {
 
 /* ---------------------------------------------------------------------------
  * 日历年月切换动画（CalendarView，v-tip 交互区同族）
- * cal-cross = 月↔年（尺度感交叉淡化）；cal-slide-next/prev = 翻页方向感知滑动。
- * 采用 Vue Transition 默认模式（无 out-in）：两个视图在 grid 叠加层短暂共存，
- * 高度取较大者 → 切换过程容器不塌陷；进出时长分层（leave 160ms 快出、
- * enter 260ms 强缓入），衔接更"接住"。reduced-motion 全局块即时化（瞬切）。
+ * cal-cross = 月↔年纯淡化；cal-slide-next/prev = 翻页（进入侧 10px 方向位移）。
+ * 用 out-in 一次只交接一个视图：月历与热力图布局差异大，叠层交叉会重影。
+ * leave 90ms 快速退场、enter 170ms 顺滑收住（合计 260ms，与滑块 220ms 同拍）；
+ * 不做缩放。reduced-motion 全局块即时化（瞬切）。
  * ------------------------------------------------------------------------- */
 .cal-cross-enter-active,
 .cal-slide-next-enter-active,
 .cal-slide-prev-enter-active {
   transition:
-    opacity 0.26s cubic-bezier(0.22, 1, 0.36, 1),
-    transform 0.26s cubic-bezier(0.22, 1, 0.36, 1);
-  will-change: opacity, transform;
+    opacity 0.17s cubic-bezier(0.32, 0.72, 0, 1),
+    transform 0.17s cubic-bezier(0.32, 0.72, 0, 1);
 }
 
 .cal-cross-leave-active,
 .cal-slide-next-leave-active,
 .cal-slide-prev-leave-active {
   transition:
-    opacity 0.16s ease-in,
-    transform 0.16s ease-in;
-  will-change: opacity, transform;
+    opacity 0.09s ease-in,
+    transform 0.09s ease-in;
 }
 
-/* 月 ↔ 年（尺度感）：出去的向"远"缩并上浮，进来的从稍大处落定 */
-.cal-cross-enter-from {
-  opacity: 0;
-  transform: scale(1.012) translateY(6px);
-}
-
+/* 月 ↔ 年：纯淡化交接（两种布局差异大，叠层/缩放都会显得抖） */
+.cal-cross-enter-from,
 .cal-cross-leave-to {
   opacity: 0;
-  transform: scale(0.988) translateY(-4px);
 }
 
-/* 翻页（方向感知）：新页从滑动方向进入，旧页反向淡出 */
+/* 翻页：仅进入侧带极轻方向位移，退场纯淡出 */
 .cal-slide-next-enter-from {
   opacity: 0;
-  transform: translateX(22px);
+  transform: translateX(10px);
 }
 
 .cal-slide-next-leave-to {
   opacity: 0;
-  transform: translateX(-18px);
 }
 
 .cal-slide-prev-enter-from {
   opacity: 0;
-  transform: translateX(-22px);
+  transform: translateX(-10px);
 }
 
 .cal-slide-prev-leave-to {
   opacity: 0;
-  transform: translateX(18px);
+}
+
+/* ---------------------------------------------------------------
+ * 抽屉打卡「盖章」动画（DayDrawer）：从未学 → 已学时印章压下。
+ * 略微过冲后落定（scale + 小角度旋转），240ms 弹性曲线；
+ * 印章元素以 item.done 为 key 重建，保证每次打卡都重放一次。
+ * reduced-motion 全局块会把动画时长压到 0.01ms。
+ * --------------------------------------------------------------- */
+@keyframes stamp-in {
+  0% {
+    transform: scale(0.55) rotate(-14deg);
+    opacity: 0.35;
+  }
+  55% {
+    transform: scale(1.15) rotate(3deg);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+.stamp-in {
+  animation: stamp-in 240ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
 }
