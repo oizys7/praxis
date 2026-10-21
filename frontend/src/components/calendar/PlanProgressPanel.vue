@@ -169,9 +169,6 @@ function toggleStart(planId: string) {
           计划进度
         </h3>
         <div class="mt-1.5 h-0.5 w-10 bg-primary/70" role="presentation" />
-        <p class="mt-2 text-xs text-muted-foreground">
-          学习日仅本地暂存，点「保存学习日 / 从今天开始」统一提交并重排日历
-        </p>
       </div>
 
       <section
@@ -191,7 +188,7 @@ function toggleStart(planId: string) {
         <!-- 空组淡示 -->
         <p
           v-if="group.rows.length === 0"
-          class="py-1 text-xs text-muted-foreground/70"
+          class="px-2 py-2.5 text-xs text-muted-foreground/70"
         >
           {{
             group.key === "done"
