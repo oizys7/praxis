@@ -44,12 +44,36 @@ MERMAID_DIAGRAM_TYPES = {
 }
 
 
+def _chapter_sort_key(key: str) -> tuple[int, int]:
+    """把 "阶段:章" 复合键还原成整数元组（稳定排序用）。"""
+    phase, _, chapter = key.partition(":")
+    return (int(phase or 0), int(chapter or 0))
+
+
+def _mark_chapter(
+    failed: set[int], failed_chapters: set[str], index: int, chapter_index: int
+) -> None:
+    """登记一批只与单章有关的问题：阶段需回炉，且精确到章。
+
+    仅有阶段索引时，expand_revision 只能整阶段重写（mermaid 写错一个词
+    也会把同阶段其余章全部作废重来）；记下复合键即可只重扩这一章。
+    """
+    failed.add(index)
+    failed_chapters.add(f"{index}:{chapter_index}")
+
+
 def validate_plan(
     plan_dict: dict, weekly_hours: int, weeks: int
-) -> tuple[list[str], list[int]]:
-    """校验 camelCase 计划 dict，返回（问题描述列表, 不合格阶段索引列表 0-based）。"""
+) -> tuple[list[str], list[int], list[str]]:
+    """校验 camelCase 计划 dict。
+
+    返回（问题描述列表, 不合格阶段索引列表, 不合格章复合键列表 "阶段:章"）。
+    阶段索引仍覆盖全部不合格阶段（回炉入口）；章级键是它的精度提升——调用方
+    有章级键时只重扩这些章，没有时（结构性问题）才整阶段回炉。
+    """
     issues: list[str] = []
     failed_indexes: set[int] = set()
+    failed_chapters: set[str] = set()
 
     phases = plan_dict.get("phases") or []
     if not (MIN_PHASES <= len(phases) <= MAX_PHASES):
@@ -58,14 +82,24 @@ def validate_plan(
         failed_indexes.update(range(len(phases)))
 
     for index, phase in enumerate(phases):
-        _check_phase(phase, index, issues, failed_indexes)
+        _check_phase(phase, index, issues, failed_indexes, failed_chapters)
 
     _check_total_hours(plan_dict, weekly_hours, weeks, issues)
 
-    return issues, sorted(failed_indexes)
+    return (
+        issues,
+        sorted(failed_indexes),
+        sorted(failed_chapters, key=_chapter_sort_key),
+    )
 
 
-def _check_phase(phase: dict, index: int, issues: list[str], failed: set[int]) -> None:
+def _check_phase(
+    phase: dict,
+    index: int,
+    issues: list[str],
+    failed: set[int],
+    failed_chapters: set[str],
+) -> None:
     """单阶段校验：章节正文 / 项目 / 目标（markdown 化后的规则 2-6）。"""
     label = f"第 {index + 1} 阶段「{phase.get('name', '')}」"
 
@@ -80,7 +114,13 @@ def _check_phase(phase: dict, index: int, issues: list[str], failed: set[int]) -
 
     for chapter_index, chapter in enumerate(chapters):
         _check_chapter(
-            chapter, f"{label}第 {chapter_index + 1} 章", issues, failed, index
+            chapter,
+            f"{label}第 {chapter_index + 1} 章",
+            issues,
+            failed,
+            failed_chapters,
+            index,
+            chapter_index,
         )
 
     _check_project(phase, label, issues, failed, index)
@@ -91,7 +131,13 @@ def _check_phase(phase: dict, index: int, issues: list[str], failed: set[int]) -
 
 
 def _check_chapter(
-    chapter: dict, label: str, issues: list[str], failed: set[int], index: int
+    chapter: dict,
+    label: str,
+    issues: list[str],
+    failed: set[int],
+    failed_chapters: set[str],
+    index: int,
+    chapter_index: int,
 ) -> None:
     """单章校验：markdown 正文非空、≥ 1000 字、```mermaid 码块首词白名单。"""
     title = chapter.get("title", "")
@@ -100,13 +146,13 @@ def _check_chapter(
     content = (chapter.get("contentMd") or "").strip()
     if not content:
         issues.append(f"{label}缺少 markdown 正文（contentMd 为空，可重新生成）")
-        failed.add(index)
+        _mark_chapter(failed, failed_chapters, index, chapter_index)
         return
     if len(content) < MIN_CHAPTER_CONTENT_CHARS:
         issues.append(
             f"{label}正文仅 {len(content)} 字，要求不少于 {MIN_CHAPTER_CONTENT_CHARS} 字"
         )
-        failed.add(index)
+        _mark_chapter(failed, failed_chapters, index, chapter_index)
 
     for block in _mermaid_code_blocks(content):
         first_word = _mermaid_first_word(block)
@@ -115,7 +161,7 @@ def _check_chapter(
                 f"{label}Mermaid 码块首词「{first_word or '（空）'}」不在支持类型内"
                 f"（{sorted(MERMAID_DIAGRAM_TYPES)}）"
             )
-            failed.add(index)
+            _mark_chapter(failed, failed_chapters, index, chapter_index)
 
 
 def _mermaid_code_blocks(content: str) -> list[str]:

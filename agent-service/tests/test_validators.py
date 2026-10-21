@@ -60,18 +60,22 @@ def _make_plan(phases: int = 3) -> dict:
 
 
 def test_phase_count_out_of_range_rejected():
-    issues, pending = validate_plan(_make_plan(0), weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(_make_plan(0), weekly_hours=10, weeks=12)
     assert issues, "0 个阶段应产生 issue"
     assert pending == [], "无阶段可映射，索引列表应为空"
 
-    issues, pending = validate_plan(_make_plan(17), weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(
+        _make_plan(17), weekly_hours=10, weeks=12
+    )
     assert issues, "17 个阶段应产生 issue"
     assert pending == list(range(17)), "阶段数全局失败应映射所有阶段索引"
 
 
 def test_phase_count_upper_boundary_accepted():
     """量级放宽边界：MAX_PHASES=16 应整单通过。"""
-    issues, pending = validate_plan(_make_plan(16), weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(
+        _make_plan(16), weekly_hours=10, weeks=12
+    )
     assert issues == [], "16 个阶段处于上限边界，应零 issue 通过"
     assert pending == []
 
@@ -84,13 +88,13 @@ def test_phase_count_upper_boundary_accepted():
 def test_chapter_count_out_of_range_rejected():
     plan = _make_plan(3)
     plan["phases"][1]["chapters"] = []
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues
     assert 1 in pending and 0 not in pending and 2 not in pending
 
     plan = _make_plan(2)
     plan["phases"][0]["chapters"] = [_make_chapter(f"章节{i}") for i in range(13)]
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues, "13 个章节超出上限应产生 issue"
     assert 0 in pending and 1 not in pending
 
@@ -99,7 +103,7 @@ def test_chapter_count_upper_boundary_accepted():
     """量级放宽边界：MAX_CHAPTERS_PER_PHASE=12 应整阶段通过。"""
     plan = _make_plan(3)
     plan["phases"][0]["chapters"] = [_make_chapter(f"章节{i}") for i in range(12)]
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues == [], "单阶段 12 个章节处于上限边界，应零 issue 通过"
     assert pending == []
 
@@ -111,17 +115,18 @@ def test_chapter_count_upper_boundary_accepted():
 
 def test_valid_plan_passes():
     result = validate_plan(_make_plan(), weekly_hours=10, weeks=12)
-    assert isinstance(result, tuple) and len(result) == 2
-    issues, pending = result
+    assert isinstance(result, tuple) and len(result) == 3
+    issues, pending, failed_chapters = result
     assert issues == []
     assert pending == []
+    assert failed_chapters == []
 
 
 def test_shallow_content_rejected():
     plan = _make_plan(3)
     for chapter in plan["phases"][1]["chapters"]:
         chapter["contentMd"] = "浅" * 999
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues, "999 字正文应被拒绝"
     assert any("1000" in issue for issue in issues), "浅内容 issue 需含阈值 1000"
     assert 1 in pending, "不合格阶段索引应进 pending"
@@ -132,13 +137,13 @@ def test_empty_content_md_failed_for_regen():
     """空正文 → failed_indexes：可重生成的失败形态（浅轮裁定）。"""
     plan = _make_plan(2)
     plan["phases"][0]["chapters"][1]["contentMd"] = "   "
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues, "空白 contentMd 应按缺少正文处理而非抛错"
     assert 0 in pending and 1 not in pending
 
     plan = _make_plan(2)
     del plan["phases"][1]["chapters"][0]["contentMd"]
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues, "缺失 contentMd 键应按不满足规则处理而非抛错"
     assert 1 in pending and 0 not in pending
 
@@ -171,7 +176,7 @@ def test_mermaid_block_whitelisted_prefix(diagram_type):
     )
     for chapter, block in zip(chapters, blocks, strict=False):
         chapter["contentMd"] = chapter["contentMd"].rstrip() + block
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues == [], f"码块首词 {diagram_type} 应被容忍"
     assert pending == []
 
@@ -183,7 +188,7 @@ def test_bad_mermaid_block_prefix_rejected():
             chapter["contentMd"].rstrip()
             + "\n\n```mermaid\npie title 占比\n    A : 50\n    B : 50\n```\n"
         )
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues, "白名单外的首词 pie 应被拒绝"
     assert 2 in pending and 0 not in pending and 1 not in pending
 
@@ -195,7 +200,7 @@ def test_unclosed_mermaid_block_checked_by_prefix():
         chapter["contentMd"] = (
             chapter["contentMd"].rstrip() + "\n\n```mermaid\npie xp\n"
         )
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues, "未闭合码块首词 pie 应被拒绝"
     assert 1 in pending and 0 not in pending
 
@@ -208,13 +213,13 @@ def test_unclosed_mermaid_block_checked_by_prefix():
 def test_missing_project_rejected():
     plan = _make_plan(2)
     plan["phases"][0]["project"] = None
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues
     assert 0 in pending and 1 not in pending
 
     plan = _make_plan(2)
     del plan["phases"][1]["project"]
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues, "缺失 project 键应按不满足规则处理而非抛错"
     assert 1 in pending and 0 not in pending
 
@@ -222,7 +227,7 @@ def test_missing_project_rejected():
 def test_missing_project_steps_rejected():
     plan = _make_plan(2)
     plan["phases"][1]["project"]["steps"] = ["只有一条步骤"]
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues, "steps 少于 2 条应被拒绝"
     assert 1 in pending and 0 not in pending
 
@@ -230,23 +235,23 @@ def test_missing_project_steps_rejected():
 def test_project_incomplete_fields_rejected():
     plan = _make_plan(4)
     plan["phases"][0]["project"]["name"] = "  "
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues and 0 in pending
 
     plan = _make_plan(4)
     plan["phases"][1]["project"]["description"] = ""
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues, "description 为空应被拒绝"
     assert 1 in pending and 0 not in pending
 
     plan = _make_plan(4)
     plan["phases"][2]["project"]["acceptanceCriteria"] = ["唯一一条"]
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues and 2 in pending
 
     plan = _make_plan(4)
     plan["phases"][3]["project"]["estimatedHours"] = 0
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues, "estimatedHours 为 0 应被拒绝"
     assert 3 in pending and 0 not in pending and 1 not in pending and 2 not in pending
 
@@ -259,13 +264,13 @@ def test_project_incomplete_fields_rejected():
 def test_empty_objectives_rejected():
     plan = _make_plan(2)
     plan["phases"][0]["objectives"] = []
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues
     assert 0 in pending and 1 not in pending
 
     plan = _make_plan(2)
     del plan["phases"][1]["objectives"]
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues, "缺失 objectives 键应按不满足规则处理而非抛错"
     assert 1 in pending and 0 not in pending
 
@@ -278,13 +283,13 @@ def test_empty_objectives_rejected():
 def test_hours_mismatch_rejected():
     plan = _make_plan(3)
     plan["estimatedTotalHours"] = 200  # 偏差 |200-120|/120 ≈ 66.7% > 20%
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues, "学时偏差 > 20% 应产生 issue"
     assert pending == [], "裁决：学时偏差只写 issues，不产生 pending 阶段索引"
 
     plan = _make_plan(1)
     del plan["estimatedTotalHours"]  # 缺失键按 0 处理，偏差 100%
-    issues, pending = validate_plan(plan, weekly_hours=10, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=10, weeks=12)
     assert issues, "缺失 estimatedTotalHours 应按不满足规则处理而非抛错"
     assert pending == []
 
@@ -292,6 +297,27 @@ def test_hours_mismatch_rejected():
 def test_hours_check_skipped_when_expected_zero():
     plan = _make_plan(2)
     plan["estimatedTotalHours"] = 99999
-    issues, pending = validate_plan(plan, weekly_hours=0, weeks=12)
+    issues, pending, _chapters = validate_plan(plan, weekly_hours=0, weeks=12)
     assert issues == [], "期望学时为 0 时应跳过学时校验"
     assert pending == []
+
+
+def test_chapter_level_failure_key_is_precise():
+    """章级问题精确到章：回炉只重扩这一章，而非整阶段全部章。"""
+    plan = _make_plan()
+    # 让第 2 阶段的第 3 章正文过短（只触发章级规则）
+    plan["phases"][1]["chapters"][1]["contentMd"] = "太短了"
+    issues, pending, failed_chapters = validate_plan(plan, weekly_hours=10, weeks=12)
+
+    assert 1 in pending, "阶段仍需进回炉入口"
+    assert failed_chapters == ["1:1"], f"只标定这一章，实际 {failed_chapters}"
+    assert any("正文仅" in issue for issue in issues)
+
+
+def test_global_failure_has_no_chapter_keys():
+    """全局性失败（阶段数越界）只给阶段索引，章级键留空 → 走整阶段回炉。"""
+    _issues, pending, failed_chapters = validate_plan(
+        _make_plan(17), weekly_hours=10, weeks=12
+    )
+    assert len(pending) == 17
+    assert failed_chapters == []

@@ -1,6 +1,6 @@
 //! Agent 服务的 HTTP/WS 客户端：统一的请求发送出口。
 //!
-//! reqwest 客户端无全局超时，本项目按请求单独设置（ping 短超时 / regen 流长超时）。
+//! reqwest 客户端无全局超时，本项目按请求单独设置（ping 短超时 / 流式长流按空闲判定）。
 //! 所有对 Python 服务的请求都经 [send] 发出，集中处理 base-url 拼接、
 //! X-Request-ID 关联头与 JSON body，命令层不再重复拼装。
 //! 生成计划的任务化链路（提交 / 快照 / WS 事件通道）也沉淀在本模块。
@@ -16,10 +16,15 @@ use crate::sidecar::agent_service_url;
 /// 开发模式的默认服务地址（scripts/dev.mjs 启动的 uvicorn）
 pub const DEFAULT_SERVICE_URL: &str = "http://127.0.0.1:8000";
 
-/// 重生成仍走 NDJSON 长流（任务 22 裁定：仅 generate_plan 任务化），涉及多次
-/// LLM 调用（规划 + 评审 + 可能的一次修订）与逐阶段入库，给足总超时；
-/// 生成计划本体已无总时长上限（所有权在 Python 后台任务，Rust 仅经 WS 观测）
-pub const PLAN_TIMEOUT: Duration = Duration::from_secs(600);
+/// 流式请求的总超时兜底：NDJSON 是长流（重生成全阶段按章串行，单章 LLM
+/// 调用可达数分钟），健康判据见 [STREAM_IDLE_TIMEOUT]；这里只防"永不结束"
+/// 的病态情况，不再承担按量级的正常时限
+pub const STREAM_MAX_TIMEOUT: Duration = Duration::from_secs(3600);
+
+/// NDJSON 逐行空闲超时：超过该时长没有任何新事件即判定流已死。
+/// 重生成全阶段路径逐章串行调用 LLM，`chapterStart` 事件本身就是心跳，
+/// 用"总超时"衡量必然造成假超时（旧实现 600s 总超时 vs N 章串行）
+pub const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(420);
 /// 健康检查与配置推送使用短超时，快速探测服务是否在线
 pub const PING_TIMEOUT: Duration = Duration::from_secs(3);
 
@@ -40,7 +45,7 @@ pub fn new_request_id() -> String {
 /// 向 Agent 服务发送一个请求。
 ///
 /// - `path`：以 `/` 开头的路径（如 `/api/generate-plan`）；
-/// - `timeout`：按端点语义指定（ping 用 PING_TIMEOUT，生成计划用 PLAN_TIMEOUT）；
+/// - `timeout`：按端点语义指定（ping 用 PING_TIMEOUT，流式用 STREAM_MAX_TIMEOUT）；
 /// - `body`：JSON 请求体（GET 类请求传 `None::<&()>`）；
 /// - `req_id`：需要日志关联的请求（生成计划）传入，其余传 None。
 pub async fn send<T: Serialize + ?Sized>(
@@ -62,8 +67,9 @@ pub async fn send<T: Serialize + ?Sized>(
     request.send().await.map_err(Into::into)
 }
 
-/// 流式 POST：响应体为 NDJSON 长流，`timeout` 沿用 reqwest 总超时语义，
-/// 覆盖从建连到响应体读完的整个消费周期；逐行解析与事件分派由命令层负责。
+/// 流式 POST：响应体为 NDJSON 长流，`timeout` 沿用 reqwest 总超时语义
+/// （覆盖建连到响应体读完）。注意它是**总**超时、不适合给长流做正常时限：
+/// 真实守护是命令层的逐行空闲超时（见 [STREAM_IDLE_TIMEOUT]）。
 pub async fn post_stream<T: Serialize + ?Sized>(
     path: &str,
     body: &T,

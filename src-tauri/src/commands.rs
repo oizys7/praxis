@@ -31,7 +31,8 @@ use uuid::Uuid;
 
 use crate::agent_client::{
     connect_generation_events, get_task_snapshot, new_request_id, post_stream, reconnect_cursor,
-    send, submit_plan_generation, WsStream, PING_TIMEOUT, PLAN_TIMEOUT,
+    send, submit_plan_generation, WsStream, PING_TIMEOUT, STREAM_IDLE_TIMEOUT,
+    STREAM_MAX_TIMEOUT,
 };
 use crate::db;
 use crate::error::AgentError;
@@ -409,6 +410,7 @@ async fn consume_ndjson_stream(
     response: &mut reqwest::Response,
     req_id: &str,
     sink: &mut impl StreamEventSink,
+    idle_timeout: std::time::Duration,
 ) -> Result<Option<PlanResponse>, AgentError> {
     if !response.status().is_success() {
         let status = response.status();
@@ -425,7 +427,26 @@ async fn consume_ndjson_stream(
     }
 
     let mut buffer: Vec<u8> = Vec::new();
-    while let Some(line) = next_line(response, &mut buffer).await? {
+    loop {
+        // 逐行空闲超时：每读到一行就重置计时。重生成全阶段路径逐章串行
+        // 调用 LLM（单章可达数分钟），用总超时必然假超时；chapterStart
+        // 事件天然是心跳，因此"多久没有新事件"才是流健康的真实判据。
+        let next = match tokio::time::timeout(idle_timeout, next_line(response, &mut buffer)).await
+        {
+            Ok(result) => result?,
+            Err(_) => {
+                warn!(
+                    %req_id,
+                    idle_secs = idle_timeout.as_secs(),
+                    "NDJSON 流空闲超时，判定流已中断"
+                );
+                return Err(AgentError::Service(format!(
+                    "生成流已 {} 秒没有任何进展，已中断，请重试",
+                    idle_timeout.as_secs()
+                )));
+            }
+        };
+        let Some(line) = next else { break };
         if line.trim().is_empty() {
             continue; // 空行跳过
         }
@@ -1155,7 +1176,8 @@ async fn run_regen(
         );
     }
 
-    // ③ 请求 + 消费：总超时（PLAN_TIMEOUT，与生成同值，单阶段/单章 + 入库余量足够）
+    // ③ 请求 + 消费：逐行空闲超时（重生成全阶段按章串行调用 LLM，
+    //    "总超时"会把正常的长任务误判为超时；这里改看流是否还有新事件）
     let mut sink = RegenSink {
         pool: &pool,
         plan_id,
@@ -1170,25 +1192,16 @@ async fn run_regen(
         },
     };
     let body = build_regen_body(meta, outline, phase_index, chapter_index);
-    let consumed = match post_stream("/api/regenerate/stream", &body, PLAN_TIMEOUT, Some(&req_id))
-        .await
+    let consumed = match post_stream(
+        "/api/regenerate/stream",
+        &body,
+        STREAM_MAX_TIMEOUT,
+        Some(&req_id),
+    )
+    .await
     {
         Ok(mut response) => {
-            match tokio::time::timeout(
-                PLAN_TIMEOUT,
-                consume_ndjson_stream(&mut response, &req_id, &mut sink),
-            )
-            .await
-            {
-                Ok(inner) => inner,
-                Err(_) => {
-                    error!(%req_id, timeout_secs = PLAN_TIMEOUT.as_secs(), "重生成流式消费总超时");
-                    Err(AgentError::Service(format!(
-                        "重生成超时（{} 秒），请稍后重试",
-                        PLAN_TIMEOUT.as_secs()
-                    )))
-                }
-            }
+            consume_ndjson_stream(&mut response, &req_id, &mut sink, STREAM_IDLE_TIMEOUT).await
         }
         Err(e) => {
             error!(%req_id, error = %e, "重生成流请求发送失败");

@@ -786,7 +786,15 @@ async def assemble_node(state: AgentState) -> dict[str, Any]:
         "reviewNotes": "\n".join(state.get("review_notes") or []),
     }
 
-    issues, failed_indexes = validators.validate_plan(plan, req.weekly_hours, req.weeks)
+    issues, failed_indexes, validator_failed_chapters = validators.validate_plan(
+        plan, req.weekly_hours, req.weeks
+    )
+    # 章级校验键与 assemble 自己标定的失败章合并：validators 报的是
+    # 「mermaid 首词非法 / 正文过短」这类能定位到单章的问题，直接进
+    # failed_chapter_keys 即可只重扩这一章，不必整阶段重写。
+    for key in validator_failed_chapters:
+        if key not in failed_keys:
+            failed_keys.append(key)
     logger.info(
         "拼装完成 phases=%d 失败章=%s 校验问题=%d 待回炉阶段=%s",
         len(phases),
