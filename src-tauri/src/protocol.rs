@@ -355,9 +355,24 @@ pub struct ReviewOutputDef {
     pub issues: Vec<String>,
     #[serde(default)]
     pub suggestions: Vec<String>,
+    /// 分维度打分（1-5）；低分维度由 Python 侧汇总进 suggestions
+    #[serde(default)]
+    pub dimensions: Vec<ReviewDimensionDef>,
     /// 评审未通过的阶段索引（0-based）
     #[serde(default)]
     pub failed_phase_indexes: Vec<i64>,
+}
+
+/// 评审维度打分：镜像 Python 端 ReviewDimension。
+#[allow(dead_code)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ReviewDimensionDef {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub score: i64,
+    #[serde(default)]
+    pub comment: String,
 }
 
 /// Rust -> 前端的生成进度事件（NDJSON 流式链路）。

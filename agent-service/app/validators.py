@@ -26,6 +26,11 @@ MIN_CHAPTERS_PER_PHASE = 1
 MAX_CHAPTERS_PER_PHASE = 12
 # 每章 markdown 正文最少字数（strip 后；contentMd 空直接 failed 可重生成）
 MIN_CHAPTER_CONTENT_CHARS = 1000
+
+# 章节固定小节：既是写给 LLM 的质量脚手架，也是可程序化校验的契约。
+# 用子串而非精确标题匹配——「## 本章学习目标」「### 自检清单」都算命中，
+# 避免措辞自然变体被误判为缺失而触发无谓回炉。
+REQUIRED_CHAPTER_SECTIONS = ("学习目标", "前置知识", "动手练习", "自检")
 # 阶段项目最少步骤 / 验收标准条数
 MIN_PROJECT_STEPS = 2
 MIN_PROJECT_ACCEPTANCE = 2
@@ -44,10 +49,18 @@ MERMAID_DIAGRAM_TYPES = {
 }
 
 
+def _safe_int(text: str) -> int:
+    """键片段转整数：格式异常时退回 0（键由本模块生成，这里只做防御）。"""
+    try:
+        return int(text)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _chapter_sort_key(key: str) -> tuple[int, int]:
     """把 "阶段:章" 复合键还原成整数元组（稳定排序用）。"""
     phase, _, chapter = key.partition(":")
-    return (int(phase or 0), int(chapter or 0))
+    return (_safe_int(phase), _safe_int(chapter))
 
 
 def _mark_chapter(
@@ -162,6 +175,11 @@ def _check_chapter(
                 f"（{sorted(MERMAID_DIAGRAM_TYPES)}）"
             )
             _mark_chapter(failed, failed_chapters, index, chapter_index)
+
+    missing = [name for name in REQUIRED_CHAPTER_SECTIONS if name not in content]
+    if missing:
+        issues.append(f"{label}缺少必备小节：{'、'.join(missing)}")
+        _mark_chapter(failed, failed_chapters, index, chapter_index)
 
 
 def _mermaid_code_blocks(content: str) -> list[str]:

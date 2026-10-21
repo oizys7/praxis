@@ -235,9 +235,27 @@ def _chapter(title: str, goal: str) -> dict[str, Any]:
     content_md = "\n\n".join(
         (
             f"## {title}\n\n本章围绕「{title}」展开，结合「{goal}」的目标场景梳理主线内容。",
+            # 固定小节与 validators.REQUIRED_CHAPTER_SECTIONS 一一对应：
+            # mock 产物同样要过真实校验，否则离线全链路会被自己判失败
+            (
+                "### 学习目标\n\n读完本章，你能说清它解决什么问题、在整体目标中"
+                "处于什么位置，并独立完成一个最小可运行示例。"
+            ),
+            (
+                "### 前置知识\n\n需要先掌握上一章的术语与基本操作；本章出现的"
+                "新概念一律就地解释，不假设你已经会。"
+            ),
             "### 什么是它 / 为什么需要它\n\n" + _knowledge_section(title, goal),
             _CHAPTER_MERMAID,
             f"## 深入剖析\n\n{_deep_dive_content(title, goal)}",
+            (
+                f"### 动手练习\n\n围绕「{title}」写一个最小示例：先跑通，再改参数"
+                "观察行为变化，最后用自己的话记录结论。"
+            ),
+            (
+                "### 自检清单\n\n能不看资料复述主线；能逐行解释图示中的每一步；"
+                "能指出一个常见误用并说明它的后果。"
+            ),
         )
     )
     return {

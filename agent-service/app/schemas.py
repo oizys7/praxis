@@ -324,12 +324,27 @@ class ClarificationOutput(BaseModel):
     questions: list[str] = Field(..., description="向用户提出的澄清问题，最多 3 条")
 
 
+class ReviewDimension(BaseModel):
+    """评审维度打分：让「为什么没过」可解释，也便于定位低分环节。"""
+
+    name: str = Field(
+        ...,
+        description="维度名称，如 结构完整 / 正文质量 / 可测性 / 时间可行 / 难度递进",
+    )
+    score: int = Field(..., ge=1, le=5, description="1-5 分，5 表示该维度无明显问题")
+    comment: str = Field(default="", description="给出该分数的具体依据")
+
+
 class ReviewOutput(BaseModel):
     """review 节点的 LLM 输出：计划质量评审结论。"""
 
     passed: bool = Field(..., description="计划是否通过质量评审")
     issues: list[str] = Field(default_factory=list, description="发现的问题")
     suggestions: list[str] = Field(default_factory=list, description="改进建议")
+    dimensions: list[ReviewDimension] = Field(
+        default_factory=list,
+        description="分维度打分；低分维度（≤3）会被汇总进建议，便于定位问题环节",
+    )
     failed_phase_indexes: list[int] = Field(
         default_factory=list, description="评审未通过的阶段索引（0-based）"
     )

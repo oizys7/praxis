@@ -865,18 +865,26 @@ async def review_node(state: AgentState) -> dict[str, Any]:
         }
 
     logger.info(
-        "评审完成 passed=%s issues=%d suggestions=%d failed_phases=%s",
+        "评审完成 passed=%s issues=%d suggestions=%d dimensions=%d failed_phases=%s",
         output.passed,
         len(output.issues),
         len(output.suggestions),
+        len(output.dimensions),
         output.failed_phase_indexes,
     )
     merged_pending = sorted(
         set(state.get("pending_phase_indexes") or []) | set(output.failed_phase_indexes)
     )
+    # 低分维度（≤3）汇总进 suggestions：评审结论因此可解释——
+    # 光看 passed=false 无法知道是哪一环拖了后腿
+    low_score_notes = [
+        f"{dimension.name} {dimension.score}/5：{dimension.comment}".rstrip("：")
+        for dimension in output.dimensions
+        if dimension.score <= 3
+    ]
     return {
         "passed": output.passed,
         "review_notes": [issue for issue in output.issues if issue.strip()],
-        "suggestions": list(output.suggestions),
+        "suggestions": [*output.suggestions, *low_score_notes],
         "pending_phase_indexes": merged_pending,
     }
