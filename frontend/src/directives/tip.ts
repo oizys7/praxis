@@ -26,6 +26,16 @@ let tipEl: HTMLDivElement | null = null;
 let hostEl: HTMLElement | null = null;
 let showTimer: number | null = null;
 
+/**
+ * 宿主元素 → 当前提示文本。
+ *
+ * 必须用外部存储而不是闭包里的 `binding`：事件监听器在 mounted 时绑定一次，
+ * 而 Vue 每次 updated 传的是**新的 binding 对象**，闭包捕获的旧对象里的
+ * value 永远不会更新（展开/收起这类响应式文本会一直读首帧值）。
+ * WeakMap 随元素回收，无需在 unmounted 里清理。
+ */
+const textOf = new WeakMap<HTMLElement, string>();
+
 function ensureEl(): HTMLDivElement {
   if (!tipEl) {
     tipEl = document.createElement("div");
@@ -81,12 +91,13 @@ function schedule(text: string, target: HTMLElement): void {
 
 const vTip: Directive<HTMLElement, string | undefined | null> = {
   mounted(el, binding) {
+    textOf.set(el, normalize(binding.value));
     el.addEventListener("mouseenter", () => {
-      const text = normalize(binding.value);
+      const text = textOf.get(el) ?? "";
       if (text) schedule(text, el);
     });
     el.addEventListener("focus", () => {
-      const text = normalize(binding.value);
+      const text = textOf.get(el) ?? "";
       if (text) schedule(text, el);
     });
     el.addEventListener("mouseleave", hide);
@@ -96,6 +107,7 @@ const vTip: Directive<HTMLElement, string | undefined | null> = {
   },
   updated(el, binding) {
     const text = normalize(binding.value);
+    textOf.set(el, text);
     if (!text) {
       hide();
     } else if (hostEl === el && tipEl?.classList.contains("praxis-tip--show")) {
