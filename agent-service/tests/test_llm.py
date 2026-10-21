@@ -35,7 +35,11 @@ class _FakeStructured:
         self.calls.append(list(messages))
         if not self._results:
             raise AssertionError("结果序列耗尽")
-        return self._results.pop(0)
+        item = self._results.pop(0)
+        # 结果为异常实例时模拟抛出（用于验证异常是否进入重试链）
+        if isinstance(item, BaseException):
+            raise item
+        return item
 
 
 class _FakeChat:
@@ -77,3 +81,45 @@ def test_empty_tool_call_then_valid_returns_model(funnel):
     result = asyncio.run(llm.invoke_structured(_Tiny, "phase", _VARS))
     assert result.x == 1
     assert len(fake.calls) == 2
+
+
+def test_output_parser_error_enters_retry_chain(funnel):
+    """JSON 截断/非法（OutputParserException）此前不进重试链 → 现已纳入。"""
+    import asyncio
+
+    from langchain_core.exceptions import OutputParserException
+
+    fake = funnel(
+        [OutputParserException('Invalid json output: {"contentMd": "截断'), _Tiny(x=2)]
+    )
+    result = asyncio.run(llm.invoke_structured(_Tiny, "phase", _VARS))
+    assert result.x == 2
+    assert len(fake.calls) == 2
+    assert any("无法解析" in str(m.content) for m in fake.calls[1][1:])
+
+
+def test_output_parser_error_exhausted_raises_parse_error(funnel):
+    """连续解析失败耗尽预算 → AgentServiceError（文案指向"无法解析"）。"""
+    import asyncio
+
+    from langchain_core.exceptions import OutputParserException
+
+    fake = funnel([OutputParserException("bad"), OutputParserException("bad")])
+    with pytest.raises(AgentServiceError) as ei:
+        asyncio.run(llm.invoke_structured(_Tiny, "phase", _VARS))
+    assert "无法解析" in str(ei.value)
+    assert len(fake.calls) == 2
+
+
+def test_chapter_prompt_gets_three_parse_attempts(funnel):
+    """章节正文输出最大：解析预算 3 次，其余提示词仍为 2 次。"""
+    import asyncio
+
+    from langchain_core.exceptions import OutputParserException
+
+    assert llm._parse_attempts("chapter") == 3
+    assert llm._parse_attempts("outline") == 2
+    fake = funnel([OutputParserException("a"), OutputParserException("b"), _Tiny(x=3)])
+    result = asyncio.run(llm.invoke_structured(_Tiny, "chapter", _VARS))
+    assert result.x == 3
+    assert len(fake.calls) == 3

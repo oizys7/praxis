@@ -47,6 +47,12 @@ human: |
 
    {{phase_outline}}
 
+   【学习者画像】（练习与项目的难度、选题和验收口径必须对齐这一画像）
+   学习目标：{{goal}}
+   当前水平：{{level}}
+   兴趣方向：{{interests}}
+   既有基础：{{background}}
+
    【每周可用学时】{{weekly_hours}} 小时；计划总周数：{{weeks}} 周
 
    【评审回炉意见】

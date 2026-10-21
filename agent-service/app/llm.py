@@ -17,8 +17,10 @@ import logging
 from collections.abc import Callable
 from typing import TypeVar, cast
 
+import anthropic
 import httpx
 import openai
+from langchain_core.exceptions import OutputParserException
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, SecretStr, ValidationError
@@ -43,6 +45,15 @@ _MAX_RETRIES = 2
 # 结构化输出的解析尝试次数：glm-5.3 等思考模型对大 schema 的工具参数
 # 偶发拼接错乱（字段丢失 / 类型漂移），一次重试通常即可成功
 _PARSE_ATTEMPTS = 2
+
+# 章节正文单次输出最大、最容易被截断——多给一次重试机会
+_PARSE_ATTEMPTS_BY_PROMPT = {"chapter": 3}
+
+# 单次输出上限：章节正文 1500-3000 字中文 + JSON 结构约 3-4k tokens。
+# 部分 OpenAI 兼容端点默认输出上限仅有 1024/2048，不显式指定会在正文
+# 中段被静默截断（表现为 OutputParserException / ValidationError）；
+# 4096 覆盖当前五家提供商的输出能力。
+_MAX_OUTPUT_TOKENS = 4096
 
 # 模块级缓存：配置热更新时由 reset_chat_model_cache() 清空，下次调用按新配置重建
 _chat_model: BaseChatModel | None = None
@@ -87,6 +98,7 @@ def _openai_compatible(
         api_key=SecretStr(api_key),
         base_url=base_url,
         extra_body=extra_body,
+        max_tokens=_MAX_OUTPUT_TOKENS,
         temperature=_TEMPERATURE,
         timeout=_TIMEOUT_SECONDS,
         max_retries=_MAX_RETRIES,
@@ -126,6 +138,7 @@ def _build_anthropic() -> BaseChatModel:
         model_name=settings.anthropic_model,
         stop=None,
         api_key=SecretStr(settings.anthropic_api_key),
+        max_tokens=_MAX_OUTPUT_TOKENS,
         temperature=_TEMPERATURE,
         timeout=_TIMEOUT_SECONDS,
         max_retries=_MAX_RETRIES,
@@ -138,6 +151,7 @@ def _build_deepseek() -> BaseChatModel:
     return ChatDeepSeek(
         model=settings.deepseek_model,
         api_key=SecretStr(settings.deepseek_api_key),
+        max_tokens=_MAX_OUTPUT_TOKENS,
         temperature=_TEMPERATURE,
         timeout=_TIMEOUT_SECONDS,
         max_retries=_MAX_RETRIES,
@@ -187,6 +201,17 @@ def _validation_summary(exc: ValidationError, limit: int = 5) -> str:
     return "\n".join(parts)
 
 
+def _parser_error_summary(exc: OutputParserException, limit: int = 300) -> str:
+    """把输出解析异常压成单行摘要（异常文本里常带整段 JSON，需截断）。"""
+    text = " ".join(str(exc).split())
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+def _parse_attempts(prompt_key: str) -> int:
+    """按提示词区分的解析重试次数（章节正文给 3 次）。"""
+    return _PARSE_ATTEMPTS_BY_PROMPT.get(prompt_key, _PARSE_ATTEMPTS)
+
+
 async def invoke_structured(
     model_cls: type[TModel],
     prompt_key: str,
@@ -211,7 +236,8 @@ async def invoke_structured(
         model_cls, method="function_calling"
     )
 
-    last_parse_error: ValidationError | None = None
+    attempts = _parse_attempts(prompt_key)
+    last_parse_error: ValidationError | OutputParserException | None = None
     # 空工具调用（GLM 实测，2026-10-15：响应 200 但 tool_call 参数为空 →
     # with_structured_output 返回 None）不走 ValidationError，需单独入重试链，
     # 否则 None 经 cast 穿透后调用点 model_dump 空引用崩溃
@@ -219,7 +245,7 @@ async def invoke_structured(
     # 重试消息：初始为原始 messages；一旦失败，追加校验错误反馈后重发
     attempt_messages = messages
     try:
-        for attempt in range(1, _PARSE_ATTEMPTS + 1):
+        for attempt in range(1, attempts + 1):
             try:
                 result = await structured.ainvoke(attempt_messages)
                 if result is None:
@@ -227,7 +253,7 @@ async def invoke_structured(
                     logger.warning(
                         "结构化输出为空 tool_call（第 %d/%d 次，model=%s）",
                         attempt,
-                        _PARSE_ATTEMPTS,
+                        attempts,
                         model_cls.__name__,
                     )
                     attempt_messages = [
@@ -243,33 +269,48 @@ async def invoke_structured(
                     continue
                 # ainvoke 静态签名宽泛（dict | BaseModel），运行时必为 model_cls
                 return cast(TModel, result)
-            except ValidationError as exc:
+            except (ValidationError, OutputParserException) as exc:
                 last_parse_error = exc
-                summary = _validation_summary(exc)
+                if isinstance(exc, ValidationError):
+                    summary = _validation_summary(exc)
+                    feedback = (
+                        "你上一次的工具调用参数未通过数据校验，具体错误：\n"
+                        f"{summary}\n"
+                        "请重新生成并严格满足全部字段的类型与必填约束；"
+                        "其余要求保持不变。"
+                    )
+                else:
+                    # JSON 截断 / 非法：此前直接判死，是"单章报废"的主要来源
+                    summary = _parser_error_summary(exc)
+                    feedback = (
+                        "你上一次的工具调用返回的 JSON 无法解析（常见原因：输出被截断、"
+                        "引号未闭合或混入了 schema 之外的文字）。\n"
+                        f"解析器报错：{summary}\n"
+                        "请确保输出是完整合法的 JSON；若内容过长，请在不丢失必备小节"
+                        "的前提下精简篇幅。其余要求保持不变。"
+                    )
                 logger.warning(
                     "结构化输出解析失败（第 %d/%d 次，model=%s）：%s",
                     attempt,
-                    _PARSE_ATTEMPTS,
+                    attempts,
                     model_cls.__name__,
                     summary,
                 )
-                # 带错误反馈重试：明确告知哪些字段不合规，请模型针对性修正
-                attempt_messages = [
-                    *messages,
-                    HumanMessage(
-                        content=(
-                            "你上一次的工具调用参数未通过数据校验，具体错误：\n"
-                            f"{summary}\n"
-                            "请重新生成并严格满足全部字段的类型与必填约束；"
-                            "其余要求保持不变。"
-                        )
-                    ),
-                ]
-    except (httpx.TimeoutException, TimeoutError, openai.APIConnectionError) as exc:
+                # 带错误反馈重试：明确告知问题，请模型针对性修正
+                attempt_messages = [*messages, HumanMessage(content=feedback)]
+    except (
+        httpx.TimeoutException,
+        TimeoutError,
+        openai.APIConnectionError,
+        # 限流 429 / 服务端 5xx / 参数 400（如上下文超限）：SDK 内部重试
+        # 耗尽后抛出，此前未捕获 → 裸异常穿透成"服务内部错误"
+        openai.APIStatusError,
+        anthropic.APIError,
+    ) as exc:
         # openai / anthropic SDK 会把底层 httpx 异常包装为自有类型再抛出
         logger.warning("LLM 调用失败（provider=%s）：%s", settings.llm_provider, exc)
         raise AgentServiceError(
-            "模型响应超时或网络异常，请稍后重试，或在设置页更换模型"
+            "模型响应超时、被限流或服务端异常，请稍后重试，或在设置页更换模型"
         ) from exc
 
     if empty_tool_call:

@@ -57,9 +57,16 @@ step("Python lint（ruff check）", "uvx", [
 // 3. 提示词 YAML 校验：确保 prompts/ 下 YAML 均可解析（运行时由 prompts.py 加载）。
 //    逻辑在独立脚本 scripts/check_prompts.py 中，避免 python -c 的多行代码
 //    在 Windows cmd（shell:true）下因换行被截断的问题。
-step("提示词 YAML 校验", "python", ["scripts/check_prompts.py"], {
-  env: { ...process.env, PYTHONIOENCODING: "utf-8" },
-});
+//    解释器用 uv 环境（--project agent-service）：PyYAML 是 agent-service 的
+//    运行依赖，只装在 .venv 里；系统 python 未装 yaml 会让本步骤必然失败。
+step(
+  "提示词 YAML 校验",
+  "uv",
+  ["run", "--project", "agent-service", "python", "scripts/check_prompts.py"],
+  {
+    env: { ...process.env, PYTHONIOENCODING: "utf-8" },
+  },
+);
 
 // ---------------- Rust 端 ----------------
 

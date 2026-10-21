@@ -417,6 +417,12 @@ async def _expand_phase_extras(
                 "review_notes": review_notes,
                 "weekly_hours": str(req.weekly_hours),
                 "weeks": str(req.weeks),
+                # 学习者画像：练习/项目必须对齐用户目标与既有基础。此前只注入
+                # 骨架与学时，导致"决定学得如何"的收尾内容最不具针对性。
+                "goal": req.goal,
+                "level": _level_audience(req),
+                "interests": "、".join(req.interests) or "（未指定）",
+                "background": req.background or "（未填写）",
             },
         )
     # PhaseExtrasOutput 模型输出即 {practice, assignments, project}
@@ -523,15 +529,32 @@ async def expand_chapter_node(payload: dict[str, Any]) -> dict[str, Any]:
     phase_index: int = payload["phase_index"]
     chapter_index: int = payload["chapter_index"]
 
-    chapter = await _expand_chapter_draft(
-        request,
-        phase_outline,
-        phase_index,
-        chapter_index,
-        plan_context=payload["plan_context"],
-        # 首展不是回炉：注入占位意见，chapter.yaml 据此跳过意见落实
-        review_notes=_FIRST_EXPAND_REVIEW_NOTES,
-    )
+    try:
+        chapter = await _expand_chapter_draft(
+            request,
+            phase_outline,
+            phase_index,
+            chapter_index,
+            plan_context=payload["plan_context"],
+            # 首展不是回炉：注入占位意见，chapter.yaml 据此跳过意见落实
+            review_notes=_FIRST_EXPAND_REVIEW_NOTES,
+        )
+    except AgentServiceError as exc:
+        # 未配置 Key 属全局配置问题（不是偶发失败）：直接上抛，
+        # 否则全部分支都会静默降级，用户最终拿到一份空计划。
+        if not has_llm_config():
+            raise
+        # 单章失败不再炸断整条流：Send 分发的异常会中断整个 astream，
+        # 已生成的其余章节全部作废。这里**不写**自己的 chapter_drafts 键
+        # （or_ reducer 缺键不覆盖他人），交由 assemble 补空占位并标定失败章，
+        # 再由 review → expand_revision 定向重扩——即现成的自愈链。
+        logger.warning(
+            "章节扩展失败（阶段 %d 第 %d 章），留给 assemble 兜底重扩：%s",
+            phase_index,
+            chapter_index,
+            exc,
+        )
+        return {}
     return {"chapter_drafts": {_chapter_key(phase_index, chapter_index): chapter}}
 
 
@@ -550,16 +573,29 @@ async def expand_phase_wrap_node(payload: dict[str, Any]) -> dict[str, Any]:
     phase_outline: dict[str, Any] = payload["phase_outline"]
     phase_index: int = payload["phase_index"]
 
-    extras = await _expand_phase_extras(
-        request,
-        phase_outline,
-        phase_index,
-        plan_context=build_plan_context(
-            {"title": "", "overview": "", "phases": [phase_outline]}, phase_index
-        ),
-        # 首展不是回炉：注入占位意见，phase_extras.yaml 据此跳过意见落实
-        review_notes=_FIRST_EXPAND_REVIEW_NOTES,
-    )
+    try:
+        extras = await _expand_phase_extras(
+            request,
+            phase_outline,
+            phase_index,
+            plan_context=build_plan_context(
+                {"title": "", "overview": "", "phases": [phase_outline]}, phase_index
+            ),
+            # 首展不是回炉：注入占位意见，phase_extras.yaml 据此跳过意见落实
+            review_notes=_FIRST_EXPAND_REVIEW_NOTES,
+        )
+    except AgentServiceError as exc:
+        # 同 expand_chapter：配置缺失属全局问题，照常上抛
+        if not has_llm_config():
+            raise
+        # 不写自己的阶段键，assemble 会当场补产一次
+        # （assemble 的 extras 兜底分支），仍失败则用空占位。
+        logger.warning(
+            "阶段收尾扩展失败（阶段 %d），留给 assemble 兜底补产：%s",
+            phase_index,
+            exc,
+        )
+        return {}
     return {"phase_extras": {str(phase_index): extras}}
 
 
@@ -795,18 +831,30 @@ async def review_node(state: AgentState) -> dict[str, Any]:
             ],
         }
 
-    output = await invoke_structured(
-        ReviewOutput,
-        "review",
-        {
-            "plan": json.dumps(plan, ensure_ascii=False),
-            "validation_issues": (
-                "\n".join(f"- {issue}" for issue in validation_issues)
-                if validation_issues
-                else _NO_VALIDATION_ISSUES
-            ),
-        },
-    )
+    try:
+        output = await invoke_structured(
+            ReviewOutput,
+            "review",
+            {
+                "plan": json.dumps(plan, ensure_ascii=False),
+                "validation_issues": (
+                    "\n".join(f"- {issue}" for issue in validation_issues)
+                    if validation_issues
+                    else _NO_VALIDATION_ISSUES
+                ),
+            },
+        )
+    except AgentServiceError as exc:
+        # 评审是辅助能力：此时计划已完整拼装、各章已逐章落库，程序化校验
+        # （validators）也已执行。评审调用失败不应把整条计划炸掉——放行并
+        # 在备注里说明，回炉入口仍保留 validators 给出的待修阶段。
+        logger.warning("评审调用失败，按放行处理：%s", exc)
+        return {
+            "passed": True,
+            "review_notes": [f"（评审未执行：{exc}；计划已通过程序化校验）"],
+            "suggestions": [],
+            "pending_phase_indexes": list(state.get("pending_phase_indexes") or []),
+        }
 
     logger.info(
         "评审完成 passed=%s issues=%d suggestions=%d failed_phases=%s",

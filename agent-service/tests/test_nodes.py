@@ -251,6 +251,9 @@ async def test_expand_phase_wrap_real_path_variables(monkeypatch):
         "骨架须 JSON 序列化后注入"
     )
     assert variables["weekly_hours"] == "10" and variables["weeks"] == "12"
+    # 学习者画像必须进入提示词（此前只注入骨架与学时，练习/项目完全不针对性）
+    assert {"goal", "level", "interests", "background"} <= set(variables)
+    assert variables["goal"] == REQUEST["goal"]
     assert set(result) == {"phase_extras"}
     assert result["phase_extras"]["1"]["practice"] == ["练"]
 
@@ -613,3 +616,73 @@ def test_clarify_extra_short_goal_only_short():
     issues = dict(nodes._detect_issues(_req_with_goal("学英语")))
     assert "goal_too_short" in issues
     assert "goal_too_broad" not in issues
+
+
+# ---------------------------------------------------------------------------
+# 首展容错（2026-10-21）：单章/单阶段失败不再炸断整条流
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_expand_chapter_llm_failure_returns_empty_delta(monkeypatch):
+    """单章偶发失败：返回空增量，交给 assemble 兜底重扩（不写键、不抛）。"""
+    monkeypatch.setattr(settings, "allow_mock_llm", False)
+    monkeypatch.setattr(nodes, "has_llm_config", lambda: True)
+
+    async def _boom(*_args, **_kwargs):
+        raise AgentServiceError("模型响应超时，请稍后重试")
+
+    monkeypatch.setattr(nodes, "_expand_chapter_draft", _boom)
+    outline = build_mock_outline(REQUEST)
+
+    result = await nodes.expand_chapter_node(
+        {
+            "request": REQUEST,
+            "phase_outline": outline["phases"][0],
+            "phase_index": 0,
+            "chapter_index": 1,
+            "plan_context": "",
+        }
+    )
+
+    assert result == {}, "失败不写 chapter_drafts 键，避免覆盖并行实例的成果"
+
+
+@pytest.mark.asyncio
+async def test_expand_phase_wrap_llm_failure_returns_empty_delta(monkeypatch):
+    """阶段收尾失败：返回空增量，assemble 会当场补产一次。"""
+    monkeypatch.setattr(settings, "allow_mock_llm", False)
+    monkeypatch.setattr(nodes, "has_llm_config", lambda: True)
+
+    async def _boom(*_args, **_kwargs):
+        raise AgentServiceError("被限流")
+
+    monkeypatch.setattr(nodes, "_expand_phase_extras", _boom)
+    outline = build_mock_outline(REQUEST)
+
+    result = await nodes.expand_phase_wrap_node(
+        {"request": REQUEST, "phase_outline": outline["phases"][0], "phase_index": 0}
+    )
+
+    assert result == {}
+
+
+@pytest.mark.asyncio
+async def test_review_llm_failure_passes_with_note(monkeypatch):
+    """评审是辅助能力：调用失败按放行处理，保留 validators 给出的待修阶段。"""
+    monkeypatch.setattr(settings, "allow_mock_llm", False)
+    monkeypatch.setattr(nodes, "has_llm_config", lambda: True)
+
+    async def _boom(*_args, **_kwargs):
+        raise AgentServiceError("评审超时")
+
+    monkeypatch.setattr(nodes, "invoke_structured", _boom)
+
+    result = await nodes.review_node(
+        {"plan": {"title": "t"}, "validation_issues": [], "pending_phase_indexes": [2]}
+    )
+
+    assert result["passed"] is True
+    assert result["pending_phase_indexes"] == [2]
+    assert result["suggestions"] == []
+    assert "评审未执行" in result["review_notes"][0]
