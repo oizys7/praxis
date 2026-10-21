@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { computed, reactive } from 'vue'
-import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
+import { computed, reactive } from "vue";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import {
   Card,
   CardContent,
@@ -9,74 +9,98 @@ import {
   CardFooter,
   CardHeader,
   CardTitle,
-} from '@/components/ui/card'
-import { Input } from '@/components/ui/input'
-import { Label } from '@/components/ui/label'
-import { Select } from '@/components/ui/select'
-import { Textarea } from '@/components/ui/textarea'
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import {
   INTEREST_PRESETS,
   LEVEL_OPTIONS,
   type Level,
   type PlanRequest,
-} from '@/types/agent'
+} from "@/types/agent";
 
 /**
  * PlanForm：学习需求输入表单。
  * 字段：学习目标 / 当前水平 / 每周可用小时 / 期望周数 / 偏好方向（多选标签）/ 已有基础。
  * 校验通过后向上抛出 submit 事件，由 App.vue 调用 useAgent 发起请求。
  */
-const props = defineProps<{ loading?: boolean }>()
-const emit = defineEmits<{ (e: 'submit', payload: PlanRequest): void }>()
+const props = defineProps<{ loading?: boolean }>();
+const emit = defineEmits<{ (e: "submit", payload: PlanRequest): void }>();
 
 /** 表单数据（与 PlanRequest 字段一一对应） */
 const form = reactive({
-  goal: '',
-  level: 'beginner' as Level,
+  goal: "",
+  level: "beginner" as Level,
   weeklyHours: 10,
   weeks: 12,
   interests: [] as string[],
-  background: '',
-})
+  background: "",
+  // 每周学习日（1=周一..7=周日，需求 5）：默认全选
+  studyDays: [1, 2, 3, 4, 5, 6, 7] as number[],
+});
+
+/** 学习日 chip 标签（列序即 1..7，周一起始） */
+const STUDY_DAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"] as const;
 
 /** 行内校验错误 */
-const errors = reactive({ goal: '', weeklyHours: '', weeks: '' })
+const errors = reactive({ goal: "", weeklyHours: "", weeks: "" });
 
 /** 偏好方向标签是否可提交（仅用于按钮禁用态展示） */
-const canSubmit = computed(() => !props.loading)
+const canSubmit = computed(() => !props.loading);
 
 /** 切换偏好方向标签的选中状态 */
 function toggleInterest(tag: string) {
-  const idx = form.interests.indexOf(tag)
+  const idx = form.interests.indexOf(tag);
   if (idx >= 0) {
-    form.interests.splice(idx, 1)
+    form.interests.splice(idx, 1);
   } else {
-    form.interests.push(tag)
+    form.interests.push(tag);
+  }
+}
+
+/** 切换每周学习日（至少保留一天；取消最后一天时静默拒绝） */
+function toggleStudyDay(day: number) {
+  const idx = form.studyDays.indexOf(day);
+  if (idx >= 0) {
+    if (form.studyDays.length === 1) return;
+    form.studyDays.splice(idx, 1);
+  } else {
+    form.studyDays.push(day);
+    form.studyDays.sort((a, b) => a - b);
   }
 }
 
 /** 行内校验：目标长度 / 小时数 / 周数 */
 function validate(): boolean {
-  errors.goal = form.goal.trim().length < 4 ? '请至少用 4 个字描述你的学习目标' : ''
-  const hours = Number(form.weeklyHours)
+  errors.goal =
+    form.goal.trim().length < 4 ? "请至少用 4 个字描述你的学习目标" : "";
+  const hours = Number(form.weeklyHours);
   errors.weeklyHours =
-    !Number.isFinite(hours) || hours < 1 || hours > 80 ? '请填写 1-80 之间的数字' : ''
-  const weeks = Number(form.weeks)
-  errors.weeks = !Number.isFinite(weeks) || weeks < 1 || weeks > 52 ? '请填写 1-52 之间的整数' : ''
-  return !errors.goal && !errors.weeklyHours && !errors.weeks
+    !Number.isFinite(hours) || hours < 1 || hours > 80
+      ? "请填写 1-80 之间的数字"
+      : "";
+  const weeks = Number(form.weeks);
+  errors.weeks =
+    !Number.isFinite(weeks) || weeks < 1 || weeks > 52
+      ? "请填写 1-52 之间的整数"
+      : "";
+  return !errors.goal && !errors.weeklyHours && !errors.weeks;
 }
 
 /** 提交：校验通过后组装 PlanRequest 抛给父组件 */
 function onSubmit() {
-  if (props.loading || !validate()) return
-  emit('submit', {
+  if (props.loading || !validate()) return;
+  emit("submit", {
     goal: form.goal.trim(),
     level: form.level,
     weeklyHours: Math.round(Number(form.weeklyHours)),
     weeks: Math.round(Number(form.weeks)),
     interests: [...form.interests],
     background: form.background.trim(),
-  })
+    studyDays: [...form.studyDays],
+  });
 }
 </script>
 
@@ -85,11 +109,20 @@ function onSubmit() {
     <CardHeader>
       <CardTitle>制定我的学习计划</CardTitle>
       <CardDescription>
-        填写学习需求，Agent 将生成"理论 + 实操 + 作业 + 项目"四位一体的分阶段计划。
+        填写学习需求，Agent 将生成"理论 + 实操 + 作业 +
+        项目"四位一体的分阶段计划。
       </CardDescription>
     </CardHeader>
 
     <CardContent class="space-y-5">
+      <!-- 组题：目标与起点 -->
+      <div class="flex items-center gap-3">
+        <span class="text-xs font-medium text-muted-foreground"
+          >目标与起点</span
+        >
+        <div class="h-px flex-1 bg-primary/10" role="presentation" />
+      </div>
+
       <!-- 学习目标 -->
       <div class="space-y-1.5">
         <Label for="goal">学习目标 *</Label>
@@ -99,13 +132,26 @@ function onSubmit() {
           placeholder="例如：三个月内成为能独立开发 Web 应用的后端工程师"
           :disabled="props.loading"
         />
-        <p v-if="errors.goal" class="text-xs text-destructive">{{ errors.goal }}</p>
+        <p v-if="errors.goal" class="text-xs text-destructive">
+          {{ errors.goal }}
+        </p>
       </div>
 
       <!-- 当前水平 -->
       <div class="space-y-1.5">
         <Label for="level">当前水平</Label>
-        <Select id="level" v-model="form.level" :options="LEVEL_OPTIONS" :disabled="props.loading" />
+        <Select
+          id="level"
+          v-model="form.level"
+          :options="LEVEL_OPTIONS"
+          :disabled="props.loading"
+        />
+      </div>
+
+      <!-- 组题：学习节奏 -->
+      <div class="flex items-center gap-3 pt-1">
+        <span class="text-xs font-medium text-muted-foreground">学习节奏</span>
+        <div class="h-px flex-1 bg-primary/10" role="presentation" />
       </div>
 
       <!-- 每周可用小时 / 期望周数 -->
@@ -134,8 +180,45 @@ function onSubmit() {
             :max="52"
             :disabled="props.loading"
           />
-          <p v-if="errors.weeks" class="text-xs text-destructive">{{ errors.weeks }}</p>
+          <p v-if="errors.weeks" class="text-xs text-destructive">
+            {{ errors.weeks }}
+          </p>
         </div>
+      </div>
+
+      <!-- 每周学习日（需求 5：默认全选，至少保留一天） -->
+      <div class="space-y-1.5">
+        <Label>每周学习日</Label>
+        <div class="flex flex-wrap gap-1.5">
+          <button
+            v-for="(label, i) in STUDY_DAY_LABELS"
+            :key="label"
+            type="button"
+            class="rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            :aria-pressed="form.studyDays.includes(i + 1)"
+            :aria-label="`每周${label}${form.studyDays.includes(i + 1) ? '（已选）' : ''}`"
+            :disabled="props.loading"
+            @click="toggleStudyDay(i + 1)"
+          >
+            <Badge
+              :variant="form.studyDays.includes(i + 1) ? 'default' : 'outline'"
+              class="cursor-pointer select-none px-2.5 transition-opacity hover:opacity-80"
+            >
+              周{{ label }}
+            </Badge>
+          </button>
+        </div>
+        <p class="text-xs text-muted-foreground">
+          计划章节将按所选日子排布到日历（至少保留一天）
+        </p>
+      </div>
+
+      <!-- 组题：偏好与基础 -->
+      <div class="flex items-center gap-3 pt-1">
+        <span class="text-xs font-medium text-muted-foreground"
+          >偏好与基础</span
+        >
+        <div class="h-px flex-1 bg-primary/10" role="presentation" />
       </div>
 
       <!-- 偏好方向（多选标签） -->
