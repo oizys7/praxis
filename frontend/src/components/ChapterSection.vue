@@ -176,6 +176,30 @@ async function onRegenerate() {
 
 /** 整章折叠态：默认展开（重生成入口在标题行，折叠不影响操作） */
 const collapsed = ref(false);
+
+/** 章内小节目录：从 contentMd 的 ## / ### 行提取（不依赖渲染后的 DOM） */
+const headings = computed(() => {
+  const list: { level: number; text: string }[] = [];
+  if (!props.chapter.contentMd) return list;
+  const headingRe = /^(#{2,3})[ \t]+(.+?)[ \t]*$/gm;
+  let match: RegExpExecArray | null;
+  while ((match = headingRe.exec(props.chapter.contentMd)) !== null) {
+    list.push({ level: match[1].length, text: match[2] });
+  }
+  return list;
+});
+
+const contentRoot = ref<HTMLElement | null>(null);
+
+/**
+ * 按索引滚动到对应小节标题。
+ * 正文由 marked 渲染，标题渲染顺序与上方提取顺序一致，故索引可直接对齐；
+ * 这样无需生成/维护锚点 id（省掉一套 slug 冲突处理）。
+ */
+function scrollToHeading(index: number) {
+  const nodes = contentRoot.value?.querySelectorAll("h2, h3");
+  nodes?.[index]?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
 </script>
 
 <template>
@@ -244,7 +268,31 @@ const collapsed = ref(false);
 
     <!-- 正文：markdown 渲染（整章标题行折叠，默认展开） -->
     <div v-show="!collapsed" class="mt-3">
-      <MarkdownContent :content-md="props.chapter.contentMd" />
+      <!-- 章内小节目录：正文 1500-3000 字，靠滚动定位太慢，给小节一个扁平入口 -->
+      <nav
+        v-if="headings.length > 2"
+        class="mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-border/60 bg-muted/30 px-3 py-2"
+        aria-label="本章目录"
+      >
+        <span class="text-xs text-muted-foreground">本章目录</span>
+        <button
+          v-for="(heading, index) in headings"
+          :key="index"
+          type="button"
+          class="rounded px-1.5 py-0.5 text-xs transition-colors hover:bg-background hover:text-primary focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:outline-none"
+          :class="
+            heading.level === 3
+              ? 'text-muted-foreground/80'
+              : 'font-medium text-muted-foreground'
+          "
+          @click="scrollToHeading(index)"
+        >
+          {{ heading.text }}
+        </button>
+      </nav>
+      <div ref="contentRoot">
+        <MarkdownContent :content-md="props.chapter.contentMd" />
+      </div>
     </div>
   </section>
 </template>
