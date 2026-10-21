@@ -375,6 +375,20 @@ pub struct ReviewDimensionDef {
     pub comment: String,
 }
 
+/// POST /api/llm-check 的响应：生成前的 LLM 连通性探测结果。
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LlmCheckResponse {
+    /// 是否可用（Key 有效 / 网络可达 / 模型名存在）
+    #[serde(default)]
+    pub ok: bool,
+    /// 可读的成败说明（失败时直接展示给用户）
+    #[serde(default)]
+    pub message: String,
+    /// 探测时实际使用的提供商
+    #[serde(default)]
+    pub provider: String,
+}
+
 /// Rust -> 前端的生成进度事件（NDJSON 流式链路）。
 /// tag = "type" 产出 {"type":"outline","phaseCount":…} 形式；
 /// rename_all 作用于变体名，rename_all_fields 作用于字段名（serde >= 1.0.186）。

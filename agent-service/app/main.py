@@ -30,7 +30,7 @@ from pydantic import ValidationError
 from app import tasks
 from app.config import settings
 from app.errors import register_error_handlers
-from app.llm import reset_chat_model_cache
+from app.llm import probe_llm, reset_chat_model_cache
 from app.logging_config import setup_logging, uvicorn_log_config
 from app.schemas import (
     AgentSettingsModel,
@@ -282,6 +282,20 @@ async def update_config(payload: AgentSettingsModel) -> AgentSettingsModel:
         settings.allow_mock_llm,
     )
     return AgentSettingsModel(**settings.public_dict())
+
+
+@app.post("/api/llm-check")
+async def llm_check() -> dict[str, object]:
+    """生成前的 LLM 连通性探测（Rust 在本机生成/重生成前调用）。
+
+    放在提交生成之前，是为了让「Key 无效 / 网络不通 / 模型名写错」这类问题
+    立刻以一句可读的话告知用户，而不是等生成流跑到第一次模型调用才失败
+    ——那时用户已经等了十几秒，且 generating 行已经建好。
+    永远返回 HTTP 200，成败由 ok 字段表达。
+    """
+    ok, message = await probe_llm()
+    logger.info("LLM 连通性探测 ok=%s provider=%s", ok, settings.llm_provider)
+    return {"ok": ok, "message": message, "provider": settings.llm_provider}
 
 
 @app.get("/health", response_model=HealthResponse)

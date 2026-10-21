@@ -10,7 +10,9 @@ use std::time::Duration;
 use serde::Serialize;
 
 use crate::error::AgentError;
-use crate::protocol::{GenerationSubmit, GenerationSubmitResponse, GenerationTaskSnapshot};
+use crate::protocol::{
+    GenerationSubmit, GenerationSubmitResponse, GenerationTaskSnapshot, LlmCheckResponse,
+};
 use crate::sidecar::agent_service_url;
 
 /// 开发模式的默认服务地址（scripts/dev.mjs 启动的 uvicorn）
@@ -27,6 +29,9 @@ pub const STREAM_MAX_TIMEOUT: Duration = Duration::from_secs(3600);
 pub const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(420);
 /// 健康检查与配置推送使用短超时，快速探测服务是否在线
 pub const PING_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// 生成前 LLM 连通性探测的超时：只发一个极短请求，超过该时长即判定链路异常
+pub const LLM_CHECK_TIMEOUT: Duration = Duration::from_secs(20);
 
 /// reqwest 客户端无全局超时，由每个请求单独设置（见上方两个常量）
 pub fn http_client() -> reqwest::Client {
@@ -148,6 +153,29 @@ pub async fn submit_plan_generation(
     }
     let submitted: GenerationSubmitResponse = response.json().await?;
     Ok(submitted.task_id)
+}
+
+/// 生成前探测 LLM 是否可用（Key 有效 / 网络可达 / 模型名存在）。
+///
+/// 目的：把「Key 填错、模型名写错、网络不通」这类问题在**提交生成之前**
+/// 就变成一句可读的提示，而不是让用户在生成流跑到第一次模型调用时才失败。
+/// 结论由调用方归一为前置错误（AgentError::Llm），不进入生成逻辑。
+pub async fn check_llm() -> Result<LlmCheckResponse, AgentError> {
+    let response = send(
+        reqwest::Method::POST,
+        "/api/llm-check",
+        LLM_CHECK_TIMEOUT,
+        None::<&()>,
+        None,
+    )
+    .await?;
+    if !response.status().is_success() {
+        return Err(AgentError::Service(format!(
+            "LLM 连通性探测失败：HTTP {}",
+            response.status()
+        )));
+    }
+    Ok(response.json::<LlmCheckResponse>().await?)
 }
 
 /// 读取任务快照：Some=存在（诊断与游标依据）；None=任务不存在/已驱逐（404）；

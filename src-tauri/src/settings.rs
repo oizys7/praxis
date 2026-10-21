@@ -74,6 +74,38 @@ fn paths(app: &tauri::AppHandle) -> Result<(PathBuf, PathBuf), String> {
     Ok((dir.join("settings.json"), dir))
 }
 
+impl AgentSettings {
+    /// 当前提供商对应的 API Key（未知提供商按空串处理，等价于未配置）
+    pub fn current_api_key(&self) -> &str {
+        match self.llm_provider.as_str() {
+            "openai" => &self.openai_api_key,
+            "anthropic" => &self.anthropic_api_key,
+            "deepseek" => &self.deepseek_api_key,
+            "glm" => &self.glm_api_key,
+            "opencode" => &self.opencode_api_key,
+            _ => "",
+        }
+    }
+
+    /// 当前提供商的中文名（仅用于提示文案）
+    pub fn provider_label(&self) -> &'static str {
+        match self.llm_provider.as_str() {
+            "openai" => "OpenAI",
+            "anthropic" => "Anthropic",
+            "deepseek" => "DeepSeek",
+            "glm" => "智谱 GLM",
+            "opencode" => "OpenCode",
+            _ => "当前提供商",
+        }
+    }
+
+    /// 是否具备生成条件：离线演示模式恒可用；否则要求**当前**提供商
+    /// 的 Key 非空——别家的 Key 不能顶替（五个提供商各存各的 Key）。
+    pub fn llm_ready(&self) -> bool {
+        self.allow_mock_llm || !self.current_api_key().trim().is_empty()
+    }
+}
+
 /// 读取设置；文件不存在或损坏时返回默认值（不报错，保证应用可用）。
 /// 敏感字段解密为内存明文（IPC / sidecar 使用）；发现历史明文则立即回写密文。
 pub fn load_settings(app: &tauri::AppHandle) -> AgentSettings {
@@ -148,4 +180,37 @@ fn unseal_field(field: &mut String, key_dir: &Path, had_plain: &mut bool) {
         *had_plain = true;
     }
     *field = secret::open(key_dir, field);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn llm_ready_requires_current_provider_key() {
+        let mut settings = AgentSettings::with_defaults();
+        assert_eq!(settings.llm_provider, "openai");
+        assert!(!settings.llm_ready(), "默认无 Key 且非 mock：不可生成");
+
+        // 别家的 Key 不能顶替当前提供商
+        settings.glm_api_key = "sk-glm".to_string();
+        assert!(
+            !settings.llm_ready(),
+            "provider=openai 时 glm 的 Key 不算配置"
+        );
+
+        settings.llm_provider = "glm".to_string();
+        assert!(settings.llm_ready(), "切到 glm 后其 Key 生效");
+    }
+
+    #[test]
+    fn llm_ready_accepts_mock_and_ignores_blank_key() {
+        let mut settings = AgentSettings::with_defaults();
+        settings.allow_mock_llm = true;
+        assert!(settings.llm_ready(), "离线演示模式无需 Key");
+
+        settings.allow_mock_llm = false;
+        settings.openai_api_key = "   ".to_string();
+        assert!(!settings.llm_ready(), "纯空白 Key 视为未配置");
+    }
 }

@@ -30,8 +30,8 @@ use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 use crate::agent_client::{
-    connect_generation_events, get_task_snapshot, new_request_id, post_stream, reconnect_cursor,
-    send, submit_plan_generation, WsStream, PING_TIMEOUT, STREAM_IDLE_TIMEOUT,
+    check_llm, connect_generation_events, get_task_snapshot, new_request_id, post_stream,
+    reconnect_cursor, send, submit_plan_generation, WsStream, PING_TIMEOUT, STREAM_IDLE_TIMEOUT,
     STREAM_MAX_TIMEOUT,
 };
 use crate::db;
@@ -224,6 +224,39 @@ fn emit_progress(app: &tauri::AppHandle, plan_id: Uuid, event: PlanProgressEvent
 /// 全部耗尽按失败收尾（生成所有权在 Python，重试只是补齐观测，不重不丢）。
 const WS_RECONNECT_BACKOFF_SECS: &[u64] = &[1, 2, 5, 10, 10, 10, 10];
 
+/// 生成前置校验：当前提供商未填 API Key 且未开离线演示模式时立即失败。
+///
+/// 为什么在 Rust 侧拦：Python 侧的 has_llm_config 只有在第一次 LLM 调用时
+/// 才会触发，用户点击「生成计划」后要等十几秒才看到报错，且期间已经建了
+/// generating 行、发出了请求。这里在读设置阶段就拦下，零等待、零副作用。
+fn ensure_llm_ready(app: &tauri::AppHandle) -> Result<(), AgentError> {
+    let settings = load_settings(app);
+    if settings.llm_ready() {
+        return Ok(());
+    }
+    Err(AgentError::Config(format!(
+        "尚未配置「{}」的 API Key，无法生成学习计划",
+        settings.provider_label()
+    )))
+}
+
+/// 生成前探测 LLM 连通性：Key 填了但无效 / 网络不通 / 模型名写错时，
+/// 同样在进入生成逻辑之前就失败并给出可读原因（不建 generating 行、
+/// 不提交任务、不启动 WS 观测）。
+async fn ensure_llm_connectivity() -> Result<(), AgentError> {
+    let probe = check_llm().await?;
+    if probe.ok {
+        info!(provider = %probe.provider, "LLM 连通性探测通过");
+        return Ok(());
+    }
+    warn!(
+        provider = %probe.provider,
+        message = %probe.message,
+        "LLM 连通性探测失败，已阻止生成"
+    );
+    Err(AgentError::Llm(probe.message))
+}
+
 /// 生成学习计划（任务化，任务 22）：预置 generating 行 → POST /api/generations
 /// 提交后台任务（毫秒级拿 taskId）→ spawn 后台消费任务（WS 事件通道观测 +
 /// 逐阶段入库 + 全局事件推送）→ 命令立即返回 {planId}（前端不再等终态），
@@ -241,8 +274,11 @@ pub async fn generate_plan(
     app: tauri::AppHandle,
     request: PlanRequest,
 ) -> Result<PlanSubmitResult, AgentError> {
+    ensure_llm_ready(&app)?;
     ensure_agent_running(&app).await?;
     sync_saved_settings_once(&app).await;
+    // 连通性探测放在配置热推之后：探测用的正是本次要用的那份配置
+    ensure_llm_connectivity().await?;
 
     let started = std::time::Instant::now();
     let req_id = new_request_id();
@@ -1096,8 +1132,10 @@ async fn run_regen(
     phase_index: u32,
     chapter_index: Option<u32>,
 ) -> Result<PlanResponse, AgentError> {
+    ensure_llm_ready(&app)?;
     ensure_agent_running(&app).await?;
     sync_saved_settings_once(&app).await;
+    ensure_llm_connectivity().await?;
 
     let started = std::time::Instant::now();
     let req_id = new_request_id();

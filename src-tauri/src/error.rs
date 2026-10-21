@@ -22,6 +22,14 @@ pub enum AgentError {
     /// 云端数据库错误（学习计划持久化：连接/建表/查询失败）
     #[error("{0}")]
     Db(String),
+    /// 前置配置缺失（当前提供商未填 API Key）：在发起任何请求之前拦下，
+    /// 避免用户等十几秒才在 Python 侧第一次 LLM 调用时看到失败
+    #[error("{0}")]
+    Config(String),
+    /// LLM 连通性探测失败（Key 无效 / 网络不通 / 模型名不存在）：
+    /// 同样在进入生成逻辑之前拦下，用户立刻收到可读原因
+    #[error("{0}")]
+    Llm(String),
 }
 
 impl Serialize for AgentError {
@@ -59,6 +67,16 @@ impl Serialize for AgentError {
                 "db",
                 msg.clone(),
                 "无法访问云端数据库：请检查网络、服务器状态与设置页「云端数据库」配置",
+            ),
+            AgentError::Llm(msg) => (
+                "llm",
+                msg.clone(),
+                "请检查设置页的提供商、模型名与网络连接；也可勾选「离线演示模式」临时跳过",
+            ),
+            AgentError::Config(msg) => (
+                "config",
+                msg.clone(),
+                "请在应用「设置」页填写当前提供商的 API Key（保存后立即生效），                 或勾选「离线演示模式」先体验全链路",
             ),
         };
 

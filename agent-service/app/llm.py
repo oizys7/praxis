@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
 from typing import TypeVar, cast
@@ -199,6 +200,47 @@ def _validation_summary(exc: ValidationError, limit: int = 5) -> str:
     if len(errors) > limit:
         parts.append(f"- …共 {len(errors)} 条校验错误")
     return "\n".join(parts)
+
+
+# 连通性探测的超时：只发一个极短请求，超过这个时间说明链路已经不正常
+_PROBE_TIMEOUT_SECONDS = 15.0
+
+
+def _exc_brief(exc: BaseException, limit: int = 200) -> str:
+    """异常压成单行摘要（探测失败原因要直接展示给用户，不能带换行噪声）。"""
+    text = " ".join(str(exc).split())
+    return text[:limit] + ("…" if len(text) > limit else "")
+
+
+async def probe_llm() -> tuple[bool, str]:
+    """最小代价探测当前提供商是否可用：Key 有效、网络可达、模型名存在。
+
+    返回 (ok, message)，**不抛异常**——调用方（/api/llm-check）要把原因
+    还给前端，用于在提交生成前就明确告知用户，而不是让生成跑到一半才失败。
+    离线演示模式不调用真实模型，直接判可用。
+    """
+    if settings.allow_mock_llm:
+        return True, "离线演示模式：不调用真实模型"
+    if not has_llm_config():
+        return False, "尚未配置当前提供商的 API Key"
+
+    model = get_chat_model()
+    try:
+        # bind(max_tokens=8) 让探测本身尽量便宜：只要模型肯回一句话就够
+        await asyncio.wait_for(
+            model.bind(max_tokens=8).ainvoke("ping"), timeout=_PROBE_TIMEOUT_SECONDS
+        )
+    except TimeoutError:
+        return False, (
+            f"模型连接超时（{_PROBE_TIMEOUT_SECONDS:.0f} 秒无响应），"
+            "请检查网络或更换提供商"
+        )
+    except Exception as exc:  # noqa: BLE001 —— 探测要把任何失败都翻译成可读原因
+        logger.warning(
+            "LLM 连通性探测失败（provider=%s）：%s", settings.llm_provider, exc
+        )
+        return False, f"模型连接失败：{_exc_brief(exc)}"
+    return True, f"模型连接正常（provider={settings.llm_provider}）"
 
 
 def _parser_error_summary(exc: OutputParserException, limit: int = 300) -> str:
