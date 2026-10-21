@@ -686,3 +686,47 @@ async def test_review_llm_failure_passes_with_note(monkeypatch):
     assert result["pending_phase_indexes"] == [2]
     assert result["suggestions"] == []
     assert "评审未执行" in result["review_notes"][0]
+
+
+@pytest.mark.asyncio
+async def test_expand_chapter_unexpected_error_also_isolated(monkeypatch):
+    """非业务异常（SDK 漏网 / 属性错误等）同样只让本章失败，不炸断整条流。"""
+    monkeypatch.setattr(settings, "allow_mock_llm", False)
+    monkeypatch.setattr(nodes, "has_llm_config", lambda: True)
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("with_structured_output 返回了意外形状")
+
+    monkeypatch.setattr(nodes, "_expand_chapter_draft", _boom)
+    outline = build_mock_outline(REQUEST)
+
+    result = await nodes.expand_chapter_node(
+        {
+            "request": REQUEST,
+            "phase_outline": outline["phases"][0],
+            "phase_index": 0,
+            "chapter_index": 0,
+            "plan_context": "",
+        }
+    )
+
+    assert result == {}, "任何异常都不写键、不外抛，其余章节照常生成"
+
+
+@pytest.mark.asyncio
+async def test_review_unexpected_error_also_passes(monkeypatch):
+    """评审遇到非业务异常同样放行（不能因评审意外把整份计划废掉）。"""
+    monkeypatch.setattr(settings, "allow_mock_llm", False)
+    monkeypatch.setattr(nodes, "has_llm_config", lambda: True)
+
+    async def _boom(*_args, **_kwargs):
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(nodes, "invoke_structured", _boom)
+
+    result = await nodes.review_node(
+        {"plan": {"title": "t"}, "validation_issues": [], "pending_phase_indexes": []}
+    )
+
+    assert result["passed"] is True
+    assert "评审未执行" in result["review_notes"][0]

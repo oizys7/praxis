@@ -539,7 +539,7 @@ async def expand_chapter_node(payload: dict[str, Any]) -> dict[str, Any]:
             # 首展不是回炉：注入占位意见，chapter.yaml 据此跳过意见落实
             review_notes=_FIRST_EXPAND_REVIEW_NOTES,
         )
-    except AgentServiceError as exc:
+    except Exception as exc:  # 单章任何失败都必须在本地收口，不波及别的章
         # 未配置 Key 属全局配置问题（不是偶发失败）：直接上抛，
         # 否则全部分支都会静默降级，用户最终拿到一份空计划。
         if not has_llm_config():
@@ -584,8 +584,8 @@ async def expand_phase_wrap_node(payload: dict[str, Any]) -> dict[str, Any]:
             # 首展不是回炉：注入占位意见，phase_extras.yaml 据此跳过意见落实
             review_notes=_FIRST_EXPAND_REVIEW_NOTES,
         )
-    except AgentServiceError as exc:
-        # 同 expand_chapter：配置缺失属全局问题，照常上抛
+    except Exception as exc:  # 同 expand_chapter：局部失败不外溢
+        # 配置缺失属全局问题，照常上抛
         if not has_llm_config():
             raise
         # 不写自己的阶段键，assemble 会当场补产一次
@@ -852,8 +852,8 @@ async def review_node(state: AgentState) -> dict[str, Any]:
                 ),
             },
         )
-    except AgentServiceError as exc:
-        # 评审是辅助能力：此时计划已完整拼装、各章已逐章落库，程序化校验
+    except Exception as exc:  # noqa: BLE001 —— 评审失败刻意吞掉并记入 review_notes
+        # 此时计划已完整拼装、各章已逐章落库，程序化校验
         # （validators）也已执行。评审调用失败不应把整条计划炸掉——放行并
         # 在备注里说明，回炉入口仍保留 validators 给出的待修阶段。
         logger.warning("评审调用失败，按放行处理：%s", exc)
