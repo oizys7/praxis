@@ -730,6 +730,7 @@ impl StreamEventSink for GenerationConsumer {
                     title,
                     overview,
                     phases,
+                    outline: outline_json,
                 } => {
                     self.phase_count = count;
                     if let Some(s) = &self.storage {
@@ -741,6 +742,7 @@ impl StreamEventSink for GenerationConsumer {
                             &title,
                             overview.as_deref(),
                             hours,
+                            outline_json.as_ref(),
                         )
                         .await
                         {
@@ -1690,6 +1692,7 @@ mod tests {
                 week_range: "第 1-2 周".into(),
                 chapter_titles: vec!["甲章".into(), "乙章".into()],
                 project_brief: None,
+                ..Default::default()
             }],
         };
 
@@ -1737,12 +1740,14 @@ mod tests {
                     week_range: "".into(),
                     chapter_titles: vec!["甲章".into()],
                     project_brief: None,
+                    ..Default::default()
                 },
                 OutlinePhasePayload {
                     name: "阶段二".into(),
                     week_range: "".into(),
                     chapter_titles: vec![],
                     project_brief: None,
+                    ..Default::default()
                 },
             ],
             ..RegenOutline::default()

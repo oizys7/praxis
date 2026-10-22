@@ -321,6 +321,13 @@ class PhaseOutline(CamelModel):
         default_factory=list, description="与 chapterTitles 等长的章型列表"
     )
     project_brief: str = Field(default="", description="阶段项目一句话简介")
+    # 版本事实（计划级，outline 阶段探测后下发到每个阶段）。重生成必须能读回它，
+    # 否则正文里只能写「版本待确认」。用裸 dict 承载：它只在图内与 plans.outline_json
+    # 之间流转，不参与响应协议。
+    tech_facts: list[dict[str, Any]] = Field(
+        default_factory=list,
+        description="技术栈当前版本事实（name / ecosystem / latestVersion）",
+    )
 
 
 class PhaseExtrasOutput(BaseModel):

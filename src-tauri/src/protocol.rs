@@ -22,6 +22,22 @@ pub struct OutlinePhasePayload {
     pub chapter_titles: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub project_brief: Option<String>,
+    // 以下四项是「重生成上下文」而非骨架 UI 数据：骨架树只读 name/weekRange/
+    // chapterTitles，但这些字段必须随 outline 事件下发，否则 Rust 无从持久化，
+    // 重生成时章型会兜底成 concept、知识点为空、版本事实丢失（检索词也退化成
+    // 只剩章标题）。全部 serde default，旧 Python 不发时按空处理。
+    /// 与 chapter_titles 等长的章型列表
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chapter_kinds: Vec<String>,
+    /// 与 chapter_titles 等长的知识点列表
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chapter_knowledge_points: Vec<Vec<String>>,
+    /// 阶段目标
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub objectives: Vec<String>,
+    /// 版本事实（name / ecosystem / latestVersion），原样透传
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tech_facts: Vec<serde_json::Value>,
 }
 
 /// regenerate 端点的出站请求（Rust -> Python，POST /api/regenerate/stream；
@@ -43,7 +59,7 @@ pub struct RegenRequest {
 /// 重建的计划大纲骨架（wire 对齐 agent-service/app/schemas.py::PlanOutline：
 /// PhaseOutline 的 objectives/projectBrief 有缺省值，未携带时 Python 侧自动补齐）。
 /// resources regenerate 链路不使用，恒为空列表。
-#[derive(Debug, Clone, Serialize, Default, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RegenOutline {
     #[serde(default)]
@@ -445,6 +461,10 @@ pub enum StreamEvent {
         overview: Option<String>,
         #[serde(default)]
         phases: Option<Vec<OutlinePhasePayload>>,
+        /// 完整大纲（PlanOutline 原样）：落 plans.outline_json，供重生成还原
+        /// 提示词上下文。旧 Python 不发此字段 → None，regen 回退骨架重建。
+        #[serde(default)]
+        outline: Option<serde_json::Value>,
     },
     /// 单个阶段扩展完成
     Phase { index: u32, phase: StudyPhase },
@@ -687,6 +707,7 @@ mod tests {
             week_range: "第 1-4 周".into(),
             chapter_titles: vec!["甲".into()],
             project_brief: None,
+            ..Default::default()
         })
         .unwrap();
         assert_eq!(value["chapterTitles"], serde_json::json!(["甲"]));
@@ -701,8 +722,13 @@ mod tests {
             .expect("outline 事件行应解析成功");
         assert!(matches!(
             outline,
-            StreamEvent::Outline { phase_count: 4, title, ref phases, ref overview }
-                if title == "Rust 入门" && phases.is_none() && overview.is_none()
+            StreamEvent::Outline {
+                phase_count: 4,
+                title,
+                ref phases,
+                ref overview,
+                ..
+            } if title == "Rust 入门" && phases.is_none() && overview.is_none()
         ));
 
         // 新 outline 载荷：phases/overview 携带（任务 14 Python 侧产出后接通）
@@ -800,6 +826,7 @@ mod tests {
                     week_range: "第 1-2 周".into(),
                     chapter_titles: vec!["甲章".into(), "乙章".into()],
                     project_brief: Some("做章节笔记站".into()),
+                    ..Default::default()
                 }],
             },
             phase_index: 0,
@@ -882,6 +909,7 @@ mod tests {
                 week_range: "第 1-2 周".into(),
                 chapter_titles: vec!["甲章".into()],
                 project_brief: None,
+                ..Default::default()
             }]),
         };
         let value = serde_json::to_value(&outline).unwrap();

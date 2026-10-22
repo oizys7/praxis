@@ -91,6 +91,12 @@ pub(crate) const DDL_PLANS_STUDY_DAYS_COL: &str =
 pub(crate) const DDL_PLANS_LEARNING_STARTED_COL: &str =
     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS learning_started_at DATE";
 
+/// plans 完整大纲列（JSONB）：outline 事件携带的 PlanOutline 原样落库，
+/// 供重生成还原提示词上下文（章型 / 知识点 / 阶段目标 / 版本事实 / 项目简介）。
+/// 旧计划该列为 NULL，重生成回退到按 phases/chapters 行重建的骨架形态。
+pub(crate) const DDL_PLANS_OUTLINE_JSON_COL: &str =
+    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS outline_json JSONB";
+
 /// plans 学习状态三分类列：not_started | active | completed
 pub(crate) const DDL_PLANS_LEARNING_STATUS_COL: &str =
     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS learning_status TEXT NOT NULL DEFAULT 'not_started'";
@@ -329,6 +335,8 @@ pub(crate) const DDL_STATEMENTS: &[&str] = &[
     DDL_PLANS_WEEKLY_HOURS_COL,
     DDL_PLANS_INTERESTS_COL,
     DDL_PLANS_BACKGROUND_COL,
+    // 4.4 重生成上下文：完整大纲列（只依赖 plans 表）
+    DDL_PLANS_OUTLINE_JSON_COL,
     // 4.5 学习日程演进：每周学习日列 + 学习状态/开始日期列 + 学习日程表
     //    （均只依赖 plans 表；旧打卡表 study_day_marks 在第 5 段退役）
     DDL_PLANS_STUDY_DAYS_COL,

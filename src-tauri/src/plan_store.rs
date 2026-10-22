@@ -79,15 +79,20 @@ pub async fn update_outline_meta(
     title: &str,
     overview: Option<&str>,
     estimated_total_hours: i64,
+    outline_json: Option<&serde_json::Value>,
 ) -> Result<(), AgentError> {
+    // outline_json 只在有新载荷时覆写（COALESCE 保留旧值）：二次元信息更新
+    // 不应把已有的完整大纲抹成 NULL。
     sqlx::query(
-        "UPDATE plans SET title = $2, overview = $3, estimated_total_hours = $4, updated_at = now()
+        "UPDATE plans SET title = $2, overview = $3, estimated_total_hours = $4,
+                outline_json = COALESCE($5, outline_json), updated_at = now()
          WHERE id = $1",
     )
     .bind(plan_id)
     .bind(title)
     .bind(overview.unwrap_or(""))
     .bind(i32::try_from(estimated_total_hours).unwrap_or(0))
+    .bind(outline_json)
     .execute(pool)
     .await
     .map_err(|e| fail("更新计划大纲元信息", e))?;
@@ -794,15 +799,33 @@ pub async fn load_plan_outline(
     pool: &PgPool,
     plan_id: Uuid,
 ) -> Result<Option<PlanOutlineRow>, AgentError> {
-    let row = sqlx::query("SELECT title, overview, estimated_total_hours FROM plans WHERE id = $1")
-        .bind(plan_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| fail("查询计划大纲元信息", e))?;
+    let row = sqlx::query(
+        "SELECT title, overview, estimated_total_hours, outline_json FROM plans WHERE id = $1",
+    )
+    .bind(plan_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| fail("查询计划大纲元信息", e))?;
     let Some(row) = row else {
         return Ok(None);
     };
     let hours: i32 = row.try_get("estimated_total_hours").map_err(db_err)?;
+
+    // 优先：生成时落下的完整大纲。重生成要靠它还原提示词上下文——章型、
+    // 知识点、阶段目标、版本事实。缺了这些，`_expand_chapter_draft` 会把章型
+    // 兜底成 concept、只用章标题当检索词、并告诉模型「未探测到版本信息」。
+    // 旧计划该列为 NULL，回退到下面按 phases/chapters 行重建的骨架形态。
+    let stored: Option<serde_json::Value> = row.try_get("outline_json").map_err(db_err)?;
+    if let Some(value) = stored {
+        let parsed: crate::protocol::RegenOutline = serde_json::from_value(value)
+            .map_err(|e| AgentError::Db(format!("解析已存计划大纲（outline_json）失败：{e}")))?;
+        return Ok(Some(PlanOutlineRow {
+            title: parsed.title,
+            overview: parsed.overview,
+            estimated_total_hours: parsed.estimated_total_hours,
+            phases: parsed.phases,
+        }));
+    }
 
     let phase_rows =
         sqlx::query("SELECT id, name, week_range FROM phases WHERE plan_id = $1 ORDER BY idx ASC")
@@ -828,6 +851,9 @@ pub async fn load_plan_outline(
             week_range: prow.try_get("week_range").map_err(db_err)?,
             chapter_titles: titles,
             project_brief: None,
+            // 骨架重建路径拿不到重生成上下文（章型/知识点/目标/版本事实），
+            // 只有完整大纲缺失（旧计划 outline_json 为 NULL）时才会走到这里。
+            ..Default::default()
         });
     }
 

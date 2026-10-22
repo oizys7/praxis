@@ -176,8 +176,22 @@ async def test_plan_event_sequence(monkeypatch):
     assert done["response"]["status"] == "plan", "终态必须携带 plan 包络"
     assert done["response"]["plan"], "plan 终态必须携带计划体"
 
-    # 键集断言：chapter 与 WS 重生成单章链同构；phase 与重组语义同构
-    assert set(outline) == {"type", "phaseCount", "title", "overview", "phases"}
+    # 键集断言：chapter 与 WS 重生成单章链同构；phase 与重组语义同构。
+    # outline 额外携带完整大纲（outline 键）：Rust 存 plans.outline_json，
+    # 重生成据此还原章型 / 知识点 / 版本事实，缺了它 regen 上下文会退化。
+    assert set(outline) == {
+        "type",
+        "phaseCount",
+        "title",
+        "overview",
+        "phases",
+        "outline",
+    }
+    full_phase = outline["outline"]["phases"][0]
+    assert full_phase["chapterKinds"], "完整大纲必须携带章型"
+    assert full_phase["chapterKnowledgePoints"], "完整大纲必须携带知识点"
+    # techFacts 由真实路径的版本探测注入（mock 不联网、不探测，故此处不产生）；
+    # 读取方一律 `.get("techFacts") or []`，两种形态都能工作。
     for e in chapter_events:
         assert set(e) == {"type", "index", "phaseIndex", "chapter"}
         chapter = e["chapter"]

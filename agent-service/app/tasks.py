@@ -365,6 +365,12 @@ async def _plan_event_dicts(request: PlanRequest) -> AsyncIterator[dict[str, Any
                                 }
                                 for phase in outline.get("phases") or []
                             ],
+                            # 完整大纲（含章型 / 知识点 / 阶段目标 / 版本事实 /
+                            # 项目简介）：骨架字段之外的重生成上下文由 Rust 原样
+                            # 存进 plans.outline_json，regen 时读回。缺了它，重生成
+                            # 只能拿章标题当唯一检索词、章型兜底成 concept、版本事实
+                            # 丢失——正文质量会明显低于首次生成。
+                            "outline": outline,
                         }
                     elif node in ("expand_chapter", "expand_revision") and (
                         "chapter_drafts" in update

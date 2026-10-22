@@ -151,6 +151,7 @@ fn sample_outline(phase_names: &[&str], chapter_counts: &[usize]) -> Vec<Outline
             week_range: "第 1-2 周".into(),
             chapter_titles: (0..*n).map(|i| format!("{name}·章{i}")).collect(),
             project_brief: None,
+            ..Default::default()
         })
         .collect()
 }
@@ -350,9 +351,16 @@ async fn test_get_plan_reassembles_sorted(pool: PgPool) {
     plan_store::upsert_phase(&pool, plan_id, 1, &sample_phase("阶段乙", &["乙章"]))
         .await
         .unwrap();
-    plan_store::update_outline_meta(&pool, plan_id, "重组后的标题", Some("整体概述文本"), 66)
-        .await
-        .unwrap();
+    plan_store::update_outline_meta(
+        &pool,
+        plan_id,
+        "重组后的标题",
+        Some("整体概述文本"),
+        66,
+        None,
+    )
+    .await
+    .unwrap();
 
     let record = db::get_plan_by_pool(&pool, &plan_id.to_string())
         .await
@@ -1413,6 +1421,85 @@ async fn sql_chapter_status_matches_pure_function(pool: PgPool) {
             "content_md={md:?} 时 SQL 与纯函数不一致",
         );
     }
+}
+
+/// 重生成上下文（2026-10-22）：outline 事件携带的完整大纲要能原样存回、读回。
+/// 这是 regen 与首次生成上下文一致的前提——丢了它，重生成会把章型兜底成
+/// concept、只拿章标题当检索词、并告诉模型「未探测到版本信息」。
+#[sqlx::test]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
+async fn test_outline_json_roundtrip_and_preferred_on_load(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+    plan_store::seed_outline(&pool, plan_id, &sample_outline(&["阶段甲"], &[2]), &[])
+        .await
+        .unwrap();
+
+    // 未写 outline_json 时：回退按行重建（骨架形态，无知识点/章型）
+    let fallback = plan_store::load_plan_outline(&pool, plan_id)
+        .await
+        .unwrap()
+        .expect("generating 行应存在");
+    assert!(
+        fallback.phases[0].chapter_knowledge_points.is_empty(),
+        "骨架重建没有知识点"
+    );
+
+    // 写入完整大纲后：优先读它，章型/知识点/阶段目标/版本事实齐备
+    let outline_json = serde_json::json!({
+        "title": "重组后的标题",
+        "overview": "整体概述文本",
+        "estimatedTotalHours": 66,
+        "phases": [{
+            "name": "阶段甲",
+            "weekRange": "第 1-2 周",
+            "chapterTitles": ["阶段甲·章0", "阶段甲·章1"],
+            "chapterKinds": ["concept", "practice"],
+            "chapterKnowledgePoints": [["知识点A"], ["知识点B", "知识点C"]],
+            "objectives": ["目标一"],
+            "projectBrief": "做一个项目",
+            "techFacts": [{"name": "tokio", "ecosystem": "crate", "latestVersion": "1.0.0"}]
+        }]
+    });
+    plan_store::update_outline_meta(
+        &pool,
+        plan_id,
+        "重组后的标题",
+        Some("整体概述文本"),
+        66,
+        Some(&outline_json),
+    )
+    .await
+    .unwrap();
+
+    let loaded = plan_store::load_plan_outline(&pool, plan_id)
+        .await
+        .unwrap()
+        .expect("应返回大纲");
+    assert_eq!(loaded.estimated_total_hours, 66);
+    let phase = &loaded.phases[0];
+    assert_eq!(phase.chapter_kinds, vec!["concept", "practice"]);
+    assert_eq!(
+        phase.chapter_knowledge_points[1],
+        vec!["知识点B", "知识点C"]
+    );
+    assert_eq!(phase.objectives, vec!["目标一"]);
+    assert_eq!(phase.tech_facts.len(), 1);
+    assert_eq!(phase.tech_facts[0]["latestVersion"], "1.0.0");
+
+    // 防抹除：再次不带 outline_json 的元信息更新不应清掉已存大纲
+    plan_store::update_outline_meta(&pool, plan_id, "标题二", None, 70, None)
+        .await
+        .unwrap();
+    let again = plan_store::load_plan_outline(&pool, plan_id)
+        .await
+        .unwrap()
+        .expect("应返回大纲");
+    assert_eq!(
+        again.phases[0].chapter_kinds.len(),
+        2,
+        "旧大纲不应被抹成 NULL"
+    );
 }
 
 /// 结算口径回归（2026-10-22）：计划终态按「全章 complete」判定，与 done 事件解耦。
