@@ -51,8 +51,6 @@ const { loading, error, result, generatePlan } = useAgent();
 const planView = ref<"list" | "create">("list");
 /** 历史查看模式：主轴展示已保存计划，隐藏参数卡 */
 const historyMode = ref(false);
-/** 单轴流程参数卡显隐：生成开始后收起为摘要条，点「修改」再展开 */
-const showForm = ref(true);
 /** 历史详情滚动宿主（App 的 <main>，回顶与目录跳转共用） */
 const planScrollHost = inject<ShallowRef<HTMLElement | null>>(
   "planScrollHost",
@@ -252,7 +250,6 @@ watch(terminalPlanIds, async (ids) => {
 /** 点「新建计划」：切到生成视图（取消跟随旧生成，后台任务继续跑） */
 function onCreate() {
   historyMode.value = false;
-  showForm.value = true;
   historyPlanId.value = null;
   lastRequest.value = null;
   result.value = null;
@@ -276,8 +273,7 @@ async function onSubmit(request: PlanRequest) {
   await ensureProgressListener();
   const submitted = await generatePlan(request);
   if (!submitted) return; // 提交失败：error 已置值，错误卡片展示
-  // 参数卡收起为摘要条（单轴交互：焦点移交生成过程区）
-  showForm.value = false;
+  // 参数卡收起为只读摘要条（单轴交互：焦点移交生成过程区）
   followPlan(submitted.planId);
 }
 
@@ -437,14 +433,14 @@ function onPlanRefreshed(plan: StudyPlan) {
           </p>
           <div class="mt-4 h-px bg-primary/15" role="presentation" />
         </div>
-        <!-- 参数卡：历史详情隐藏；生成中收起，点「修改」临时展开 -->
-        <div v-if="!historyMode && (!generatingNow || showForm)">
+        <!-- 参数卡：历史详情隐藏；提交后收起为只读摘要条 -->
+        <div v-if="!historyMode && !generatingNow">
           <PlanForm :loading="loading" @submit="onSubmit" />
         </div>
-        <!-- 生成中的参数摘要条：参数一目了然，避免表单久占版心 -->
+        <!-- 生成中的参数摘要条：只读展示（参数在提交后即封板，不提供修改入口） -->
         <div
-          v-else-if="!historyMode && generatingNow && !showForm"
-          class="flex items-center justify-between gap-4 rounded-lg border bg-secondary/40 px-4 py-3"
+          v-else-if="!historyMode && generatingNow"
+          class="rounded-lg border bg-secondary/40 px-4 py-3"
         >
           <p class="min-w-0 truncate text-sm">
             <span class="font-semibold">参数　</span>
@@ -453,9 +449,6 @@ function onPlanRefreshed(plan: StudyPlan) {
               {{ lastRequest?.weeks }}周</span
             >
           </p>
-          <Button variant="outline" size="sm" @click="showForm = true"
-            >修改</Button
-          >
         </div>
         <section class="min-w-0 space-y-4">
           <!-- 后台生成进行中（提交即返后的过程页：outline 铺骨架，phaseDone 推进；
