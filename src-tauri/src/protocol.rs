@@ -368,39 +368,6 @@ pub struct YearHeatmapDay {
 // 章节化生成链路（流式进度 / LLM 评审结论）
 // ---------------------------------------------------------------------------
 
-/// review 节点的 LLM 评审结论。
-/// 镜像 Python 端 ReviewOutput（BaseModel，非 CamelModel）：JSON 为 snake_case，
-/// 仅图内流转 / 入库，不入响应包络，故不加 rename_all。
-/// 尚无消费方：任务 9（入库）将使用，防御性保留。
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ReviewOutputDef {
-    #[serde(default)]
-    pub passed: bool,
-    #[serde(default)]
-    pub issues: Vec<String>,
-    #[serde(default)]
-    pub suggestions: Vec<String>,
-    /// 分维度打分（1-5）；低分维度由 Python 侧汇总进 suggestions
-    #[serde(default)]
-    pub dimensions: Vec<ReviewDimensionDef>,
-    /// 评审未通过的阶段索引（0-based）
-    #[serde(default)]
-    pub failed_phase_indexes: Vec<i64>,
-}
-
-/// 评审维度打分：镜像 Python 端 ReviewDimension。
-#[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct ReviewDimensionDef {
-    #[serde(default)]
-    pub name: String,
-    #[serde(default)]
-    pub score: i64,
-    #[serde(default)]
-    pub comment: String,
-}
-
 /// POST /api/llm-check 的响应：生成前的 LLM 连通性探测结果。
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct LlmCheckResponse {

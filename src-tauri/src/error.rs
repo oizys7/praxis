@@ -12,10 +12,6 @@ pub enum AgentError {
     /// Python 服务返回了业务错误
     #[error("{0}")]
     Service(String),
-    /// 其他内部错误（当前代码路径暂未构造，保留以便扩展）
-    #[error("{0}")]
-    #[allow(dead_code)]
-    Other(String),
     /// sidecar 生命周期错误（release 模式内置 Agent 子进程的启动/就绪失败）
     #[error("{0}")]
     Sidecar(String),
@@ -57,7 +53,6 @@ impl Serialize for AgentError {
                 msg.clone(),
                 "Agent 服务处理失败，请查看 agent-service 终端日志",
             ),
-            AgentError::Other(msg) => ("internal", msg.clone(), "Tauri 内部错误"),
             AgentError::Sidecar(msg) => (
                 "sidecar",
                 msg.clone(),
