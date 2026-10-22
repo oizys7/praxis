@@ -19,8 +19,8 @@ use uuid::Uuid;
 use crate::db::{db_err, fail};
 use crate::error::AgentError;
 use crate::protocol::{
-    ChapterDef, OutlinePhasePayload, PhaseProject, PlanRequest, StudyPhase, StudyPlan,
-    StudyResource,
+    ChapterDef, GlossaryEntryDef, OutlinePhasePayload, PhaseProject, PlanRequest, StudyPhase,
+    StudyPlan, StudyResource,
 };
 
 // ---------------------------------------------------------------------------
@@ -782,6 +782,14 @@ pub async fn load_phase_project_brief(
 /// 章节行 status 由内容定价：正文 strip 后非空 → complete，空 → failed。
 /// 空内容翻 failed（而非 complete）是重生成入口的判定链发出点：前端按
 /// failed/pending 态露出「重新生成此章」按钮。INSERT / DO UPDATE 双路共用。
+/// 章型兜底：空串与未知值一律按 concept（DB DEFAULT 只覆盖未显式插入的情形）。
+fn chapter_kind_or_default(kind: &str) -> &str {
+    match kind.trim() {
+        known @ ("concept" | "practice" | "project" | "review") => known,
+        _ => "concept",
+    }
+}
+
 fn chapter_row_status(content_md: &str) -> &'static str {
     if content_md.trim().is_empty() {
         "failed"
@@ -800,13 +808,15 @@ async fn insert_chapter_row(
     chapter: &ChapterDef,
 ) -> Result<Uuid, AgentError> {
     let chapter_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO chapters (phase_id, idx, title, summary, content_md, status)
-         VALUES ($1, $2, $3, $4, $5, $6)
+        "INSERT INTO chapters (phase_id, idx, title, summary, content_md, status, kind, key_terms)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
          ON CONFLICT (phase_id, idx) DO UPDATE SET
              title = EXCLUDED.title,
              summary = EXCLUDED.summary,
              content_md = EXCLUDED.content_md,
-             status = EXCLUDED.status
+             status = EXCLUDED.status,
+             kind = EXCLUDED.kind,
+             key_terms = EXCLUDED.key_terms
          RETURNING id",
     )
     .bind(phase_id)
@@ -815,6 +825,8 @@ async fn insert_chapter_row(
     .bind(&chapter.summary)
     .bind(&chapter.content_md)
     .bind(chapter_row_status(&chapter.content_md))
+    .bind(chapter_kind_or_default(&chapter.kind))
+    .bind(sqlx::types::Json(&chapter.key_terms))
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| fail("写入章节", e))?;
@@ -852,6 +864,10 @@ struct ChapterRows {
     status: Option<String>,
     /// markdown 正文全文：NOT NULL DEFAULT ''，空串也是有效返回值（恒 Some）
     content_md: String,
+    /// 章型（NOT NULL DEFAULT 'concept'）
+    kind: String,
+    /// 本章核心术语（JSONB 数组，用于汇总术语表）
+    key_terms: Vec<String>,
 }
 
 struct ProjectRow {
@@ -892,7 +908,8 @@ pub async fn load_study_plan(
             row.try_get("assignments").map_err(db_err)?;
 
         let chapter_rows = sqlx::query(
-            "SELECT title, summary, status, content_md FROM chapters WHERE phase_id = $1 ORDER BY idx ASC",
+            "SELECT title, summary, status, content_md, kind, key_terms
+             FROM chapters WHERE phase_id = $1 ORDER BY idx ASC",
         )
         .bind(phase_id)
         .fetch_all(pool)
@@ -906,6 +923,11 @@ pub async fn load_study_plan(
                 summary: crow.try_get("summary").map_err(db_err)?,
                 status: crow.try_get("status").map_err(db_err)?,
                 content_md: crow.try_get("content_md").map_err(db_err)?,
+                kind: crow.try_get("kind").map_err(db_err)?,
+                key_terms: crow
+                    .try_get::<sqlx::types::Json<Vec<String>>, _>("key_terms")
+                    .map_err(db_err)?
+                    .0,
             });
         }
 
@@ -979,14 +1001,44 @@ pub async fn load_study_plan(
 /// 行数据 -> StudyPlan：按传入顺序组装（DB 侧已按 idx 升序取出）。
 /// theory / review_notes 为旧协议兼容字段，规范化数据恒为空。
 fn reassemble_plan(rows: PlanRows) -> StudyPlan {
+    let phases: Vec<StudyPhase> = rows.phases.into_iter().map(reassemble_phase).collect();
+    // 术语表是计算属性：由各章 keyTerms 去重汇总（与 Python 侧 assemble 同一口径）。
+    // 只读产物，随计划重新生成而变，因此不落独立表、不提供编辑入口。
+    let glossary = collect_glossary(&phases);
     StudyPlan {
         title: rows.title,
         overview: rows.overview,
         estimated_total_hours: rows.estimated_total_hours.max(0) as u32,
-        phases: rows.phases.into_iter().map(reassemble_phase).collect(),
+        phases,
         resources: rows.resources,
         review_notes: String::new(),
+        glossary,
     }
+}
+
+/// 从各章 keyTerms 去重汇总术语表（保留首次出现的章节标题，上限 60 条）。
+fn collect_glossary(phases: &[StudyPhase]) -> Vec<GlossaryEntryDef> {
+    const LIMIT: usize = 60;
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut entries: Vec<GlossaryEntryDef> = Vec::new();
+    for phase in phases {
+        for chapter in &phase.chapters {
+            for term in &chapter.key_terms {
+                let name = term.trim();
+                if name.is_empty() || !seen.insert(name) {
+                    continue;
+                }
+                entries.push(GlossaryEntryDef {
+                    term: name.to_string(),
+                    chapter_title: chapter.title.clone(),
+                });
+                if entries.len() >= LIMIT {
+                    return entries;
+                }
+            }
+        }
+    }
+    entries
 }
 
 fn reassemble_phase(row: PhaseRows) -> StudyPhase {
@@ -1008,6 +1060,8 @@ fn reassemble_chapter(row: ChapterRows) -> ChapterDef {
         title: row.title,
         summary: row.summary,
         content_md: row.content_md,
+        kind: row.kind,
+        key_terms: row.key_terms,
         status: row.status,
     }
 }
@@ -1036,6 +1090,8 @@ mod tests {
             summary: format!("{title}摘要"),
             status: Some("complete".into()),
             content_md: format!("## {title}\n\n```mermaid\nflowchart LR\n```"),
+            kind: "concept".into(),
+            key_terms: vec![title.into()],
         };
         let rows = PlanRows {
             title: "测试计划".into(),
@@ -1116,6 +1172,8 @@ mod tests {
                 summary: String::new(),
                 status: Some("pending".into()),
                 content_md: String::new(),
+                kind: "concept".into(),
+                key_terms: Vec::new(),
             }],
         }];
         let empty_plan = reassemble_plan(PlanRows {

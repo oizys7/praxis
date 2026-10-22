@@ -122,6 +122,15 @@ pub(crate) const DDL_STUDY_SCHEDULE_DATE_IDX: &str =
 pub(crate) const DDL_CHAPTERS_CONTENT_MD_COL: &str =
     "ALTER TABLE chapters ADD COLUMN IF NOT EXISTS content_md TEXT NOT NULL DEFAULT ''";
 
+/// 章型列（2026-10-21 kind 引入）：concept / practice / project / review，
+/// 决定正文形态要求与前端口径；空串/未知值由 plan_store 按 concept 兜底
+pub(crate) const DDL_CHAPTERS_KIND_COL: &str =
+    "ALTER TABLE chapters ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'concept'";
+
+/// 章节核心术语列（JSONB 数组）：只用于汇总全计划术语表，不参与生成决策
+pub(crate) const DDL_CHAPTERS_KEY_TERMS_COL: &str =
+    "ALTER TABLE chapters ADD COLUMN IF NOT EXISTS key_terms JSONB NOT NULL DEFAULT '[]'::jsonb";
+
 /// 退役子表 DROP（IF EXISTS 幂等）：外键存在于子表指向 chapters，删子表
 /// 不破坏 chapters 自身及其余级联链；历史建过子表的 DB 与全新 DB 都收敛到
 /// 同一终态。统一排在序列最后执行（先前建后删与只删等价，一样幂等）。
@@ -165,6 +174,8 @@ pub(crate) const DDL_CHAPTERS_TABLE: &str = "CREATE TABLE IF NOT EXISTS chapters
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           phase_id UUID NOT NULL REFERENCES phases(id) ON DELETE CASCADE,
           idx INT NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '',
+          kind TEXT NOT NULL DEFAULT 'concept',
+          key_terms JSONB NOT NULL DEFAULT '[]'::jsonb,
           created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
           updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
           UNIQUE (phase_id, idx)
@@ -254,6 +265,8 @@ const COMMENT_STATEMENTS: &[&str] = &[
     "COMMENT ON COLUMN chapters.summary IS '章节摘要'",
     "COMMENT ON COLUMN chapters.status IS '章节状态：pending | complete | failed'",
     "COMMENT ON COLUMN chapters.content_md IS '章节正文 markdown 全文（空串 = 正文尚未生成）'",
+    "COMMENT ON COLUMN chapters.kind IS '章型：concept | practice | project | review'",
+    "COMMENT ON COLUMN chapters.key_terms IS '本章核心术语数组（JSONB），用于汇总全计划术语表'",
     "COMMENT ON COLUMN chapters.created_at IS '创建时间'",
     "COMMENT ON COLUMN chapters.updated_at IS '修改时间（触发器自动维护）'",
     // ---- resources ----
@@ -315,6 +328,8 @@ pub(crate) const DDL_STATEMENTS: &[&str] = &[
     // 5. 任务 18 演进：chapters 正文列 + 退役子表 DROP（统一收尾，
     //    历史 DB 与全新 DB 都收敛到同一终态）
     DDL_CHAPTERS_CONTENT_MD_COL,
+    DDL_CHAPTERS_KIND_COL,
+    DDL_CHAPTERS_KEY_TERMS_COL,
     DDL_DROP_CONCEPTS_TABLE,
     DDL_DROP_KNOWLEDGE_POINTS_TABLE,
     DDL_DROP_DIAGRAMS_TABLE,

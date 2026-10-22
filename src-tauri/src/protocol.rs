@@ -123,6 +123,13 @@ pub struct ChapterDef {
     pub summary: String,
     #[serde(default)]
     pub content_md: String,
+    /// 章型：concept / practice / project / review（空串按 concept 兜底）。
+    /// 决定正文形态要求与前端口径，由大纲给定、生成时原样遵循
+    #[serde(default)]
+    pub kind: String,
+    /// 本章核心术语（2-4 个）：计算属性列全计划术语表，不单独存储
+    #[serde(default)]
+    pub key_terms: Vec<String>,
     #[serde(default)]
     pub status: Option<String>,
 }
@@ -200,6 +207,19 @@ pub struct StudyPlan {
     pub resources: Vec<StudyResource>,
     #[serde(default)]
     pub review_notes: String,
+    /// 全计划术语表：由各章 keyTerms 去重汇总（只读，不单独存储、不可编辑）
+    #[serde(default)]
+    pub glossary: Vec<GlossaryEntryDef>,
+}
+
+/// 术语表条目：术语名 + 首次出现的章节标题（wire 走 camelCase，与 Python 对齐）
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct GlossaryEntryDef {
+    #[serde(default)]
+    pub term: String,
+    #[serde(default)]
+    pub chapter_title: String,
 }
 
 /// 错误详情（Python 端返回的 envelope.error）
@@ -613,6 +633,8 @@ mod tests {
                 chapters: vec![ChapterDef {
                     title: "所有权与借用".into(),
                     summary: "深入 Rust 内存模型".into(),
+                    kind: "concept".into(),
+                    key_terms: vec!["所有权".into(), "借用".into()],
                     content_md: "## 所有权与借用\n\n```mermaid\nflowchart LR\n```".into(),
                     status: Some("complete".into()),
                 }],
@@ -628,6 +650,10 @@ mod tests {
             }],
             resources: vec![],
             review_notes: String::new(),
+            glossary: vec![GlossaryEntryDef {
+                term: "所有权".into(),
+                chapter_title: "所有权与借用".into(),
+            }],
         };
 
         let json = serde_json::to_string(&plan).expect("序列化");
@@ -644,6 +670,10 @@ mod tests {
             "## 所有权与借用\n\n```mermaid\nflowchart LR\n```"
         );
         assert_eq!(phase["project"]["estimatedHours"], 12);
+        // 章型与术语：camelCase 走线，术语表挂在计划级
+        assert_eq!(chapter["kind"], "concept");
+        assert_eq!(chapter["keyTerms"][0], "所有权");
+        assert_eq!(value["glossary"][0]["chapterTitle"], "所有权与借用");
         // 两级状态机：status 走 camelCase，序列化不丢
         assert_eq!(phase["status"], "complete");
     }

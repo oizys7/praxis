@@ -11,16 +11,29 @@ from app.validators import validate_plan
 # 合法基准：3 个阶段 × 2 章，总学时 120 = weekly_hours(10) × weeks(12)
 
 
-def _make_chapter(title: str = "章节", content_chars: int = 1000) -> dict:
-    """章节正文：确定性 markdown，含知识点段落与一个 flowchart 码块。"""
+def _make_chapter(
+    title: str = "章节", content_chars: int = 1000, *, kind: str = "concept"
+) -> dict:
+    """章节正文：确定性 markdown，含知识点段落、flowchart 码块与深入小节。
+
+    默认 concept（概念章强制「深入」小节 ≥600 字）；构造不达标用例时
+    直接覆盖 contentMd，或改用 practice / project / review 章型。
+    """
     return {
         "title": title,
         "summary": "章节概述",
+        "kind": kind,
+        "keyTerms": [f"{title}核心"],
         "contentMd": (
             f"## {title}\n\n"
-            f"### 概念入门\n\n"
+            "### 学习目标\n\n说明。\n\n"
+            "### 前置知识\n\n说明。\n\n"
+            "### 概念入门\n\n"
             + "深" * content_chars
             + "\n\n```mermaid\nflowchart TD\n    A --> B\n```\n"
+            + "\n### 深入：机制\n\n"
+            + "深" * 650
+            + "\n\n### 动手练习\n\n练习。\n\n### 自检清单\n\n自检。\n"
         ),
     }
 
@@ -321,3 +334,41 @@ def test_global_failure_has_no_chapter_keys():
     )
     assert len(pending) == 17
     assert failed_chapters == []
+
+
+# ---------------------------------------------------------------------------
+# 章型分叉（2026-10-21 kind 引入）：不同章型用不同尺子
+# ---------------------------------------------------------------------------
+
+
+def test_practice_chapter_without_deep_dive_passes():
+    """实操章不要求 800 字深入剖析：它的价值在步骤与预期输出。"""
+    chapter = _make_chapter("实操", kind="practice")
+    # 显式删掉深入小节（模拟模型没写）
+    chapter["contentMd"] = chapter["contentMd"].replace("### 深入：机制", "### 关键实现")
+    plan = _make_plan(phases=2)
+    plan["phases"][0]["chapters"] = [chapter]
+    issues, _failed, failed_chapters = validate_plan(plan, 10, 12)
+    assert failed_chapters == [], f"实操章不该因缺深入小节被判失败：{issues}"
+
+
+def test_concept_chapter_missing_deep_dive_fails():
+    """概念章缺深入小节 → 精确标定到该章（章级回炉入口）。"""
+    chapter = _make_chapter("概念")
+    chapter["contentMd"] = chapter["contentMd"].replace("### 深入：机制", "### 其他")
+    plan = _make_plan(phases=2)
+    plan["phases"][0]["chapters"] = [chapter]
+    issues, _failed, failed_chapters = validate_plan(plan, 10, 12)
+    assert "0:0" in failed_chapters, f"概念章缺深入小节应标定该章：{issues}"
+    assert any("深入" in issue for issue in issues)
+
+
+def test_concept_chapter_short_deep_dive_fails():
+    """深入小节存在但不足 600 字 → 同样判失败（800 目标、600 硬底线）。"""
+    chapter = _make_chapter("概念")
+    chapter["contentMd"] = chapter["contentMd"].replace("深" * 650, "深" * 200)
+    plan = _make_plan(phases=2)
+    plan["phases"][0]["chapters"] = [chapter]
+    issues, _failed, failed_chapters = validate_plan(plan, 10, 12)
+    assert "0:0" in failed_chapters, f"深入小节过短应标定该章：{issues}"
+    assert any("深入" in issue for issue in issues)

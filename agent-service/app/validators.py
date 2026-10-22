@@ -30,7 +30,26 @@ MIN_CHAPTER_CONTENT_CHARS = 1000
 # 章节固定小节：既是写给 LLM 的质量脚手架，也是可程序化校验的契约。
 # 用子串而非精确标题匹配——「## 本章学习目标」「### 自检清单」都算命中，
 # 避免措辞自然变体被误判为缺失而触发无谓回炉。
-REQUIRED_CHAPTER_SECTIONS = ("学习目标", "前置知识", "动手练习", "自检")
+# 按章型分叉：概念章讲原理、实操与项目章重动手与验收、复习章做回顾。
+# 与 prompts/chapter.yaml 的固定小节段、nodes._CHAPTER_KIND_REQUIREMENTS
+# 三处必须成对变更——只罚不教会让模型反复因同一原因失败。
+REQUIRED_SECTIONS_BY_KIND: dict[str, tuple[str, ...]] = {
+    "concept": ("学习目标", "前置知识", "自检"),
+    "practice": ("学习目标", "前置知识", "动手练习", "自检"),
+    "project": ("学习目标", "动手练习", "验收", "自检"),
+    "review": ("学习目标", "自检"),
+}
+DEFAULT_CHAPTER_KIND = "concept"
+# 所有章型必需小节的并集（供文档与 mock 模板注释引用，不参与逐章判定）
+REQUIRED_CHAPTER_SECTIONS = tuple(
+    dict.fromkeys(
+        section for sections in REQUIRED_SECTIONS_BY_KIND.values() for section in sections
+    )
+)
+# 概念章必须有的深入剖析小节：关键词 + 最小字数。
+# 这是唯一被强制的「深度」要求——其他章型允许没有深入小节。
+DEEP_DIVE_KEYWORD = "深入"
+DEEP_DIVE_MIN_CHARS = 600
 # 阶段项目最少步骤 / 验收标准条数
 MIN_PROJECT_STEPS = 2
 MIN_PROJECT_ACCEPTANCE = 2
@@ -176,10 +195,58 @@ def _check_chapter(
             )
             _mark_chapter(failed, failed_chapters, index, chapter_index)
 
-    missing = [name for name in REQUIRED_CHAPTER_SECTIONS if name not in content]
+    kind = str(chapter.get("kind") or DEFAULT_CHAPTER_KIND)
+    required = REQUIRED_SECTIONS_BY_KIND.get(
+        kind, REQUIRED_SECTIONS_BY_KIND[DEFAULT_CHAPTER_KIND]
+    )
+    missing = [name for name in required if name not in content]
     if missing:
-        issues.append(f"{label}缺少必备小节：{'、'.join(missing)}")
+        issues.append(f"{label}（{kind}）缺少必备小节：{'、'.join(missing)}")
         _mark_chapter(failed, failed_chapters, index, chapter_index)
+
+    # 概念章的深入剖析是唯一强制的深度要求（800 字目标、600 字硬底线）：
+    # 其他章型的价值在动手与验收，不该被同一把尺子罚
+    if kind == "concept":
+        deep_chars = _deep_dive_chars(content)
+        if deep_chars is None:
+            issues.append(
+                f"{label}（concept）缺少「{DEEP_DIVE_KEYWORD}」小节："
+                "概念章必须有一节深入剖析"
+            )
+            _mark_chapter(failed, failed_chapters, index, chapter_index)
+        elif deep_chars < DEEP_DIVE_MIN_CHARS:
+            issues.append(
+                f"{label}（concept）「{DEEP_DIVE_KEYWORD}」小节仅 {deep_chars} 字，"
+                f"要求不少于 {DEEP_DIVE_MIN_CHARS} 字"
+            )
+            _mark_chapter(failed, failed_chapters, index, chapter_index)
+
+
+def _deep_dive_chars(content: str) -> int | None:
+    """返回标题含「深入」的小节正文长度；该小节不存在时返回 None。
+
+    小节边界按 markdown 标题级别判定：从标题行的下一行起，到下一个
+    同级或更高级标题为止——所以「### 深入：××」会被后面的「### 动手练习」
+    正确截断，不会把后续小节的字数算进来。
+    """
+    lines = content.splitlines()
+    start = -1
+    start_level = 0
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if not stripped.startswith("#"):
+            continue
+        level = len(stripped) - len(stripped.lstrip("#"))
+        if start < 0:
+            if DEEP_DIVE_KEYWORD in stripped[level:]:
+                start = i + 1
+                start_level = level
+            continue
+        if level <= start_level:
+            return len(chr(10).join(lines[start:i]).strip())
+    if start >= 0:
+        return len(chr(10).join(lines[start:]).strip())
+    return None
 
 
 def _mermaid_code_blocks(content: str) -> list[str]:

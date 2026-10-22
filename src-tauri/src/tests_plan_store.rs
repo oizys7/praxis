@@ -42,6 +42,8 @@ fn sample_chapter(title: &str) -> ChapterDef {
     ChapterDef {
         title: title.into(),
         summary: format!("{title}·摘要"),
+        kind: "concept".into(),
+        key_terms: vec![format!("{title}术语")],
         content_md: format!(
             "## {title}\n\n本章围绕「{title}」展开。\n\n```mermaid\nflowchart TD\n    A --> B\n```\n"
         ),

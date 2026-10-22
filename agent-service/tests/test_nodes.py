@@ -171,8 +171,15 @@ async def test_expand_chapter_real_path_variables(monkeypatch):
         variables["sibling_chapter_titles"] == f"- {phase_outline['chapterTitles'][1]}"
     )
     assert set(result) == {"chapter_drafts"}
+    # 章型以大纲为准强制回写：大纲未给 chapterKinds → 兜底 concept
     assert result["chapter_drafts"] == {
-        "0:0": {"title": "核心概念入门", "summary": "概述", "contentMd": "# 正文"}
+        "0:0": {
+            "title": "核心概念入门",
+            "summary": "概述",
+            "contentMd": "# 正文",
+            "kind": "concept",
+            "keyTerms": [],
+        }
     }
 
 
@@ -525,7 +532,9 @@ async def test_review_writes_pending(monkeypatch):
     async def _stub(model_cls, prompt_key, variables):
         assert model_cls is nodes.ReviewOutput
         assert prompt_key == "review"
-        assert "phases" in variables["plan"], "待评审计划须 JSON 注入"
+        # 评审输入是结构摘要（不含正文全文）：6 万字全量正文会撑爆上下文
+        assert "计划标题" in variables["plan_summary"], "待评审计划须注入结构摘要"
+        assert "contentMd" not in variables["plan_summary"], "摘要不得含正文全文"
         assert variables["validation_issues"] == "（无程序化校验问题）", (
             "校验问题为空时传占位说明"
         )
@@ -730,3 +739,70 @@ async def test_review_unexpected_error_also_passes(monkeypatch):
 
     assert result["passed"] is True
     assert "评审未执行" in result["review_notes"][0]
+
+
+# ---------------------------------------------------------------------------
+# 章型 / 术语表 / 评审摘要（2026-10-21 kind 与 review 缩输入）
+# ---------------------------------------------------------------------------
+
+
+def test_plan_summary_excludes_full_content():
+    """评审输入是结构摘要：给出章节结构与字数，但绝不包含正文全文。"""
+    plan = {
+        "title": "计划",
+        "overview": "概述",
+        "estimatedTotalHours": 120,
+        "phases": [
+            {
+                "name": "第一阶段",
+                "weekRange": "第 1-4 周",
+                "objectives": ["目标一"],
+                "chapters": [
+                    {
+                        "title": "变量与类型",
+                        "summary": "讲清类型系统",
+                        "kind": "concept",
+                        "keyTerms": ["静态类型"],
+                        "contentMd": "### 学习目标\n\n" + "正" * 1200,
+                    }
+                ],
+                "project": {"name": "小工具"},
+            }
+        ],
+        "resources": [{"title": "某本书"}],
+    }
+    summary = nodes._plan_summary(plan)
+    assert "变量与类型" in summary
+    assert "[concept]" in summary
+    assert "字；小节：" in summary, "摘要须标注正文长度与小节命中情况"
+    assert "静态类型" in summary
+    assert "正" * 100 not in summary, "摘要不得含正文全文"
+
+
+def test_build_glossary_dedupes_and_keeps_first_chapter():
+    """术语表由 keyTerms 去重汇总：同名术语只留首次出现的章节。"""
+    phases = [
+        {
+            "chapters": [
+                {"title": "第一章", "keyTerms": ["闭包", "作用域"]},
+                {"title": "第二章", "keyTerms": ["闭包", "柯里化"]},
+            ]
+        }
+    ]
+    glossary = nodes._build_glossary(phases)
+    assert [entry["term"] for entry in glossary] == ["闭包", "作用域", "柯里化"]
+    assert glossary[0]["chapterTitle"] == "第一章", "重复术语保留首次出现的出处"
+
+
+def test_build_glossary_respects_limit():
+    """术语表上限防止超长计划把响应体撑爆。"""
+    phases = [{"chapters": [{"title": "章", "keyTerms": [f"术语{i}" for i in range(100)]}]}]
+    assert len(nodes._build_glossary(phases, limit=10)) == 10
+
+
+def test_chapter_kind_falls_back_to_concept():
+    """章型缺失/越界/非法值一律兜底 concept（并行数组的对齐风险吸收点）。"""
+    assert nodes._chapter_kind({}, 0) == "concept"
+    assert nodes._chapter_kind({"chapterKinds": ["practice"]}, 3) == "concept"
+    assert nodes._chapter_kind({"chapterKinds": ["乱写"]}, 0) == "concept"
+    assert nodes._chapter_kind({"chapterKinds": ["project"]}, 0) == "project"

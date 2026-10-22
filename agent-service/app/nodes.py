@@ -295,6 +295,110 @@ def _chapter_key(phase_index: int, chapter_index: int) -> str:
     return f"{phase_index}:{chapter_index}"
 
 
+# 章型 → 正文形态要求（注入 chapter.yaml 的 {{kind_requirements}}）。
+# 与 validators.REQUIRED_SECTIONS_BY_KIND 一一对应：提示词与校验必须成对变更，
+# 只罚不教会让模型反复因同一原因失败。
+_CHAPTER_KIND_REQUIREMENTS: dict[str, str] = {
+    "concept": "讲透原理：机制如何运转、为何这样设计；必须有 800 字以上的「### 深入：××」小节",
+    "practice": "写成可直接照做的操作路径：分步骤、每步给输入与预期输出、常见报错对策；不必 800 字深入剖析",
+    "project": "从需求到交付：分步实现路径 + 可逐条打勾的验收清单；不必 800 字深入剖析",
+    "review": "知识回顾 + 综合练习，不写新的机制剖析",
+}
+_DEFAULT_CHAPTER_KIND = "concept"
+
+
+def _chapter_kind(phase_outline: dict[str, Any], chapter_index: int) -> str:
+    """取该章的章型：大纲给定时原样使用，缺失/越界/非法值一律兜底 concept。
+
+    章型走并行数组 chapterKinds（与 chapterTitles 等长同序），这样 outline
+    事件载荷与骨架渲染契约完全不变；对齐风险由本函数的越界兜底吸收。
+    """
+    kinds = phase_outline.get("chapterKinds") or []
+    if 0 <= chapter_index < len(kinds):
+        kind = str(kinds[chapter_index] or "").strip()
+        if kind in _CHAPTER_KIND_REQUIREMENTS:
+            return kind
+    return _DEFAULT_CHAPTER_KIND
+
+
+def _build_glossary(
+    phases: list[dict[str, Any]], limit: int = 60
+) -> list[dict[str, str]]:
+    """由各章 keyTerms 去重汇总全计划术语表（纯代码，零 LLM 成本，只读）。
+
+    术语表定位是「这份计划的术语索引」，随计划重新生成而变；用户自己的
+    补充走笔记功能，因此这里不提供任何编辑入口。
+    """
+    seen: set[str] = set()
+    entries: list[dict[str, str]] = []
+    for phase in phases:
+        for chapter in phase.get("chapters") or []:
+            title = str(chapter.get("title") or "")
+            for term in chapter.get("keyTerms") or []:
+                name = str(term).strip()
+                if not name or name in seen:
+                    continue
+                seen.add(name)
+                entries.append({"term": name, "chapterTitle": title})
+                if len(entries) >= limit:
+                    return entries
+    return entries
+
+
+# 评审摘要里逐章探测的小节关键词（与 validators 的固定小节同一套名字，
+# 但这里只做「有没有」的行内标注，判定仍由 validators 负责）
+_SUMMARY_SECTION_KEYWORDS = ("学习目标", "前置知识", "动手练习", "自检", "深入", "验收")
+
+
+def _plan_summary(plan: dict[str, Any]) -> str:
+    """把计划压成结构摘要，作为评审输入（**不含正文全文**）。
+
+    动机：全量正文（20 章 × 3000 字 ≈ 6 万字）会撑爆上下文并稀释注意力，
+    评审实际只看得住结构层面的问题；正文的机械指标（字数、必备小节、
+    mermaid 图类型）已由 validators 程序化判定，不必再喂给模型。
+    """
+    lines: list[str] = [
+        f"计划标题：{plan.get('title', '')}",
+        f"整体概述：{plan.get('overview', '')}",
+        f"预计总学时：{plan.get('estimatedTotalHours', 0)}",
+    ]
+    for index, phase in enumerate(plan.get("phases") or []):
+        lines.append("")
+        lines.append(
+            f"第 {index + 1} 阶段「{phase.get('name', '')}」"
+            f"（{phase.get('weekRange', '')}）"
+        )
+        objectives = phase.get("objectives") or []
+        if objectives:
+            lines.append("  阶段目标：" + "；".join(str(obj) for obj in objectives))
+        project = phase.get("project") or {}
+        if project:
+            lines.append(f"  阶段项目：{project.get('name', '')}")
+        for chapter_index, chapter in enumerate(phase.get("chapters") or []):
+            content = str(chapter.get("contentMd") or "")
+            present = [
+                name for name in _SUMMARY_SECTION_KEYWORDS if name in content
+            ]
+            lines.append(
+                f"  - 第 {chapter_index + 1} 章「{chapter.get('title', '')}」"
+                f"[{chapter.get('kind', _DEFAULT_CHAPTER_KIND)}]"
+                f" {len(content)} 字；小节：{'、'.join(present) or '（无）'}"
+            )
+            summary = str(chapter.get("summary") or "").strip()
+            if summary:
+                lines.append(f"    摘要：{summary}")
+            terms = chapter.get("keyTerms") or []
+            if terms:
+                lines.append("    术语：" + "、".join(str(t) for t in terms))
+    resources = plan.get("resources") or []
+    if resources:
+        lines.append("")
+        lines.append(
+            "推荐资源：" + "、".join(str(res.get("title", "")) for res in resources)
+        )
+    return chr(10).join(lines)
+
+
 async def _expand_phase_draft(
     request: dict[str, Any],
     phase_outline: dict[str, Any],
@@ -355,6 +459,7 @@ async def _expand_chapter_draft(
     req = PlanRequest.model_validate(request)
     titles = phase_outline.get("chapterTitles") or []
     chapter_title = titles[chapter_index]
+    kind = _chapter_kind(phase_outline, chapter_index)
     async with _EXPAND_SEMAPHORE:
         chapter = await invoke_structured(
             Chapter,
@@ -382,8 +487,13 @@ async def _expand_chapter_draft(
                 "project_brief": phase_outline.get("projectBrief", "") or "（无）",
                 "plan_context": plan_context,
                 "review_notes": review_notes,
+                "chapter_kind": kind,
+                "kind_requirements": _CHAPTER_KIND_REQUIREMENTS[kind],
             },
         )
+    # 章型以大纲为准：模型可能自行改写 kind，这里强制回写，
+    # 保证「生成形态 / 校验规则 / 前端徽标」看到的是同一个值
+    chapter.kind = kind
     return chapter.model_dump(mode="json", by_alias=True)
 
 
@@ -760,6 +870,8 @@ async def assemble_node(state: AgentState) -> dict[str, Any]:
                     "title": titles[chapter_index],
                     "summary": "",
                     "contentMd": "",
+                    "kind": _chapter_kind(phase_outline, chapter_index),
+                    "keyTerms": [],
                 }
             if _chapter_failed(chapter):
                 failed_keys.append(key)
@@ -784,6 +896,8 @@ async def assemble_node(state: AgentState) -> dict[str, Any]:
         "phases": phases,
         "resources": outline.get("resources") or [],
         "reviewNotes": "\n".join(state.get("review_notes") or []),
+        # 术语表：纯代码从各章 keyTerms 去重汇总（只读，不入 LLM）
+        "glossary": _build_glossary(phases),
     }
 
     issues, failed_indexes, validator_failed_chapters = validators.validate_plan(
@@ -844,7 +958,7 @@ async def review_node(state: AgentState) -> dict[str, Any]:
             ReviewOutput,
             "review",
             {
-                "plan": json.dumps(plan, ensure_ascii=False),
+                "plan_summary": _plan_summary(plan),
                 "validation_issues": (
                     "\n".join(f"- {issue}" for issue in validation_issues)
                     if validation_issues

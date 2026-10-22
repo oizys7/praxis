@@ -171,11 +171,22 @@ class PhaseProject(CamelModel):
 
 
 class Chapter(CamelModel):
-    """阶段内的学习章节：完整 markdown 正文（图示内联 ```mermaid 码块）。"""
+    """阶段内的学习章节：完整 markdown 正文（图示内联 ```mermaid 码块）。
+
+    kind 决定正文的形态要求（概念章讲原理、实操章重步骤、项目章要验收、
+    复习章做回顾），由大纲给定、生成时原样遵循，校验按类型分叉。
+    key_terms 是本章核心术语（2-4 个），供 assemble 汇总为全计划术语表。
+    """
 
     title: str = Field(..., description="章节标题")
     summary: str = Field(default="", description="章节概述")
     content_md: str = Field(default="", description="章节 markdown 正文全文")
+    kind: str = Field(
+        default="concept", description="章型：concept / practice / project / review"
+    )
+    key_terms: list[str] = Field(
+        default_factory=list, description="本章核心术语（2-4 个）"
+    )
 
 
 class StudyPhase(CamelModel):
@@ -200,6 +211,13 @@ class Resource(CamelModel):
     note: str = Field(default="", description="推荐理由")
 
 
+class GlossaryEntry(CamelModel):
+    """术语表条目（只读）：assemble 由各章 keyTerms 去重汇总，不单独存储、不可编辑。"""
+
+    term: str = Field(..., description="术语")
+    chapter_title: str = Field(default="", description="首次出现的章节标题")
+
+
 class StudyPlan(CamelModel):
     """完整学习计划。"""
 
@@ -209,6 +227,10 @@ class StudyPlan(CamelModel):
     phases: list[StudyPhase] = Field(default_factory=list, description="阶段列表")
     resources: list[Resource] = Field(default_factory=list, description="推荐资源")
     review_notes: str = Field(default="", description="评审节点给出的备注")
+    glossary: list[GlossaryEntry] = Field(
+        default_factory=list,
+        description="全计划术语表（只读，由各章 keyTerms 去重汇总）",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -223,6 +245,11 @@ class PhaseOutline(CamelModel):
     week_range: str = Field(default="", description="周区间，如 '第 1-3 周'")
     objectives: list[str] = Field(default_factory=list, description="阶段目标")
     chapter_titles: list[str] = Field(default_factory=list, description="章节标题列表")
+    # 与 chapter_titles 等长的章型列表（并行数组：保持 outline 事件载荷不变，
+    # 避免破坏已上线的骨架渲染契约）。越界/缺失时读取方按 concept 兜底。
+    chapter_kinds: list[str] = Field(
+        default_factory=list, description="与 chapterTitles 等长的章型列表"
+    )
     project_brief: str = Field(default="", description="阶段项目一句话简介")
 
 

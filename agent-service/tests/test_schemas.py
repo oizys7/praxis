@@ -13,7 +13,9 @@ def test_chapter_markdown_shape():
     from app.schemas import Chapter
 
     c = Chapter(title="t", summary="s", content_md="## 正文").model_dump(by_alias=True)
-    assert set(c) == {"title", "summary", "contentMd"}
+    assert set(c) == {"title", "summary", "contentMd", "kind", "keyTerms"}
+    assert c["kind"] == "concept", "章型缺省为 concept"
+    assert c["keyTerms"] == []
     assert c["contentMd"] == "## 正文"
     # 结构化字段随 markdown 化退役：Chapter 不再有 main_knowledge / deep_dives 字段
     assert not any("knowledge" in name for name in Chapter.model_fields)

@@ -226,16 +226,22 @@ _CHAPTER_MERMAID = (
 )
 
 
-def _chapter(title: str, goal: str) -> dict[str, Any]:
+def _chapter(
+    title: str,
+    goal: str,
+    *,
+    kind: str = "concept",
+    key_terms: list[str] | None = None,
+) -> dict[str, Any]:
     """按章节标题构造 StudyPhase.chapters 元素（Chapter 形状，camelCase）。
 
-    唯一形状：{title, summary, contentMd}——contentMd 为确定性模板 markdown
+    形状：{title, summary, contentMd, kind, keyTerms}——contentMd 为确定性模板 markdown
     （标题 + 知识点段落 + 图示码块 + 深入剖析），同输入必得同输出，
     无任何结构化字段残留。"""
     content_md = "\n\n".join(
         (
             f"## {title}\n\n本章围绕「{title}」展开，结合「{goal}」的目标场景梳理主线内容。",
-            # 固定小节与 validators.REQUIRED_CHAPTER_SECTIONS 一一对应：
+            # 固定小节覆盖 validators.REQUIRED_SECTIONS_BY_KIND 的并集：
             # mock 产物同样要过真实校验，否则离线全链路会被自己判失败
             (
                 "### 学习目标\n\n读完本章，你能说清它解决什么问题、在整体目标中"
@@ -247,7 +253,9 @@ def _chapter(title: str, goal: str) -> dict[str, Any]:
             ),
             "### 什么是它 / 为什么需要它\n\n" + _knowledge_section(title, goal),
             _CHAPTER_MERMAID,
-            f"## 深入剖析\n\n{_deep_dive_content(title, goal)}",
+            # 用 ### 级（与后续「### 动手练习」同级）：validators 的深入小节
+            # 按标题级别截断，## 级会把动手练习与自检的字数也算进去
+            f"### 深入：机制剖析\n\n{_deep_dive_content(title, goal)}",
             (
                 f"### 动手练习\n\n围绕「{title}」写一个最小示例：先跑通，再改参数"
                 "观察行为变化，最后用自己的话记录结论。"
@@ -262,12 +270,24 @@ def _chapter(title: str, goal: str) -> dict[str, Any]:
         "title": title,
         "summary": f"本章围绕「{title}」展开，结合「{goal}」的目标场景梳理主线内容。",
         "contentMd": content_md,
+        "kind": kind,
+        "keyTerms": list(key_terms or []),
     }
 
 
 # ---------------------------------------------------------------------------
 # 两级生成接口
 # ---------------------------------------------------------------------------
+
+
+# 章型轮转：mock 大纲与 mock 章节共用同一规则，保证骨架章型与正文章型一致。
+# 真实链路里章型由 outline.yaml 决定，这里只是离线演示的确定性替身。
+_KIND_CYCLE = ("concept", "concept", "practice", "project")
+
+
+def _kind_for(index: int) -> str:
+    """按章索引确定 mock 章型（越界安全，负数也能落到合法值）。"""
+    return _KIND_CYCLE[index % len(_KIND_CYCLE)]
 
 
 def build_mock_outline(request: dict[str, Any]) -> dict[str, Any]:
@@ -290,6 +310,9 @@ def build_mock_outline(request: dict[str, Any]) -> dict[str, Any]:
             "weekRange": ranges[index],
             "objectives": [obj.format(goal=goal) for obj in stage["objectives"]],
             "chapterTitles": list(stage["chapterTitles"]),
+            "chapterKinds": [
+                _kind_for(i) for i in range(len(stage["chapterTitles"]))
+            ],
             "projectBrief": stage["projectBrief"],
         }
         for index, stage in enumerate(_STAGES)
@@ -330,7 +353,9 @@ def build_mock_chapter(
     goal: str = request.get("goal", "你的学习目标")
     chapter_titles: list[str] = phase_outline.get("chapterTitles") or []
     title = chapter_titles[chapter_index] if chapter_titles else "未命名章节"
-    return _chapter(title, goal)
+    kinds: list[str] = phase_outline.get("chapterKinds") or []
+    kind = kinds[chapter_index] if chapter_index < len(kinds) else _kind_for(chapter_index)
+    return _chapter(title, goal, kind=kind, key_terms=[title])
 
 
 def build_mock_extras(

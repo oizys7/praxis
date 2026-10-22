@@ -59,7 +59,21 @@ export interface Chapter {
   summary: string;
   /** 章节 markdown 正文全文；空串表示有意义的空正文（骨架章 / 生成中） */
   contentMd: string;
+  /** 章型：concept / practice / project / review（缺省或未知按 concept 渲染） */
+  kind?: string;
+  /** 本章核心术语（2-4 个）：全计划术语表的来源，不参与渲染判定 */
+  keyTerms?: string[];
   status?: PhaseStatus;
+}
+
+/**
+ * 术语表条目（只读）：由各章 keyTerms 去重汇总，随计划重新生成而变。
+ * 刻意不提供编辑入口——它是「这份计划的术语索引」，用户自己的补充走笔记。
+ */
+export interface GlossaryEntry {
+  term: string;
+  /** 首次出现的章节标题 */
+  chapterTitle: string;
 }
 
 /**
@@ -153,6 +167,8 @@ export interface StudyPlan {
   phases: StudyPhase[];
   resources: StudyResource[];
   reviewNotes: string;
+  /** 全计划术语表（只读）；旧计划可能缺省 */
+  glossary?: GlossaryEntry[];
 }
 
 /** 错误详情 */

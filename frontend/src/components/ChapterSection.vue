@@ -53,6 +53,17 @@ const planRegenInFlight = computed(
   () => !!props.planId && isRegenInFlight(props.planId),
 );
 
+/** 章型标签：让读者一眼看出这章是读原理还是动手做（旧数据无 kind 不显示） */
+const KIND_LABELS: Record<string, string> = {
+  concept: "概念",
+  practice: "实操",
+  project: "项目",
+  review: "复习",
+};
+const kindLabel = computed(
+  () => KIND_LABELS[props.chapter.kind ?? ""] ?? null,
+);
+
 /** 章节级徽标仅 failed/pending：complete 章节照常渲染不额外加标 */
 const statusBadge = computed<{
   label: string;
@@ -226,7 +237,15 @@ function scrollToHeading(index: number) {
           <path d="m6 9 6 6 6-6" />
         </svg>
         <div class="min-w-0">
-          <h4 class="text-sm font-semibold">{{ props.chapter.title }}</h4>
+          <h4 class="text-sm font-semibold">
+            {{ props.chapter.title }}
+            <span
+              v-if="kindLabel"
+              class="ml-2 align-middle text-xs font-normal text-muted-foreground"
+            >
+              {{ kindLabel }}
+            </span>
+          </h4>
           <p
             v-if="props.chapter.summary"
             class="mt-1 text-sm leading-relaxed text-muted-foreground"

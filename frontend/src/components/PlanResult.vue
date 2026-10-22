@@ -185,10 +185,36 @@ const resourceTypeLabels: Record<string, string> = {
       </div>
     </div>
 
+    <!-- 术语表（只读）：由各章核心术语去重汇总，随计划重新生成而变 -->
+    <Card v-if="plan.glossary?.length">
+      <CardHeader>
+        <CardTitle class="text-base">🔤 术语表</CardTitle>
+      </CardHeader>
+      <CardContent>
+        <dl class="grid gap-x-8 gap-y-2 sm:grid-cols-2">
+          <div
+            v-for="entry in plan.glossary"
+            :key="entry.term"
+            class="flex items-baseline gap-2 text-sm"
+          >
+            <dt class="shrink-0 font-medium">{{ entry.term }}</dt>
+            <dd class="truncate text-muted-foreground">
+              —— {{ entry.chapterTitle }}
+            </dd>
+          </div>
+        </dl>
+      </CardContent>
+    </Card>
+
     <!-- 推荐资源 -->
     <Card v-if="plan.resources.length">
       <CardHeader>
-        <CardTitle class="text-base">📖 推荐资源</CardTitle>
+        <CardTitle class="flex flex-wrap items-baseline gap-x-2 text-base">
+          📖 推荐资源
+          <span class="text-xs font-normal text-muted-foreground">
+            未经核实，版本与适用性请自行判断
+          </span>
+        </CardTitle>
       </CardHeader>
       <CardContent>
         <ul class="space-y-2">

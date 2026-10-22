@@ -56,9 +56,11 @@ def test_mock_outline_shape():
 
 def _assert_markdown_chapter(chapter: dict, phase_outline: dict) -> None:
     """单章 markdown 形状断言：唯一三字段 + 字数 + 码块 + 深入剖析节。"""
-    assert set(chapter) == {"title", "summary", "contentMd"}, (
-        f"Chapter 唯一形状 {{title, summary, contentMd}}，实际：{set(chapter)}"
+    assert set(chapter) == {"title", "summary", "contentMd", "kind", "keyTerms"}, (
+        f"Chapter 键集 {{title, summary, contentMd, kind, keyTerms}}，实际：{set(chapter)}"
     )
+    assert chapter["kind"] in {"concept", "practice", "project", "review"}
+    assert chapter["keyTerms"], "mock 章节须带术语，供术语表汇总"
     assert chapter["title"] in phase_outline["chapterTitles"]
     assert chapter["summary"].strip()
 
@@ -166,3 +168,26 @@ def test_mock_generation_deterministic():
     assert build_mock_chapter(REQUEST, outline["phases"][0], 0) == build_mock_chapter(
         REQUEST, outline["phases"][0], 0
     )
+
+
+def test_mock_outline_chapter_kinds_align_with_titles():
+    """章型走并行数组：必须与 chapterTitles 等长同序，且取值合法。"""
+    request = {
+        "goal": "掌握 Web 前端",
+        "level": "beginner",
+        "weeklyHours": 10,
+        "weeks": 12,
+        "interests": [],
+        "background": "",
+    }
+    outline = build_mock_outline(request)
+    for phase in outline["phases"]:
+        assert len(phase["chapterKinds"]) == len(phase["chapterTitles"]), (
+            "chapterKinds 必须与 chapterTitles 等长，否则章型会错位"
+        )
+        assert set(phase["chapterKinds"]) <= {
+            "concept",
+            "practice",
+            "project",
+            "review",
+        }

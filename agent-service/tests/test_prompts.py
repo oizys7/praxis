@@ -35,6 +35,11 @@ _FULL_VARIABLES: dict[str, str] = {
     "plan_context": "计划标题：X\n整体概述：Y",
     "phase_outline": '{"name": "第一阶段", "chapterTitles": ["核心概念入门"]}',
     "review_notes": "（首次生成，无评审意见）",
+    "chapter_kind": "concept",
+    "kind_requirements": (
+        "讲透原理：机制如何运转、为何这样设计；必须有 800 字以上的「### 深入：××」小节"
+    ),
+    "plan_summary": "计划标题：X\n第 1 阶段「打基础」",
 }
 
 
