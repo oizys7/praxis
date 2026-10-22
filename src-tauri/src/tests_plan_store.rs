@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::commands;
 use crate::db;
+use crate::plan_state;
 use crate::plan_store;
 use crate::plan_store::{PlanOutlineRow, PlanRequestRow};
 use crate::protocol::{
@@ -1717,4 +1718,105 @@ async fn sql_phase_status_matches_pure_function(pool: PgPool) {
             "第 {case_index} 组（{statuses:?}）：all_chapters_complete 与 plan_of_chapters 不一致"
         );
     }
+}
+
+/// 整计划重生成的重置：旧阶段/章节/素材/日程/资源全部清空，计划行回到
+/// generating 且大纲快照与学时归零，学习状态退回未开始。
+///
+/// 这条口径的存在理由：整计划重生成产出的是**全新大纲**，任何按旧索引
+/// 保存的东西（章节行、留档素材、学习日程）都会污染新一次生成。
+#[sqlx::test]
+#[ignore = "需要真实 PostgreSQL（cargo test -- --ignored）"]
+async fn test_reset_plan_for_regeneration_clears_derived_rows(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+    plan_store::seed_outline(
+        &pool,
+        plan_id,
+        &sample_outline(&["阶段甲"], &[2]),
+        &sample_resources(),
+    )
+    .await
+    .unwrap();
+    plan_store::upsert_phase(&pool, plan_id, 0, &sample_phase("阶段甲", &["章A", "章B"]))
+        .await
+        .unwrap();
+    plan_store::upsert_chapter_artifacts(
+        &pool,
+        plan_id,
+        0,
+        0,
+        &[],
+        Some(&serde_json::json!({"k": 1})),
+    )
+    .await
+    .unwrap();
+    // 日程用原生 SQL 插入：本用例只关心「重置会清掉它」，不需要 schedule
+    // 模块的分配语义（那属于别的用例）
+    sqlx::query(
+        "INSERT INTO study_schedule (plan_id, date, phase_idx, chapter_idx, chapter_title)
+         VALUES ($1, DATE '2026-10-22', 0, 0, '章A')",
+    )
+    .bind(plan_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    // 前置确认：重置前确实有内容
+    let count = |sql: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>(sql)
+                .bind(plan_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+    assert!(count("SELECT count(*) FROM phases WHERE plan_id = $1").await > 0);
+    assert!(count("SELECT count(*) FROM chapters c JOIN phases p ON c.phase_id = p.id WHERE p.plan_id = $1").await > 0);
+    assert!(count("SELECT count(*) FROM generation_artifacts WHERE plan_id = $1").await > 0);
+    assert!(count("SELECT count(*) FROM resources WHERE plan_id = $1").await > 0);
+    assert!(count("SELECT count(*) FROM study_schedule WHERE plan_id = $1").await > 0);
+
+    plan_store::reset_plan_for_regeneration(&pool, plan_id)
+        .await
+        .unwrap();
+
+    for sql in [
+        "SELECT count(*) FROM phases WHERE plan_id = $1",
+        "SELECT count(*) FROM chapters c JOIN phases p ON c.phase_id = p.id WHERE p.plan_id = $1",
+        "SELECT count(*) FROM generation_artifacts WHERE plan_id = $1",
+        "SELECT count(*) FROM resources WHERE plan_id = $1",
+        "SELECT count(*) FROM study_schedule WHERE plan_id = $1",
+    ] {
+        assert_eq!(count(sql).await, 0, "重置后仍有残留：{sql}");
+    }
+
+    let (status, learning, outline, hours) =
+        // estimated_total_hours 在库里是 INT4，按 i32 解码
+        sqlx::query_as::<_, (String, String, Option<serde_json::Value>, i32)>(
+            "SELECT status, learning_status, outline_json, estimated_total_hours
+             FROM plans WHERE id = $1",
+        )
+        .bind(plan_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, plan_state::PlanStatus::Generating.as_str());
+    assert_eq!(learning, plan_state::LearningStatus::NotStarted.as_str());
+    assert!(
+        outline.is_none(),
+        "旧大纲快照必须清空（否则重生成会读回旧结构）"
+    );
+    assert_eq!(hours, 0, "旧学时归零（新大纲事件会重新写入）");
+
+    // 幂等：再重置一次不报错、仍是零内容
+    plan_store::reset_plan_for_regeneration(&pool, plan_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        count("SELECT count(*) FROM phases WHERE plan_id = $1").await,
+        0
+    );
 }

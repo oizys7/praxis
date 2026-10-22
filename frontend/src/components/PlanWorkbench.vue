@@ -10,8 +10,18 @@ import {
   watch,
   type ShallowRef,
 } from "vue";
-import { ArrowLeft, ArrowUp, Map, TriangleAlert } from "lucide-vue-next";
-import { normalizeError, useAgent } from "@/composables/useAgent";
+import {
+  ArrowLeft,
+  ArrowUp,
+  Map,
+  RotateCcw,
+  TriangleAlert,
+} from "lucide-vue-next";
+import {
+  normalizeError,
+  regeneratePlan,
+  useAgent,
+} from "@/composables/useAgent";
 import {
   completedPhaseCount,
   ensureProgressListener,
@@ -51,6 +61,8 @@ const { loading, error, result, generatePlan } = useAgent();
 const planView = ref<"list" | "create">("list");
 /** 历史查看模式：主轴展示已保存计划，隐藏参数卡 */
 const historyMode = ref(false);
+/** 整计划重生成提交中（命令本身很快返回，仅用于按钮防连点） */
+const replayingPlan = ref(false);
 /** 历史详情滚动宿主（App 的 <main>，回顶与目录跳转共用） */
 const planScrollHost = inject<ShallowRef<HTMLElement | null>>(
   "planScrollHost",
@@ -247,6 +259,37 @@ watch(terminalPlanIds, async (ids) => {
   }
 });
 
+/**
+ * 整计划重生成：清空旧内容后重走完整生成链（连大纲一起重做）。
+ *
+ * 覆盖场景：大纲阶段就失败 / 收尾没落地而卡在 generating 的计划——这两种
+ * 情况下库里没有可点的阶段与章，阶段级重生成按钮永远不会出现。
+ */
+async function onRegeneratePlan() {
+  const pid = historyPlanId.value;
+  if (!pid || replayingPlan.value) return;
+  const ok = window.confirm(
+    "重新生成会清空这份计划现有的阶段与章节，从头编排整份路线。继续吗？",
+  );
+  if (!ok) return;
+  replayingPlan.value = true;
+  try {
+    await regeneratePlan(pid);
+    // 回到生成视图跟随同一 planId：库里已重置为 generating，旧内容不再展示
+    result.value = null;
+    resultRowStatus.value = null;
+    resultStorageIssue.value = null;
+    historyMode.value = false;
+    historyPlanId.value = pid;
+    lastRequest.value = null;
+    followPlan(pid);
+  } catch (e) {
+    error.value = normalizeError(e);
+  } finally {
+    replayingPlan.value = false;
+  }
+}
+
 /** 点「新建计划」：切到生成视图（取消跟随旧生成，后台任务继续跑） */
 function onCreate() {
   historyMode.value = false;
@@ -416,6 +459,27 @@ function onPlanRefreshed(plan: StudyPlan) {
         >
           <ArrowLeft class="h-4 w-4" aria-hidden="true" />
           返回列表
+        </Button>
+      </div>
+      <!-- 整计划重生成：failed / 卡在 generating 的计划没有可点的阶段与章 -->
+      <div
+        v-if="historyMode && resultRowStatus && resultRowStatus !== 'complete'"
+        class="mx-auto mb-4 w-full max-w-3xl rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3"
+      >
+        <p class="text-sm text-muted-foreground">
+          这份计划没有完整生成（当前状态：{{
+            resultRowStatus === "failed" ? "生成失败" : "生成中"
+          }}）。整计划重生成会连大纲一起重做，现有阶段与章节会被清空。
+        </p>
+        <Button
+          variant="outline"
+          size="sm"
+          class="mt-2"
+          :disabled="replayingPlan"
+          @click="onRegeneratePlan"
+        >
+          <RotateCcw class="h-4 w-4" aria-hidden="true" />
+          {{ replayingPlan ? "正在提交…" : "重新生成整个计划" }}
         </Button>
       </div>
       <!-- 交互重构：单轴纵向流——参数卡在顶部（生成中收起为摘要条），

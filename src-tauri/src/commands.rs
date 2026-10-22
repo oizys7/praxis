@@ -1344,6 +1344,86 @@ async fn run_regen(
 ///
 /// channel 形态说明同 [generate_plan]：可选 `JavaScriptChannelId` + webview
 /// 注入还原，语义等同可选 Channel。
+/// 整计划重生成：沿用库中保存的请求参数，清空旧内容后重走完整生成链
+/// （clarify → outline → 章级扇出 → 校验 → 评审 → 定向回炉）。
+///
+/// 与阶段/章级重生成的区别：那两者复用已有大纲、只重跑目标章；本命令连大纲
+/// 一起重做，用于「大纲阶段就失败」或「想换一套整体结构」的场景——这类计划
+/// 库里连阶段/章行都没有，界面上没有可点的重生成按钮，只能整份重来。
+///
+/// 复用同一个 plan_id：历史列表里不会多出一条重复记录，旧的失败行被直接
+/// 覆盖成新的生成过程。
+#[tauri::command]
+pub async fn regenerate_plan(
+    app: tauri::AppHandle,
+    plan_id: String,
+) -> Result<PlanSubmitResult, AgentError> {
+    ensure_llm_ready(&app)?;
+    ensure_agent_running(&app).await?;
+    sync_saved_settings_once(&app).await;
+    ensure_llm_connectivity().await?;
+
+    let started = std::time::Instant::now();
+    let req_id = new_request_id();
+    let plan_uuid =
+        Uuid::parse_str(&plan_id).map_err(|e| AgentError::Db(format!("计划 id 非法：{e}")))?;
+
+    let config = load_db_config();
+    let pool = db::pool(&config).await?;
+    let Some(meta) = plan_store::load_plan_request_meta(&pool, plan_uuid).await? else {
+        return Err(AgentError::Service(format!(
+            "计划不存在，无法重新生成：{plan_uuid}"
+        )));
+    };
+    // 行列结构 → 协议请求结构（与阶段/章级重生成共用同一份重建口径）
+    let request = PlanRequest {
+        goal: meta.goal,
+        level: meta.level,
+        weekly_hours: meta.weekly_hours,
+        weeks: meta.weeks,
+        interests: meta.interests,
+        background: meta.background,
+        study_days: meta.study_days,
+    };
+
+    info!(%req_id, %plan_uuid, goal = %request.goal, "收到整计划重生成请求");
+
+    // 先重置再提交：重置失败即中断（此时库里仍是原内容，没有半成品状态）
+    plan_store::reset_plan_for_regeneration(&pool, plan_uuid).await?;
+
+    let task_id = submit_plan_generation(&request, &req_id).await?;
+
+    let consumer = GenerationConsumer {
+        app: app.clone(),
+        storage: Some(Storage {
+            pool,
+            plan_id: plan_uuid,
+        }),
+        plan_id: plan_uuid,
+        task_id: task_id.clone(),
+        req_id: req_id.clone(),
+        weekly_hours: request.weekly_hours,
+        phase_count: 0,
+        terminal: false,
+    };
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = consumer.run().await {
+            error!(error = %e, "整计划重生成消费任务异常退出");
+        }
+    });
+
+    info!(
+        %req_id,
+        %plan_uuid,
+        task_id,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        "整计划重生成任务已提交（后台消费已启动）"
+    );
+    Ok(PlanSubmitResult {
+        plan_id: plan_uuid.to_string(),
+    })
+}
+
 #[tauri::command]
 pub async fn regenerate_phase(
     app: tauri::AppHandle,

@@ -158,6 +158,30 @@ class GenerationSubmit(CamelModel):
 # ---------------------------------------------------------------------------
 
 
+def _coerce_points_matrix(value: Any) -> Any:
+    """逐项兜底「每章知识点」：字符串/对象/None 都归一为字符串数组。
+
+    与长度对齐解耦：条目数少于章节数时，缺的章按「未指定」处理
+    （nodes 侧的防御助手读不到就给空列表，覆盖率校验随之跳过），
+    因此这里只做类型归一，不臆造内容。
+    """
+    if not isinstance(value, list):
+        return value
+    normalized: list[list[str]] = []
+    for item in value:
+        if isinstance(item, (list, tuple)):
+            normalized.append([str(entry) for entry in item if entry is not None])
+        elif isinstance(item, str):
+            normalized.append([item])
+        elif isinstance(item, dict):
+            normalized.append(_coerce_str_list(list(item.values())))
+        elif item is None:
+            normalized.append([])
+        else:
+            normalized.append([str(item)])
+    return normalized
+
+
 def _coerce_str_list(value: Any) -> Any:
     """把「本该是字符串数组」的值归一成字符串列表（LLM 输出容错）。
 
@@ -317,6 +341,18 @@ class PhaseOutline(CamelModel):
         default_factory=list,
         description="与 chapterTitles 等长同序的知识点列表（每章 3-6 个）",
     )
+
+    @field_validator("chapter_knowledge_points", mode="before")
+    @classmethod
+    def _normalize_points_matrix(cls, value: Any) -> Any:
+        """把「每章知识点」归一成 list[list[str]]，避免嵌套数组把整份大纲判废。
+
+        实测（GLM）嵌套两层的数组极不稳定：会把 chapterKnowledgePoints 直接
+        输出成扁平 list[str]（一章一个长字符串），于是 8 阶段 × 5 章一次报出
+        40 条 "Input should be a valid list"，整份大纲连同这次生成一起报废。
+        一章一个字符串仍然是有效信息，包成单元素列表即可。
+        """
+        return _coerce_points_matrix(value)
     chapter_kinds: list[str] = Field(
         default_factory=list, description="与 chapterTitles 等长的章型列表"
     )

@@ -699,6 +699,59 @@ pub async fn finalize_plan(
 /// 卡 failed、内容却完好（2026-10-16 计划 68c1aee0 实锤）。
 /// 尚有非 complete 章（如其余 pending）时不动行状态，计划级语义仍由
 /// 后续重生成推进。消费方：commands regenerate 双命令的 done(plan) 路径。
+/// 整计划重生成前的重置：清空旧的派生内容与生成上下文，把计划行拉回
+/// generating。请求参数（目标/水平/时长/周数/偏好/学习日）沿用库中原值。
+///
+/// 为什么必须清空：整计划重生成会产出**全新大纲**，旧的阶段/章节索引与标题
+/// 都不再对应，留着只会与新内容混在一起；generation_artifacts 按
+/// (阶段, 章) 索引，旧素材会让新生成读到错章的材料，必须一并丢弃；学习日程
+/// 指向的是旧章节，同样失效（重新开始学习由用户再点）。
+pub async fn reset_plan_for_regeneration(pool: &PgPool, plan_id: Uuid) -> Result<(), AgentError> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| fail("开启整计划重生成事务", e))?;
+    // 顺序敏感：先清引用了 phase/chapter 索引的表，再删 phases（子表级联）
+    for (label, sql) in [
+        (
+            "清理旧生成留档",
+            "DELETE FROM generation_artifacts WHERE plan_id = $1",
+        ),
+        (
+            "清理旧学习日程",
+            "DELETE FROM study_schedule WHERE plan_id = $1",
+        ),
+        ("清理旧推荐资源", "DELETE FROM resources WHERE plan_id = $1"),
+        ("清理旧阶段与章节", "DELETE FROM phases WHERE plan_id = $1"),
+    ] {
+        sqlx::query(sql)
+            .bind(plan_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| fail(label, e))?;
+    }
+    sqlx::query(
+        // estimated_total_hours 是 NOT NULL 列：归零而非置空（新大纲的 outline
+        // 事件会重新写入真实学时）
+        "UPDATE plans SET status = $2, learning_status = $3, outline_json = NULL,
+         estimated_total_hours = 0, updated_at = now() WHERE id = $1",
+    )
+    .bind(plan_id)
+    .bind(plan_state::PlanStatus::Generating.as_str())
+    .bind(plan_state::LearningStatus::NotStarted.as_str())
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| fail("重置计划行状态", e))?;
+    tx.commit()
+        .await
+        .map_err(|e| fail("提交整计划重生成事务", e))?;
+    info!(
+        %plan_id,
+        "整计划重生成：旧阶段/章节/素材/日程已清空，计划行回到 generating"
+    );
+    Ok(())
+}
+
 pub async fn finalize_regen_complete(pool: &PgPool, plan_id: Uuid) -> Result<(), AgentError> {
     // 先把本次没产出的子行收口：单章生成失败在图内是静默的（不炸整条流，
     // 也不发 chapter 事件），若不清理，那一章会永远停在 generating、前端一直

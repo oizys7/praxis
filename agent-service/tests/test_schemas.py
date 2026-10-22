@@ -72,3 +72,53 @@ def test_plan_request_study_days_accepts_null_as_default():
 
     req = PlanRequest.model_validate({"goal": "学 Rust", "studyDays": None})
     assert req.study_days == [1, 2, 3, 4, 5, 6, 7]
+
+def test_chapter_knowledge_points_tolerates_flattened_output() -> None:
+    """GLM 把嵌套数组退化成扁平 list[str] 时不得判废整份大纲。
+
+    实测：8 阶段 × 5 章一次报出 40 条 "Input should be a valid list"，
+    整次生成连同这次 LLM 调用一起报废。一章一个长字符串仍是有效信息。
+    """
+    from app.schemas import PhaseOutline as _PhaseOutline
+
+    phase = _PhaseOutline.model_validate(
+        {
+            "name": "阶段一",
+            "weekRange": "第1-2周",
+            "objectives": ["目标"],
+            "chapterTitles": ["甲", "乙", "丙"],
+            "chapterKnowledgePoints": ["知识点A、知识点B", "知识点C", None],
+        }
+    )
+    assert phase.chapter_knowledge_points == [
+        ["知识点A、知识点B"],
+        ["知识点C"],
+        [],
+    ]
+
+
+def test_chapter_knowledge_points_accepts_objects_and_preserves_nested() -> None:
+    """对象条目按已知键展平；正常的两层结构原样保留（不破坏正确输出）。"""
+    from app.schemas import PhaseOutline as _PhaseOutline
+
+    obj = _PhaseOutline.model_validate(
+        {
+            "name": "阶段一",
+            "weekRange": "第1-2周",
+            "objectives": [],
+            "chapterTitles": ["甲"],
+            "chapterKnowledgePoints": [{"point": "机制", "detail": "细节"}],
+        }
+    )
+    assert obj.chapter_knowledge_points == [["机制", "细节"]]
+
+    nested = _PhaseOutline.model_validate(
+        {
+            "name": "阶段一",
+            "weekRange": "第1-2周",
+            "objectives": [],
+            "chapterTitles": ["甲"],
+            "chapterKnowledgePoints": [["机制", "细节"]],
+        }
+    )
+    assert nested.chapter_knowledge_points == [["机制", "细节"]]

@@ -90,6 +90,19 @@ export async function regeneratePhase(
 }
 
 /**
+ * 整计划重生成：invoke('regenerate_plan')，返回后台任务的 planId（**复用同一行**，
+ * 历史列表不会多出一条重复记录）。
+ *
+ * 与阶段/章级重生成的区别：本命令连大纲一起重做，用于「大纲阶段就失败」或
+ * 「想换一套整体结构」的计划——这类计划库里连阶段/章行都没有，界面上没有
+ * 可点的重生成按钮，只能整份重来。进度走全局 'plan-progress' 事件，
+ * 因此不需要 Channel 参数（与 generate_plan 同一条观测通道）。
+ */
+export async function regeneratePlan(planId: string): Promise<{ planId: string }> {
+  return await invoke<{ planId: string }>("regenerate_plan", { planId });
+}
+
+/**
  * 重生成单个章节：invoke('regenerate_chapter')，形态同 [regeneratePhase]。
  * 单章进度事件为 PhaseDone{index=章节索引, total=1}：调用方对 total=1 的展示
  * 弱化为单行 spinner（不显示 1/1 计数）。

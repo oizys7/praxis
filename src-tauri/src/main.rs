@@ -53,6 +53,7 @@ fn main() {
         // - query_month_calendar / query_year_heatmap：月历按天组织 / 年热力图
         .invoke_handler(tauri::generate_handler![
             commands::generate_plan,
+            commands::regenerate_plan,
             commands::regenerate_phase,
             commands::regenerate_chapter,
             commands::ping_agent,
