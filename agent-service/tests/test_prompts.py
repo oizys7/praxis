@@ -39,6 +39,7 @@ _FULL_VARIABLES: dict[str, str] = {
         "讲透原理：机制如何运转、为何这样设计；必须有 800 字以上的「### 深入：××」小节"
     ),
     "plan_summary": "计划标题：X\n第 1 阶段「打基础」",
+    "validation_issues": "- 阶段 1 学时偏差 25%",
     "chapter_knowledge_points": "- 什么是事件循环；宏任务与微任务",
     "tech_facts": "- serde（crate）当前版本 1.0.215",
     "research_snippets": "（未启用联网检索，按你的知识范围组织内容）",
@@ -79,3 +80,100 @@ def test_mermaid_whitelist_matches_validators(name):
     # 大小写敏感抽查：错误大小写变体不得出现在提示词里
     for wrong in ("sequencediagram", "classdiagram", "Flowchart"):
         assert wrong not in system_text, f"{name} 含错误大小写的 {wrong}"
+
+
+# 每份提示词期望的变量集（= system ∪ human 的占位符全集）。
+# 这是「模板侧」的声明；「注入侧」由 test_nodes 的变量集用例锁定，
+# 两端同时校验才能抓到「模板要了没给」与「给了模板没用」两类漂移。
+_PROMPT_VARIABLES: dict[str, set[str]] = {
+    "outline": {"goal", "level", "weekly_hours", "weeks", "interests", "background"},
+    "phase": {
+        "level",
+        "phase_outline",
+        "plan_context",
+        "review_notes",
+        "weekly_hours",
+        "weeks",
+    },
+    "phase_extras": {
+        "goal",
+        "level",
+        "weekly_hours",
+        "weeks",
+        "interests",
+        "background",
+        "phase_outline",
+        "plan_context",
+        "review_notes",
+    },
+    "chapter": {
+        "goal",
+        "level",
+        "weekly_hours",
+        "weeks",
+        "interests",
+        "background",
+        "phase_name",
+        "phase_week_range",
+        "phase_objectives",
+        "chapter_title",
+        "sibling_chapter_titles",
+        "project_brief",
+        "plan_context",
+        "review_notes",
+        "chapter_kind",
+        "kind_requirements",
+        "chapter_knowledge_points",
+        "tech_facts",
+        "research_snippets",
+    },
+    "review": {"plan_summary", "validation_issues"},
+}
+
+
+@pytest.mark.parametrize("name", sorted(_PROMPT_VARIABLES))
+def test_prompt_variable_set_is_exact(name):
+    """模板占位符集必须与声明完全一致：多一个或少一个都失败。
+
+    这是反向校验（此前只有「模板要的变量都在全量字典里」这一个方向），
+    能抓住「提示词删了某段但注入代码还在给词」这类静默漂移。
+    """
+    template = prompts.load_prompt(name)
+    actual = prompts.template_variables(
+        template.get("system") or ""
+    ) | prompts.template_variables(template.get("human") or "")
+    expected = _PROMPT_VARIABLES[name]
+    assert actual == expected, (
+        f"{name}.yaml 变量集与声明不一致："
+        f"模板多出 {sorted(actual - expected)}，模板缺少 {sorted(expected - actual)}"
+    )
+
+
+@pytest.mark.parametrize("section", ["system", "human"])
+@pytest.mark.parametrize("name", sorted(_PROMPT_VARIABLES))
+def test_render_with_exact_variables_emits_no_warning(name, section, caplog):
+    """用该 section 自己的变量集渲染不得产生双向契约告警。
+
+    注意 system 与 human 的变量集不同（如 phase 的 system 只要学时/周数，
+    human 还要 level 与上下文），必须分别按各自的占位符集合渲染——用并集
+    渲染任一侧都会把另一侧的变量误判成「注入未使用」。
+    """
+    template = prompts.load_prompt(name)
+    text = template.get(section) or ""
+    if not text:
+        pytest.skip(f"{name}.yaml 无 {section} 段")
+    needed = prompts.template_variables(text)
+    variables = {key: _FULL_VARIABLES[key] for key in needed}
+    with caplog.at_level("WARNING", logger="app.prompts"):
+        prompts.render(text, **variables)
+    assert not caplog.messages, f"{name}.{section} 渲染出现契约告警：{caplog.messages}"
+
+
+def test_render_warns_on_missing_and_unused_variables(caplog):
+    """两个方向都要有告警：缺失（按空串渲染）与多余（注入未使用）。"""
+    with caplog.at_level("WARNING", logger="app.prompts"):
+        rendered = prompts.render("你好 {{ name }}，{{ missing }}", name="世界", extra="多余")
+    assert rendered.startswith("你好 世界，")
+    text = " ".join(caplog.messages)
+    assert "missing" in text, "缺失变量应告警"
+    assert "extra" in text, "未使用的注入变量应告警"

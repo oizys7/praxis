@@ -10,9 +10,23 @@ test_assemble_extras_missing_retries_once）。
 from typing import Any, cast
 
 import pytest
-from app import nodes
+from app import nodes, prompts
 from app.config import settings
 from app.errors import AgentServiceError
+
+
+def _template_vars(name: str) -> set[str]:
+    """提示词模板的占位符全集（system ∪ human）。
+
+    用于断言「节点注入的变量集 == 模板要的变量集」——这是变量契约的另一半：
+    test_prompts 锁模板侧声明，这里锁注入侧实现。此前只校验了「模板要的都在
+    全量字典里」，所以 `_expand_phase_extras` 漏注 goal/level/interests/
+    background 四个画像字段很久没被发现（render 对缺失变量静默填空串）。
+    """
+    template = prompts.load_prompt(name)
+    return prompts.template_variables(
+        template.get("system") or ""
+    ) | prompts.template_variables(template.get("human") or "")
 from app.mock import (
     build_mock_chapter,
     build_mock_extras,
@@ -158,6 +172,11 @@ async def test_expand_chapter_real_path_variables(monkeypatch):
 
     assert captured["model_cls"] is nodes.Chapter
     assert captured["prompt_key"] == "chapter"
+    assert set(captured["variables"]) == _template_vars("chapter"), (
+        "chapter 注入变量与提示词占位符不一致："
+        f"多 {sorted(set(captured['variables']) - _template_vars('chapter'))}，"
+        f"缺 {sorted(_template_vars('chapter') - set(captured['variables']))}"
+    )
     variables = captured["variables"]
     assert variables["chapter_title"] == phase_outline["chapterTitles"][0]
     assert variables["plan_context"] == "计划标题：X"
@@ -253,6 +272,11 @@ async def test_expand_phase_wrap_real_path_variables(monkeypatch):
     assert captured["model_cls"] is nodes.PhaseExtrasOutput
     assert captured["prompt_key"] == "phase_extras"
     variables = captured["variables"]
+    assert set(variables) == _template_vars("phase_extras"), (
+        "phase_extras 注入变量与提示词占位符不一致："
+        f"多 {sorted(set(variables) - _template_vars('phase_extras'))}，"
+        f"缺 {sorted(_template_vars('phase_extras') - set(variables))}"
+    )
     assert outline["phases"][1]["name"] in variables["phase_outline"], (
         "骨架须 JSON 序列化后注入"
     )
