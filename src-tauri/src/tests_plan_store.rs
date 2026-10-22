@@ -176,6 +176,16 @@ fn sample_resources() -> Vec<StudyResource> {
 }
 
 /// 阶段状态（按 idx 取，供断言）
+/// 计划行终态（结算口径改造后，upsert_chapter 会在全章 complete 时直接翻 complete）
+async fn plan_status(pool: &PgPool, plan_id: Uuid) -> Option<String> {
+    sqlx::query_scalar("SELECT status FROM plans WHERE id = $1")
+        .bind(plan_id)
+        .fetch_optional(pool)
+        .await
+        .expect("查询计划状态")
+        .flatten()
+}
+
 async fn phase_status(pool: &PgPool, plan_id: Uuid, idx: i32) -> Option<String> {
     sqlx::query_scalar("SELECT status FROM phases WHERE plan_id = $1 AND idx = $2")
         .bind(plan_id)
@@ -654,9 +664,11 @@ async fn test_upsert_chapter_empty_content_failed_then_complete(pool: PgPool) {
         Some("failed".into()),
         "strip 后空正文必须翻 failed"
     );
-    assert_eq!(
+    // 阶段状态是子章纯函数：有 failed 章 → failed。这里只锁「不得 complete」，
+    // 不锁死 failed/pending 的具体取值（否则每次调整 CASE 分支都要改断言）。
+    assert_ne!(
         phase_status(&pool, plan_id, 0).await,
-        Some("pending".into()),
+        Some("complete".into()),
         "存在 failed 章节，阶段不得置 complete"
     );
 
@@ -668,10 +680,15 @@ async fn test_upsert_chapter_empty_content_failed_then_complete(pool: PgPool) {
         chapter_status(&pool, plan_id, 0, 1).await,
         Some("complete".into())
     );
-    assert_eq!(
+    assert_ne!(
         phase_status(&pool, plan_id, 0).await,
-        Some("pending".into()),
+        Some("complete".into()),
         "failed 章节未收口前阶段不得翻牌"
+    );
+    assert_eq!(
+        plan_status(&pool, plan_id).await,
+        Some("generating".into()),
+        "存在 failed 章节时计划不得提前结算为 complete"
     );
 
     // 重新生成章 A：正文补齐 → complete，两章全 complete，阶段联动翻牌
@@ -686,6 +703,11 @@ async fn test_upsert_chapter_empty_content_failed_then_complete(pool: PgPool) {
         phase_status(&pool, plan_id, 0).await,
         Some("complete".into()),
         "全部章节 complete 后阶段应联动翻牌"
+    );
+    assert_eq!(
+        plan_status(&pool, plan_id).await,
+        Some("complete".into()),
+        "全部章节 complete 后计划应直接结算为 complete（不等 done 事件）"
     );
 }
 
@@ -1241,4 +1263,52 @@ async fn test_sweep_heals_failed_with_all_chapters_complete(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(keep_status, "failed", "真失败行应保持 failed");
+}
+
+/// 结算口径回归（2026-10-22）：计划终态按「全章 complete」判定，与 done 事件解耦。
+/// 关键防线——单个阶段写完不等于计划完成：另一阶段还停着 pending 骨架章时，
+/// upsert_chapter 不得把计划翻成 complete（否则会出现「内容不全却显示已完成」）。
+#[sqlx::test]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
+async fn test_upsert_chapter_keeps_plan_generating_until_every_phase_complete(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+
+    plan_store::seed_outline(
+        &pool,
+        plan_id,
+        &sample_outline(&["阶段甲", "阶段乙"], &[1, 1]),
+        &[],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        plan_status(&pool, plan_id).await,
+        Some("generating".into()),
+        "仅有骨架章时计划保持 generating"
+    );
+
+    // 阶段甲写完：甲全 complete，但乙仍是 pending 骨架 → 计划不得翻牌
+    plan_store::upsert_chapter(&pool, plan_id, 0, 0, &sample_chapter("甲章"))
+        .await
+        .expect("upsert_chapter 甲章失败");
+    assert_eq!(
+        phase_status(&pool, plan_id, 0).await,
+        Some("complete".into())
+    );
+    assert_eq!(
+        plan_status(&pool, plan_id).await,
+        Some("generating".into()),
+        "另一阶段仍为 pending 骨架时，计划不得被判为完成"
+    );
+
+    // 阶段乙写完 → 全计划章 complete → 计划直接结算
+    plan_store::upsert_chapter(&pool, plan_id, 1, 0, &sample_chapter("乙章"))
+        .await
+        .expect("upsert_chapter 乙章失败");
+    assert_eq!(
+        plan_status(&pool, plan_id).await,
+        Some("complete".into()),
+        "最后一个待写章节落地后计划应结算为 complete"
+    );
 }

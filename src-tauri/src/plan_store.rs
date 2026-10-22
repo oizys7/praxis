@@ -12,6 +12,8 @@
 //! 五表 DDL（plans/phases/projects/chapters/resources）与两个演进列
 //! （status、chapters.content_md）逐字定义在 db_ddl，首连幂等执行。
 
+use std::collections::HashMap;
+
 use sqlx::{PgPool, Row, Transaction};
 use tracing::{info, warn};
 use uuid::Uuid;
@@ -373,19 +375,28 @@ pub async fn upsert_chapter(
     .await
     .map_err(|e| fail("推进阶段状态", e))?;
 
-    // 学习状态联动（同事务原子）：active 计划全章 complete → completed；
-    // 不全 complete（重生成破坏完整性）则保持/降回 active；not_started 不自动
-    // 流转（未开始学习的计划保持分类语义，开始学习入口仍在）
+    // 终态与学习状态联动（同事务原子、零额外往返）：
+    // - status：generating 计划全章 complete → complete。计划终态按章节口径判定，
+    //   不等 done 事件——done 要等 review 的 LLM 调用返回，而 review 只是质量
+    //   检查，它的卡顿不该让内容齐备的计划永远停在「生成中」（实测：27/27 章
+    //   已完成、review 挂起，前端因章覆盖率显示完成而后端仍是 generating）。
+    // - learning_status：active 计划全章 complete → completed；不全 complete
+    //   时条件不匹配，保持原值（not_started 同样不自动流转）。
+    // 两个 CASE 各自守住当前值，因此同一条语句可服务两类计划。
     sqlx::query(
-        "UPDATE plans SET learning_status = CASE
-             WHEN EXISTS (
-                 SELECT 1 FROM chapters c2 JOIN phases p2 ON c2.phase_id = p2.id
-                 WHERE p2.plan_id = $1
-             ) AND NOT EXISTS (
-                 SELECT 1 FROM chapters c JOIN phases p ON c.phase_id = p.id
-                 WHERE p.plan_id = $1 AND c.status <> 'complete'
-             ) THEN 'completed' ELSE 'active' END
-         WHERE id = $1 AND learning_status = 'active'",
+        "UPDATE plans SET
+             status = CASE WHEN status = 'generating' THEN 'complete' ELSE status END,
+             learning_status = CASE
+                 WHEN learning_status = 'active' THEN 'completed' ELSE learning_status END
+         WHERE id = $1
+           AND (status = 'generating' OR learning_status = 'active')
+           AND EXISTS (
+               SELECT 1 FROM chapters c2 JOIN phases p2 ON c2.phase_id = p2.id
+               WHERE p2.plan_id = $1
+           ) AND NOT EXISTS (
+               SELECT 1 FROM chapters c JOIN phases p ON c.phase_id = p.id
+               WHERE p.plan_id = $1 AND c.status <> 'complete'
+           )",
     )
     .bind(plan_id)
     .execute(&mut *tx)
@@ -904,27 +915,26 @@ pub async fn load_study_plan(
     .await
     .map_err(|e| fail("查询阶段列表", e))?;
 
-    let mut phases = Vec::with_capacity(phase_rows.len());
-    for row in phase_rows {
-        let phase_id: Uuid = row.try_get("id").map_err(db_err)?;
-        let objectives: sqlx::types::Json<Vec<String>> =
-            row.try_get("objectives").map_err(db_err)?;
-        let practice: sqlx::types::Json<Vec<String>> = row.try_get("practice").map_err(db_err)?;
-        let assignments: sqlx::types::Json<Vec<String>> =
-            row.try_get("assignments").map_err(db_err)?;
-
-        let chapter_rows = sqlx::query(
-            "SELECT title, summary, status, content_md, kind, key_terms
-             FROM chapters WHERE phase_id = $1 ORDER BY idx ASC",
-        )
-        .bind(phase_id)
-        .fetch_all(pool)
-        .await
-        .map_err(|e| fail("查询章节列表", e))?;
-
-        let mut chapters = Vec::with_capacity(chapter_rows.len());
-        for crow in chapter_rows {
-            chapters.push(ChapterRows {
+    // 章节与项目各用一次查询取回全计划数据，再按 phase_id 内存分组：
+    // 原先「每阶段两次查询」是 N+1（6 阶段 = 13 次往返），对远端 PG 意味着
+    // 十余次网络 RTT，配合前端轮询会占满连接池并拖慢 upsert（实测单条章节
+    // 查询达 143s，并出现 statement timeout 与连接获取超阈值告警）。
+    let mut chapters_by_phase: HashMap<Uuid, Vec<ChapterRows>> = HashMap::new();
+    for crow in sqlx::query(
+        "SELECT c.phase_id, c.title, c.summary, c.status, c.content_md, c.kind, c.key_terms
+         FROM chapters c JOIN phases p ON c.phase_id = p.id
+         WHERE p.plan_id = $1
+         ORDER BY p.idx ASC, c.idx ASC",
+    )
+    .bind(plan_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| fail("查询章节列表", e))?
+    {
+        chapters_by_phase
+            .entry(crow.try_get("phase_id").map_err(db_err)?)
+            .or_default()
+            .push(ChapterRows {
                 title: crow.try_get("title").map_err(db_err)?,
                 summary: crow.try_get("summary").map_err(db_err)?,
                 status: crow.try_get("status").map_err(db_err)?,
@@ -935,19 +945,24 @@ pub async fn load_study_plan(
                     .map_err(db_err)?
                     .0,
             });
-        }
+    }
 
-        // 项目（projects.phase_id UNIQUE，至多一行）
-        let project = sqlx::query(
-            "SELECT name, description, background, steps, acceptance_criteria, estimated_hours
-             FROM projects WHERE phase_id = $1",
-        )
-        .bind(phase_id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| fail("查询阶段项目", e))?
-        .map(|p| -> Result<ProjectRow, AgentError> {
-            Ok(ProjectRow {
+    // 项目（projects.phase_id UNIQUE，每个阶段至多一行）
+    let mut project_by_phase: HashMap<Uuid, ProjectRow> = HashMap::new();
+    for p in sqlx::query(
+        "SELECT pr.phase_id, pr.name, pr.description, pr.background, pr.steps,
+                pr.acceptance_criteria, pr.estimated_hours
+         FROM projects pr JOIN phases p ON pr.phase_id = p.id
+         WHERE p.plan_id = $1",
+    )
+    .bind(plan_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| fail("查询阶段项目", e))?
+    {
+        project_by_phase.insert(
+            p.try_get("phase_id").map_err(db_err)?,
+            ProjectRow {
                 name: p.try_get("name").map_err(db_err)?,
                 description: p.try_get("description").map_err(db_err)?,
                 background: p.try_get("background").map_err(db_err)?,
@@ -960,9 +975,18 @@ pub async fn load_study_plan(
                     .map_err(db_err)?
                     .0,
                 estimated_hours: p.try_get("estimated_hours").map_err(db_err)?,
-            })
-        })
-        .transpose()?;
+            },
+        );
+    }
+
+    let mut phases = Vec::with_capacity(phase_rows.len());
+    for row in phase_rows {
+        let phase_id: Uuid = row.try_get("id").map_err(db_err)?;
+        let objectives: sqlx::types::Json<Vec<String>> =
+            row.try_get("objectives").map_err(db_err)?;
+        let practice: sqlx::types::Json<Vec<String>> = row.try_get("practice").map_err(db_err)?;
+        let assignments: sqlx::types::Json<Vec<String>> =
+            row.try_get("assignments").map_err(db_err)?;
 
         phases.push(PhaseRows {
             name: row.try_get("name").map_err(db_err)?,
@@ -971,8 +995,9 @@ pub async fn load_study_plan(
             objectives: objectives.0,
             practice: practice.0,
             assignments: assignments.0,
-            project,
-            chapters,
+            // remove 而非 get：每阶段只消费一次，顺手释放已取走的行
+            project: project_by_phase.remove(&phase_id),
+            chapters: chapters_by_phase.remove(&phase_id).unwrap_or_default(),
         });
     }
 
