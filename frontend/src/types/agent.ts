@@ -400,3 +400,19 @@ export interface YearHeatmapDay {
   total: number;
   done: number;
 }
+
+/** 启动序列状态（对应 Rust startup.rs 的 StartupStatus；仅本地 IPC，不入云端协议） */
+export interface StartupStatus {
+  /** 是否已可进入主界面（成功或降级都算就绪——库故障不该锁死应用） */
+  ready: boolean;
+  /** 阶段标识：config | database | agent | ready */
+  phase: string;
+  /** 后端给的真实阶段文案（启动页用于读屏播报） */
+  message: string;
+  /** 0-100 估算进度（阶段边界固定，阶段内不假装精确） */
+  progress: number;
+  /** 降级原因；非空表示部分功能不可用（库未配置/连不上、Agent 起不来） */
+  degraded: string | null;
+  /** 启动耗时（毫秒），ready 后有意义 */
+  elapsedMs: number;
+}

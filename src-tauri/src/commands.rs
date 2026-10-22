@@ -1966,6 +1966,15 @@ mod tests {
 }
 
 /// `db_config_from_url`：`database.url` → DbConfig 字段（任务 28 语义测试）
+/// 启动进度查询：前端启动页轮询此命令，ready=true 后进入主界面。
+///
+/// 返回的是内存快照（启动序列在 setup 中 spawn，与本命令无 IO 交互），
+/// 因此可高频轮询；降级原因随 degraded 字段一起返回，供启动页据实提示。
+#[tauri::command]
+pub fn startup_status() -> crate::startup::StartupStatus {
+    crate::startup::status()
+}
+
 #[cfg(test)]
 mod tests_db_config_from_url {
     use super::*;

@@ -17,6 +17,7 @@ mod schedule;
 mod secret;
 mod settings;
 mod sidecar;
+mod startup;
 
 #[cfg(test)]
 mod tests_app_config;
@@ -65,6 +66,7 @@ fn main() {
             commands::toggle_schedule_item,
             commands::query_month_calendar,
             commands::query_year_heatmap,
+            commands::startup_status,
         ])
         .setup(|app| {
             use tauri::Manager;
@@ -103,31 +105,15 @@ fn main() {
             }
             tracing::info!("Praxis 桌面壳启动");
 
-            // 启动清扫（任务 22）：sidecar 重启后后台生成任务已随 Python 进程
-            // 消失，上一进程遗留的 status='generating' 行永远等不到终态事件，
-            // 全部翻 failed（幂等；仅 DB 模式，库不可用则跳过不影响启动）。
+            // 启动序列（2026-10-22）：主动预热云端库并起 Agent 服务，阶段与
+            // 耗时经 startup_status 暴露给前端启动页。此前连接池是惰性的，
+            // 首个 DB 命令才触发 12.8s 建连，期间所有页面都只是转圈，观感像
+            // 应用坏了。清扫（幂等）并入序列：① generating 滑口行置 failed；
+            // ② failed 自愈（2026-10-16 裁定）：章节已全部 complete 的 failed
+            // 行翻回 complete，真失败行（尚有非 complete 章）保持 failed。
+            let startup_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                let config = commands::load_db_config();
-                if config.host.trim().is_empty() {
-                    tracing::debug!("云端库未配置，跳过启动清扫");
-                    return;
-                }
-                match db::pool(&config).await {
-                    Ok(pool) => {
-                        // 启动清扫（幂等）：① generating 滑口行置 failed；
-                        // ② failed 自愈（2026-10-16 裁定）：章节已全部 complete
-                        // 的 failed 行（重生成补齐后旧守卫收口漏翻）翻回
-                        // complete；真失败行（尚有非 complete 章）保持 failed。
-                        match plan_store::sweep_stale_generating(&pool).await {
-                            Ok((swept, healed)) if swept > 0 || healed > 0 => {
-                                tracing::info!(swept, healed, "启动清扫完成：generating 行置 failed / failed 全章完成行自愈")
-                            }
-                            Ok(_) => {}
-                            Err(e) => tracing::warn!(error = %e, "启动清扫执行失败"),
-                        }
-                    }
-                    Err(e) => tracing::warn!(error = %e, "云端库不可用，跳过启动清扫"),
-                }
+                startup::run(startup_handle).await;
             });
 
             Ok(())

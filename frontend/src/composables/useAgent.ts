@@ -7,6 +7,7 @@ import type {
   PlanRequest,
   PlanResponse,
   PlanSubmitResult,
+  StartupStatus,
 } from "@/types/agent";
 
 /**
@@ -167,6 +168,16 @@ export function useAgent() {
   }
 
   /** 探测 Python Agent 服务是否在线（GET /health） */
+  /**
+   * 启动进度：读取 Rust 启动序列快照（纯内存读，无 IO，可高频轮询）。
+   *
+   * 启动序列在 Rust setup 中 spawn：连云端库（慢，10s+）→ 起 Agent 服务。
+   * 就绪前主界面的历史/日历/生成全部不可用，因此启动页据此阻塞进入。
+   */
+  async function startupStatus(): Promise<StartupStatus> {
+    return await invoke<StartupStatus>("startup_status");
+  }
+
   async function pingAgent(): Promise<boolean> {
     try {
       return await invoke<boolean>("ping_agent");
@@ -186,6 +197,7 @@ export function useAgent() {
     error,
     result,
     generatePlan,
+    startupStatus,
     pingAgent,
     reset,
   };

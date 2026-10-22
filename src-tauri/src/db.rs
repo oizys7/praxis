@@ -33,6 +33,10 @@ struct PoolEntry {
 /// 全局连接池：配置变更时整体替换（旧池随 Arc 释放）
 static POOL: Mutex<Option<PoolEntry>> = Mutex::const_new(None);
 
+/// 首连串行锁：启动预热与首个命令同时到达时，各自建池会重复付出十余秒
+/// 网络代价（远端 PG 实测 12.8s），这里只让先到者建池，后来者复用。
+static CONNECTING: Mutex<()> = Mutex::const_new(());
+
 /// 获取（或按配置重建）连接池；未配置时返回友好错误。
 pub async fn pool(config: &DbConfig) -> Result<PgPool, AgentError> {
     if config.host.trim().is_empty() {
@@ -55,7 +59,18 @@ pub async fn pool(config: &DbConfig) -> Result<PgPool, AgentError> {
         }
     }
 
-    // 慢路径：建池与建表不持锁，避免阻塞其他 command 的快路径检查
+    // 慢路径：先串行化首连，再 double-check——等待期间先到者可能已经把池建好
+    let _connecting = CONNECTING.lock().await;
+    {
+        let guard = POOL.lock().await;
+        if let Some(entry) = guard.as_ref() {
+            if entry.key == key {
+                return Ok(entry.pool.clone());
+            }
+        }
+    }
+
+    // 建池与建表不持 POOL 锁，避免阻塞其他 command 的快路径检查
     let options = PgConnectOptions::new()
         .host(&config.host)
         .port(config.port)
