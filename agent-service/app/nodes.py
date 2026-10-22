@@ -54,6 +54,8 @@ from app.schemas import (
     ReviewOutput,
     StudyPhase,
 )
+from app.search import current_provider
+from app.version_check import detect_versions
 
 logger = logging.getLogger("praxis.nodes")
 
@@ -258,6 +260,14 @@ async def outline_node(state: AgentState) -> dict[str, Any]:
     outline_dump["resources"] = await verify_resources(
         outline_dump.get("resources") or []
     )
+    # 版本事实：并发探测当前版本，查不到的条目直接丢弃——这层同时过滤掉
+    # 模型编造的库名（编的库没有版本，不会作为事实传给章节撰写者）
+    tech_facts = await detect_versions(outline_dump.get("techStack") or [])
+    outline_dump["techFacts"] = tech_facts
+    for phase in outline_dump.get("phases") or []:
+        # 计划级事实下发到每个阶段：Send payload 只带 phase_outline，章节展开
+        # 需要它；塞进阶段是最省改动的做法（不进 outline 事件载荷）
+        phase["techFacts"] = tech_facts
     # 以 camelCase JSON 形式存入状态（与后续节点及响应包络直接对齐）
     return {"outline": outline_dump}
 
@@ -339,6 +349,22 @@ def _chapter_knowledge_points(
     if 0 <= chapter_index < len(points):
         return [str(p).strip() for p in (points[chapter_index] or []) if str(p).strip()]
     return []
+
+
+async def _research_snippets(query: str) -> list[dict[str, str]]:
+    """取检索素材；未配置提供方或检索失败时返回空列表（纯降级）。
+
+    检索是锦上添花：没有它，正文按模型知识写；有它，正文可以引用具体细节。
+    任何失败都不该让生成失败，所以这里只记 warning。
+    """
+    provider = current_provider()
+    if provider is None:
+        return []
+    try:
+        return await provider.search(query, limit=3)
+    except Exception:
+        logger.warning("检索失败，本次按未启用处理", exc_info=True)
+        return []
 
 
 def _build_glossary(
@@ -480,6 +506,8 @@ async def _expand_chapter_draft(
     titles = phase_outline.get("chapterTitles") or []
     chapter_title = titles[chapter_index]
     kind = _chapter_kind(phase_outline, chapter_index)
+    points = _chapter_knowledge_points(phase_outline, chapter_index)
+    snippets = await _research_snippets(" ".join([chapter_title, *points]))
     async with _EXPAND_SEMAPHORE:
         chapter = await invoke_structured(
             Chapter,
@@ -511,13 +539,21 @@ async def _expand_chapter_draft(
                 "kind_requirements": _CHAPTER_KIND_REQUIREMENTS[kind],
                 # 知识点是大纲钉下的骨架：小节标题要对得上，否则措施B 的覆盖率
                 # 校验会判不合格并定向回炉该章
-                "chapter_knowledge_points": chr(10).join(
-                    f"- {point}"
-                    for point in _chapter_knowledge_points(
-                        phase_outline, chapter_index
-                    )
-                )
+                "chapter_knowledge_points": chr(10).join(f"- {point}" for point in points)
                 or "（未指定，按章节标题自行组织）",
+                # 版本事实：实测得到的当前版本。模型据此写当前 API，
+                # 而不是训练截止时的写法；没探测到就明确要求别写死版本号
+                "tech_facts": chr(10).join(
+                    f"- {fact.get('name', '')}（{fact.get('ecosystem', '')}）"
+                    f"当前版本 {fact.get('latestVersion', '')}"
+                    for fact in (phase_outline.get("techFacts") or [])
+                )
+                or "（未探测到版本信息：不确定的版本号不要写具体数字）",
+                "research_snippets": chr(10).join(
+                    f"- {item.get('title', '')}：{item.get('snippet', '')}"
+                    for item in snippets
+                )
+                or "（未启用联网检索，按你的知识范围组织内容）",
             },
         )
     # 章型以大纲为准：模型可能自行改写 kind，这里强制回写，

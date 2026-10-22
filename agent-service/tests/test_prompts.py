@@ -11,7 +11,6 @@ from __future__ import annotations
 import re
 
 import pytest
-
 from app import prompts, validators
 
 # 叙事化提示词（章级扇出拓扑：chapter 为主链 + 重生成共用；
@@ -40,6 +39,9 @@ _FULL_VARIABLES: dict[str, str] = {
         "讲透原理：机制如何运转、为何这样设计；必须有 800 字以上的「### 深入：××」小节"
     ),
     "plan_summary": "计划标题：X\n第 1 阶段「打基础」",
+    "chapter_knowledge_points": "- 什么是事件循环；宏任务与微任务",
+    "tech_facts": "- serde（crate）当前版本 1.0.215",
+    "research_snippets": "（未启用联网检索，按你的知识范围组织内容）",
 }
 
 

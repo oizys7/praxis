@@ -15,6 +15,11 @@
   "agent": {
     "mockMode": false
   },
+  "search": {
+    "_comment": "外部检索提供方（可选）：留空 = 不启用联网检索，章节生成行为与没有本配置完全一致。接入真实 provider 后填 tavily / brave 等。",
+    "provider": "",
+    "apiKey": ""
+  },
   "secrets": {
     "keyDir": "",
     "sealPassword": ""

@@ -107,6 +107,10 @@ class PraxisRuntimeConfig:
     # agent 区段：冷启动默认；settings.json 的 mock 开关仍是运行时权威
     mock_mode: bool = False
 
+    # search 区段（可选）：外部检索提供方；留空 = 不启用，生成行为毫无变化
+    search_provider: str = ""
+    search_api_key: str = ""
+
 
 @dataclass
 class Settings:
@@ -146,6 +150,11 @@ class Settings:
 
     # 离线演示模式：为 True 时不调用 LLM，返回确定性 mock 计划（便于无 Key 开发调试）
     allow_mock_llm: bool = False
+
+    # 外部检索提供方（可选，冷启动从 config.json 的 search 段读）：
+    # 留空 = 不启用联网检索，章节生成行为与没有该配置完全一致
+    search_provider: str = ""
+    search_api_key: str = ""
 
     def current_api_key(self) -> str:
         """返回当前提供商已配置的 API Key（未识别的提供商返回空串）。"""
@@ -332,6 +341,10 @@ def _parse_config(raw: Any) -> PraxisRuntimeConfig:
         host=_string(service, "host", "service.host", "127.0.0.1"),
         port=_port(service, "port", "service.port", 8000),
         mock_mode=_flag(agent, "mockMode", "agent.mockMode", False),
+        search_provider=_string(
+            _section(raw, "search"), "provider", "search.provider", ""
+        ),
+        search_api_key=_string(_section(raw, "search"), "apiKey", "search.apiKey", ""),
     )
 
 
@@ -389,6 +402,8 @@ def bootstrap_runtime(argv: Sequence[str]) -> PraxisRuntimeConfig:
     settings.host = cfg.host
     settings.port = cfg.port
     settings.allow_mock_llm = cfg.mock_mode
+    settings.search_provider = cfg.search_provider
+    settings.search_api_key = cfg.search_api_key
     return cfg
 
 

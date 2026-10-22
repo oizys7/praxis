@@ -277,6 +277,21 @@ class PhaseExtrasOutput(BaseModel):
     project: PhaseProject = Field(..., description="阶段项目")
 
 
+class TechRef(CamelModel):
+    """技术栈条目：版本探测的输入（计划级，与学习目标直接相关的库/工具）。
+
+    条目查不到会被丢弃——这层同时充当幻觉过滤器：模型编造的库名没有版本，
+    不会作为事实传给下游。
+    """
+
+    name: str = Field(
+        ..., description="库/工具名（crate / npm / PyPI 名称，或 GitHub 的 owner/repo）"
+    )
+    ecosystem: str = Field(
+        default="crate", description="生态：crate | npm | pypi | github"
+    )
+
+
 class PlanOutline(CamelModel):
     """计划总大纲：先产出骨架，再逐阶段展开（仅图内流转，不入响应协议）。"""
 
@@ -285,6 +300,9 @@ class PlanOutline(CamelModel):
     estimated_total_hours: int = Field(default=0, description="预计总学时")
     phases: list[PhaseOutline] = Field(default_factory=list, description="阶段大纲列表")
     resources: list[Resource] = Field(default_factory=list, description="推荐资源")
+    tech_stack: list[TechRef] = Field(
+        default_factory=list, description="本计划涉及的核心技术栈（用于探测当前版本）"
+    )
 
 
 # ---------------------------------------------------------------------------

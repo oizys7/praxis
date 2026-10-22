@@ -14,6 +14,11 @@ system: |
       - estimatedTotalHours：预计总学时
       - phases：阶段大纲列表
       - resources：推荐资源列表
+      - techStack：本计划涉及的核心技术栈列表（3-8 条），供系统实时探测
+        当前版本。每条含 name（crate / npm / PyPI 的包名，或 GitHub 的
+        owner/repo）与 ecosystem（crate | npm | pypi | github）。
+        只列与学习目标直接相关、学员确实会动手用的库或工具；写不准包名
+        就不列——查不到的条目会被系统丢弃，宁缺毋滥。
    3. 把整个学习周期划分为若干个阶段（phases）——阶段数量不设硬性上限，依据
       学习周期长短、每周可用时长与任务难度弹性决定：任务越难、周期越长，
       阶段划分应越多越细。阶段之间难度递进、目标连贯。
