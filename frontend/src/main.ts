@@ -1,4 +1,7 @@
 import { createApp } from "vue";
+// .vue 模块解析依赖 src/env.d.ts 里的 `declare module "*.vue"`。vue-tsc 自带
+// SFC 解析所以不需要它，但普通 tsserver / 裸 tsc 会报 TS2307「找不到模块」——
+// 删掉那条声明会让所有非 SFC-aware 工具重新报错。
 import App from "./App.vue";
 import vTip from "./directives/tip";
 import "./assets/index.css";
