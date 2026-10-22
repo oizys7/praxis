@@ -427,12 +427,19 @@ pub(crate) fn chapter_progress_from_outcome(
 // 共享流消费骨架（generate_plan / regenerate 双命令同源，防双份漂移）
 // ---------------------------------------------------------------------------
 
-/// 流式消费事件分派器：每条流式命令链路实现一个，负责事件处理（入库 / 进度
-/// 推送 / 终态收尾）；返回 Ok(Some(envelope)) 表示已收到 done 终态（消费提前
-/// 收束），Ok(None) 表示事件已处理、继续消费。唯一消费者是
-/// [consume_ndjson_stream]（分行 / 解析 / 非 2xx 校验基础设施同源）。
+/// 事件分派器：**唯一**的事件处理契约（2026-10-22 架构收敛）。
+///
+/// 此前 NDJSON 链路与 WS 链路各有一个 trait（StreamEventSink / WsEventSink），
+/// 语义实现被平行复制成两份 handle_event。D1 章级扇出升级时只改了其中一份，
+/// 整阶段重生成的章节事件就被 warn-ignore 吞掉、内容全部丢失——这是平行
+/// 复制结构的必然结果。现在两条传输链路共用本 trait：传输层只负责
+/// 「字节 → StreamEvent」，语义处理（入库 / 进度推送 / 终态收尾）只写一次。
+///
+/// 返回 Ok(Some(envelope)) 表示已收到 done 终态（消费提前收束）；Ok(None)
+/// 表示事件已处理、继续消费。seq 只有 WS 链路提供（NDJSON 传 None），仅用于
+/// 日志关联——重连重放的安全网在游标，不在分派侧。
 trait StreamEventSink {
-    fn handle_event<'a>(&'a mut self, event: StreamEvent) -> SinkFuture<'a>;
+    fn handle_event<'a>(&'a mut self, event: StreamEvent, seq: Option<u64>) -> SinkFuture<'a>;
 }
 
 /// 分派单个事件的 boxed future：借用 &mut self 的生命周期；Send 约束因外层
@@ -494,7 +501,7 @@ async fn consume_ndjson_stream(
             warn!(%req_id, "流中出现无法解析的事件行，已跳过");
             continue; // 坏行不中断流
         };
-        if let Some(envelope) = sink.handle_event(event).await? {
+        if let Some(envelope) = sink.handle_event(event, None).await? {
             return Ok(Some(envelope));
         }
     }
@@ -505,22 +512,11 @@ async fn consume_ndjson_stream(
 // WS 事件消费（任务 22）：generate_plan 后台观测链路
 // ---------------------------------------------------------------------------
 
-/// WS 事件消费分派器：generate 链路专用（与流式链路的 StreamEventSink 同构，
-/// 但多带 seq——重连重放的安全网在游标，分派侧按 seq 只做日志关联）。
-/// 返回 Ok(true) 表示已收 done 终态（消费收束）；Ok(false) 继续消费。
-trait WsEventSink {
-    fn handle_event<'a>(&'a mut self, seq: u64, event: StreamEvent) -> WsFuture<'a>;
-}
-
-/// 分派单个事件的 boxed future：借用 &mut self 的生命周期；Send 约束因组合
-/// future 需跨 await（逐事件装箱，事件频次为每任务个位数，开销可忽略）。
-type WsFuture<'a> = Pin<Box<dyn Future<Output = Result<bool, AgentError>> + Send + 'a>>;
-
 /// 单条 WS 连接的读取循环：逐消息解析信封（坏消息告警跳过，不中断）→ 分派
 /// sink；收到 done（sink 返回 true）即收束。返回（已消费的最大 seq, 可选错误）：
 /// 出错路径也带出已读 seq（审查 P2）：重连回放会高于真实消费点，但幂等兜底
 /// 前端不脏——代价仅为 Outline/PhaseDone 进度事件重复推送。
-async fn read_ws_events<S: WsEventSink>(
+async fn read_ws_events<S: StreamEventSink>(
     mut stream: WsStream,
     req_id: &str,
     sink: &mut S,
@@ -551,9 +547,9 @@ async fn read_ws_events<S: WsEventSink>(
             continue; // 坏消息不中断消费
         };
         last_seq = last_seq.max(envelope.seq);
-        match sink.handle_event(envelope.seq, envelope.event).await {
-            Ok(true) => return (last_seq, None), // 终态已收，正常收束
-            Ok(false) => {}
+        match sink.handle_event(envelope.event, Some(envelope.seq)).await {
+            Ok(Some(_)) => return (last_seq, None), // 终态已收，正常收束
+            Ok(None) => {}
             Err(e) => return (last_seq, Some(e)),
         }
     }
@@ -723,8 +719,10 @@ impl GenerationConsumer {
     }
 }
 
-impl WsEventSink for GenerationConsumer {
-    fn handle_event<'a>(&'a mut self, seq: u64, event: StreamEvent) -> WsFuture<'a> {
+impl StreamEventSink for GenerationConsumer {
+    fn handle_event<'a>(&'a mut self, event: StreamEvent, seq: Option<u64>) -> SinkFuture<'a> {
+        // WS 链路带 seq（日志关联用），NDJSON 链路没有；统一按数值打印
+        let seq = seq.unwrap_or(0);
         Box::pin(async move {
             match event {
                 StreamEvent::Outline {
@@ -782,7 +780,7 @@ impl WsEventSink for GenerationConsumer {
                             phases,
                         },
                     );
-                    Ok(false)
+                    Ok(None)
                 }
                 StreamEvent::Phase { index, phase } => {
                     if let Some(s) = &self.storage {
@@ -827,7 +825,7 @@ impl WsEventSink for GenerationConsumer {
                             },
                         );
                     }
-                    Ok(false)
+                    Ok(None)
                 }
                 // D1 章级扇出：初生链路每章完成产一条 chapter 事件（此前仅
                 // 单章重生成路径出现，任务 14 时按协议异常 warn 忽略；旧
@@ -865,12 +863,12 @@ impl WsEventSink for GenerationConsumer {
                         self.plan_id,
                         chapter_progress_from_outcome(outcome, phase_index, index, &chapter.title),
                     );
-                    Ok(false)
+                    Ok(None)
                 }
                 // 生成链路不发 chapterStart（仅重生成链），防御性忽略
                 StreamEvent::ChapterStart { .. } => {
                     warn!(req_id = %self.req_id, "生成流出现非预期 chapterStart 事件，已忽略");
-                    Ok(false)
+                    Ok(None)
                 }
                 StreamEvent::Done { response: envelope } => {
                     self.terminal = true;
@@ -931,7 +929,7 @@ impl WsEventSink for GenerationConsumer {
                         status = %envelope.status,
                         "学习计划后台生成完成（终态已收）"
                     );
-                    Ok(true)
+                    Ok(Some(envelope))
                 }
             }
         })
@@ -1010,7 +1008,7 @@ struct RegenSink<'a> {
 }
 
 impl StreamEventSink for RegenSink<'_> {
-    fn handle_event<'a>(&'a mut self, event: StreamEvent) -> SinkFuture<'a> {
+    fn handle_event<'a>(&'a mut self, event: StreamEvent, _seq: Option<u64>) -> SinkFuture<'a> {
         Box::pin(async move {
             match event {
                 StreamEvent::Phase { index, phase } if self.chapter_index.is_none() => {
@@ -1823,9 +1821,10 @@ mod tests {
         terminal: bool,
     }
 
-    impl WsEventSink for CaptureSink {
-        fn handle_event<'a>(&'a mut self, seq: u64, event: StreamEvent) -> WsFuture<'a> {
+    impl StreamEventSink for CaptureSink {
+        fn handle_event<'a>(&'a mut self, event: StreamEvent, seq: Option<u64>) -> SinkFuture<'a> {
             Box::pin(async move {
+                let seq = seq.unwrap_or(0);
                 let tag = match &event {
                     StreamEvent::Outline { .. } => "outline",
                     StreamEvent::Phase { .. } => "phase",
@@ -1836,9 +1835,11 @@ mod tests {
                 self.events.push((seq, tag));
                 if tag == "done" {
                     self.terminal = true;
-                    return Ok(true); // done 即收束
+                    // 替身只记录终态：返回 None 让读循环自然读到流结束，
+                    // 免去为构造 PlanResponse 把测试与协议耦在一起。
+                    return Ok(None);
                 }
-                Ok(false)
+                Ok(None)
             })
         }
     }
