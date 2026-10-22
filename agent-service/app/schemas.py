@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import json
 from enum import Enum
 from typing import Any, Literal
 
@@ -157,10 +158,61 @@ class GenerationSubmit(CamelModel):
 # ---------------------------------------------------------------------------
 
 
+def _coerce_str_list(value: Any) -> Any:
+    """把「本该是字符串数组」的值归一成字符串列表（LLM 输出容错）。
+
+    真实运行里 GLM 在 steps 这类「有序步骤」字段上会输出对象
+    （{"step": 1, "action": "..."}），也出现过编号数字，导致
+    ValidationError 整轮重试——一次 8 条错误、白烧 25-60 秒。
+    内容本身是可用的，为格式瑕疵重烧调用不划算，这里做一次轻度归一：
+    - 字符串原样保留；数字/布尔转字符串
+    - dict 优先取常见文本字段，取不到则按「键：值」展平
+    - 其余类型紧凑 JSON 序列化；None 直接丢弃
+
+    非列表（含 None）原样返回，交给 Pydantic 正常报错——不掩盖真正
+    缺失的字段（缺 project 本身仍应让调用方兜底或重试）。
+    """
+    if not isinstance(value, list):
+        return value
+    text_keys = ("action", "description", "content", "task", "text", "title", "detail")
+    normalized: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            text = item.strip()
+        elif isinstance(item, (int, float, bool)):
+            text = str(item)
+        elif isinstance(item, dict):
+            text = ""
+            for key in text_keys:
+                candidate = item.get(key)
+                if isinstance(candidate, str) and candidate.strip():
+                    text = candidate.strip()
+                    break
+            if not text:
+                parts: list[str] = []
+                for key, raw in item.items():
+                    if raw is None or str(raw).strip() == "":
+                        continue
+                    rendered = (
+                        raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False)
+                    )
+                    parts.append(f"{key}：{rendered}")
+                text = "；".join(parts)
+        elif item is None:
+            continue
+        else:
+            text = json.dumps(item, ensure_ascii=False)
+        if text:
+            normalized.append(text)
+    return normalized
+
+
 class PhaseProject(CamelModel):
     """阶段收尾项目：背景、步骤、产出与验收标准。"""
 
-    name: str = Field(..., description="项目名称")
+    # name 允许缺省：GLM 偶发只给 steps / acceptanceCriteria 不给 name。
+    # 空名由 _expand_phase_extras 补「阶段 N 项目」兜底文案，比整轮重试划算。
+    name: str = Field(default="", description="项目名称")
     description: str = Field(default="", description="项目描述")
     background: str = Field(default="", description="项目背景与动机")
     steps: list[str] = Field(default_factory=list, description="建议实施步骤（有序）")
@@ -168,6 +220,12 @@ class PhaseProject(CamelModel):
     acceptance_criteria: list[str] = Field(
         default_factory=list, description="可验证的验收标准"
     )
+
+    @field_validator("steps", "acceptance_criteria", mode="before")
+    @classmethod
+    def _normalize_text_list(cls, value: Any) -> Any:
+        """模型把「一句话一步」写成对象时归一为字符串，而不是判失败。"""
+        return _coerce_str_list(value)
 
 
 class Chapter(CamelModel):
@@ -275,6 +333,12 @@ class PhaseExtrasOutput(BaseModel):
     practice: list[str] = Field(default_factory=list, description="动手实操任务")
     assignments: list[str] = Field(default_factory=list, description="课后作业")
     project: PhaseProject = Field(..., description="阶段项目")
+
+    @field_validator("practice", "assignments", mode="before")
+    @classmethod
+    def _normalize_text_list(cls, value: Any) -> Any:
+        """与 PhaseProject.steps 同源容错：对象形式的条目归一为字符串。"""
+        return _coerce_str_list(value)
 
 
 class TechRef(CamelModel):

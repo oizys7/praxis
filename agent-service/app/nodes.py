@@ -601,7 +601,13 @@ async def _expand_phase_extras(
             },
         )
     # PhaseExtrasOutput 模型输出即 {practice, assignments, project}
-    return extras.model_dump(mode="json", by_alias=True)
+    extras_dump = extras.model_dump(mode="json", by_alias=True)
+    project = extras_dump.get("project")
+    if isinstance(project, dict) and not str(project.get("name") or "").strip():
+        # 模型偶发不写项目名（真实运行出现过 project.name Field required）。
+        # 名称只影响展示，补一个确定性兜底比整轮重试（25-60 秒）划算。
+        project["name"] = f"阶段 {phase_index + 1} 项目"
+    return extras_dump
 
 
 async def regenerate_phase_extras(
