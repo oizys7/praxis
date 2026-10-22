@@ -1,9 +1,0 @@
-# Praxis 应用配置模板：复制为同目录 config.yaml 并填入真实值。
-# config.yaml 不入库（.gitignore 已忽略）；修改后重启应用生效。
-db:
-  host: "" # PostgreSQL 主机（IP 或域名）
-  port: 5432 # 端口
-  database: praxis # 数据库名
-  user: praxis # 用户名
-  password: "" # 存 enc:v1: 密文（生成方式见 src/secret.rs 的 manual_seal_password）
-  # 手写明文亦可直连

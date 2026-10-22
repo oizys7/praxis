@@ -43,11 +43,20 @@ scripts/               仓库级脚本（dev / check / format / build / tauri �
 
 ### 1. 三端协议对齐（最重要）
 
-任何涉及请求/响应字段的修改，必须同步以下三处，字段全部 **camelCase**：
+wire 契约的单一真源是 `protocol/protocol.json`：它声明每个跨端类型的字段名、
+必填项（`required`）与允许的端特有字段（`extra`，如数据库层的 `status` 只由
+Rust/TS 携带）。字段全�� **camelCase**。
 
-- `frontend/src/types/agent.ts`
-- `src-tauri/src/commands.rs`（设置相关结构在 `src-tauri/src/settings.rs`）
-- `agent-service/app/schemas.py`
+改动协议的流程：
+
+1. 先改 `protocol/protocol.json`；
+2. 同步三端实现（字段全部 camelCase）：
+   - `frontend/src/types/agent.ts`
+   - `src-tauri/src/protocol.rs`（设置相关结构在 `src-tauri/src/settings.rs`）
+   - `agent-service/app/schemas.py`
+3. 跑 `npm run check` —— 其中的「三端 wire 契约一致性」步骤会比对 TS 与 Python
+   两侧（缺字段、真源未声明的多余字段都报错）；Rust 侧由 `protocol.rs` 内的
+   wire 序列化测试保障（serde 类型化比正则可靠，不做代码生成）。
 
 设置链路额外约定：应用设置（AgentSettings，十二个 LLM 字段 + 提供商 + mock 开关）
 持久化在应用数据目录 `settings.json`（不入库），由设置页编辑、Rust 写盘并经

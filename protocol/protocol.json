@@ -1,0 +1,89 @@
+{
+  "$comment": [
+    "Praxis 三端 wire 契约的单一真源（2026-10-22 契约优先改造）。",
+    "",
+    "背景：同一份契约此前由三处手写镜像维护（schemas.py 107 字段 / protocol.rs 155 /",
+    "agent.ts 180），靠 AGENTS.md 里一句「必须同步三处」的纪律维持。代价是可见的：",
+    "一次字段改动波及 7-21 个文件，且仍会漏（GlossaryEntryDef 曾漏 rename_all 导致",
+    "chapterTitle 不下发）。",
+    "",
+    "本文件只声明「跨端必须一致的核心字段」，不承担类型细节（各端仍按自身语言表达",
+    "optional / default / 校验规则）：",
+    "- fields：三端都必须存在的字段名（camelCase，即 wire 上的名字）；",
+    "- required：其中必须在 wire 上出现的字段（其余可缺省）；",
+    "- extra：允许存在的端特有字段（如数据库层的 status 只由 Rust/TS 携带，",
+    "  Python 的图内模型没有这个概念）。",
+    "",
+    "校验入口：npm run check → scripts/protocol_check.py（TS + Python 双向比对）。",
+    "Rust 侧不走脚本反射，由 protocol.rs 内的 wire 序列化测试保障（serde 的类型化",
+    "比正则更可靠，重写为生成的收益不抵风险）。"
+  ],
+  "types": {
+    "PlanRequest": {
+      "required": ["goal"],
+      "fields": [
+        "goal",
+        "level",
+        "weeklyHours",
+        "weeks",
+        "interests",
+        "background",
+        "studyDays"
+      ],
+      "extra": []
+    },
+    "Chapter": {
+      "required": ["title"],
+      "fields": ["title", "summary", "contentMd", "kind", "keyTerms"],
+      "extra": ["status"]
+    },
+    "StudyPhase": {
+      "required": ["name"],
+      "fields": [
+        "name",
+        "weekRange",
+        "objectives",
+        "chapters",
+        "practice",
+        "assignments",
+        "project"
+      ],
+      "extra": ["status"]
+    },
+    "PhaseProject": {
+      "required": [],
+      "fields": [
+        "name",
+        "description",
+        "background",
+        "steps",
+        "estimatedHours",
+        "acceptanceCriteria"
+      ],
+      "extra": []
+    },
+    "StudyResource": {
+      "required": ["title"],
+      "fields": ["title", "type", "note", "url", "verification"],
+      "extra": []
+    },
+    "GlossaryEntry": {
+      "required": ["term"],
+      "fields": ["term", "chapterTitle"],
+      "extra": []
+    },
+    "StudyPlan": {
+      "required": ["title"],
+      "fields": [
+        "title",
+        "overview",
+        "estimatedTotalHours",
+        "phases",
+        "resources",
+        "reviewNotes",
+        "glossary"
+      ],
+      "extra": []
+    }
+  }
+}

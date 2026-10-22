@@ -6,9 +6,10 @@
  *   1. Python 语法检查（compileall）
  *   2. Python lint（uvx ruff check）
  *   3. 提示词 YAML 校验（prompts/*.yaml 能否被安全解析）
- *   4. Rust 编译检查（cargo check）
- *   5. Rust lint（cargo clippy）
- *   6. 前端类型检查（vue-tsc --noEmit）
+ *   4. 三端 wire 契约一致性（protocol/protocol.json ↔ TS 接口 / Python 模型）
+ *   5. Rust 编译检查（cargo check）
+ *   6. Rust lint（cargo clippy）
+ *   7. 前端类型检查（vue-tsc --noEmit）
  *
  * 用法：在仓库根目录执行 `npm run check`。
  * 任一步骤失败立即退出（exit code 1），适合挂到 git pre-commit。
@@ -52,6 +53,7 @@ step("Python lint（ruff check）", "uvx", [
   "check",
   "agent-service/app",
   "scripts/check_prompts.py",
+  "scripts/protocol_check.py",
 ]);
 
 // 3. 提示词 YAML 校验：确保 prompts/ 下 YAML 均可解析（运行时由 prompts.py 加载）。
@@ -68,17 +70,30 @@ step(
   },
 );
 
+// 4. 三端 wire 契约一致性：真源 protocol/protocol.json 与前端 TS 接口、
+//    Python Pydantic 模型逐字段比对（缺字段 / 未声明的多余字段都报错）。
+//    解决的是「一份契约三处手写镜像」的老问题——一次字段改动曾波及 21 个
+//    文件，且仍会漏（GlossaryEntryDef 漏 rename_all 导致字段名不下发）。
+//    Rust 侧不在此脚本内：serde 的类型化 + wire 测试比正则解析可靠。
+step("三端 wire 契约一致性（protocol.json）", "uv", [
+  "run",
+  "--project",
+  "agent-service",
+  "python",
+  "scripts/protocol_check.py",
+]);
+
 // ---------------- Rust 端 ----------------
 
-// 4. 编译检查（cargo check 只查类型/借用，不产出二进制，远快于 build）
+// 5. 编译检查（cargo check 只查类型/借用，不产出二进制，远快于 build）
 step("Rust 编译检查（cargo check）", "cargo", ["check"], { cwd: TAURI_DIR });
 
-// 5. lint：clippy，零警告标准（与 AGENTS.md「提交前验证」一致）
+// 6. lint：clippy，零警告标准（与 AGENTS.md「提交前验证」一致）
 step("Rust lint（cargo clippy）", "cargo", ["clippy"], { cwd: TAURI_DIR });
 
 // ---------------- 前端 ----------------
 
-// 6. 类型检查：通过 frontend 的 npm script 调用（npm exec + --prefix + --
+// 7. 类型检查：通过 frontend 的 npm script 调用（npm exec + --prefix + --
 //    的组合在 Windows 下传参不可靠，npm run 由 npm 自身解析 .bin，最稳定）
 step("前端类型检查（vue-tsc --noEmit）", "npm", [
   "--prefix",
