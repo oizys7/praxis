@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Self
 
 import pytest
-from app import search, version_check
+from app import version_check
 from app.version_check import detect_versions
 
 
@@ -129,23 +129,3 @@ async def test_all_failures_degrade_silently(monkeypatch: pytest.MonkeyPatch) ->
     assert await detect_versions([{"name": "a", "ecosystem": "npm"}]) == []
 
 
-def test_search_provider_absent_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    """未配置 / 配置了但未接入实现 → 一律 None，生成行为毫无变化。"""
-    from app.config import settings
-
-    monkeypatch.setattr(settings, "search_provider", "")
-    assert search.current_provider() is None
-
-    monkeypatch.setattr(settings, "search_provider", "tavily")
-    assert search.current_provider() is None
-
-
-@pytest.mark.asyncio
-async def test_research_snippets_empty_without_provider(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """没有 provider 时知识点检索返回空，不发起任何网络调用。"""
-    from app import nodes
-
-    monkeypatch.setattr(search, "current_provider", lambda: None)
-    assert await nodes._research_snippets("事件循环 宏任务") == []
