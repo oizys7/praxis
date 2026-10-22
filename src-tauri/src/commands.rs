@@ -36,6 +36,7 @@ use crate::agent_client::{
 };
 use crate::db;
 use crate::error::AgentError;
+use crate::plan_state;
 use crate::plan_store::{self, PlanRequestRow};
 use crate::protocol::{
     parse_ndjson_line, parse_ws_envelope, MonthCalendarDay, PlanProgressEnvelope,
@@ -390,11 +391,14 @@ pub(crate) async fn settle_terminal_with_hours(
     if status != "plan" && status != "error" {
         warn!(status, "未知 done 终态状态，按内容语义收尾");
     }
-    if plan_store::all_chapters_complete(pool, plan_id).await? {
-        plan_store::finalize_plan(pool, plan_id, "complete", None, estimated_total_hours).await
+    // 终态口径仍是章级（all_chapters_complete = plan_state::plan_of_chapters 的
+    // SQL 版），但收尾参数已类型化，不再有字符串传错的可能。
+    let plan_status = if plan_store::all_chapters_complete(pool, plan_id).await? {
+        plan_state::PlanStatus::Complete
     } else {
-        plan_store::finalize_plan(pool, plan_id, "failed", None, estimated_total_hours).await
-    }
+        plan_state::PlanStatus::Failed
+    };
+    plan_store::finalize_plan(pool, plan_id, plan_status, None, estimated_total_hours).await
 }
 
 /// chapter 事件的入库结局 → 章级进度事件（纯函数，单测快照）：Ok →
@@ -697,11 +701,11 @@ impl GenerationConsumer {
             return;
         };
         let semantic_status = match plan_store::all_chapters_complete(&s.pool, s.plan_id).await {
-            Ok(true) => "complete",
-            Ok(false) => "failed",
+            Ok(true) => plan_state::PlanStatus::Complete,
+            Ok(false) => plan_state::PlanStatus::Failed,
             Err(e) => {
                 warn!(req_id = %self.req_id, error = %e, "章脈完成状态查询失败，按 failed 收尾");
-                "failed"
+                plan_state::PlanStatus::Failed
             }
         };
         if let Err(e) =

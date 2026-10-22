@@ -391,9 +391,15 @@ async fn test_get_plan_reassembles_sorted(pool: PgPool) {
     assert_eq!(record.plan.phases[0].project.estimated_hours, 6);
 
     // finalize：status/title/hours 覆写后读取仍一致
-    plan_store::finalize_plan(&pool, plan_id, "complete", Some("完结标题"), Some(77))
-        .await
-        .expect("finalize_plan 失败");
+    plan_store::finalize_plan(
+        &pool,
+        plan_id,
+        crate::plan_state::PlanStatus::Complete,
+        Some("完结标题"),
+        Some(77),
+    )
+    .await
+    .expect("finalize_plan 失败");
     let record = db::get_plan_by_pool(&pool, &plan_id.to_string())
         .await
         .unwrap();
@@ -612,9 +618,15 @@ async fn test_upsert_marks_complete_and_failure_marks_pending_failed(pool: PgPoo
         Some("pending".into())
     );
 
-    plan_store::finalize_plan(&pool, plan_id, "failed", None, None)
-        .await
-        .expect("finalize_plan 失败");
+    plan_store::finalize_plan(
+        &pool,
+        plan_id,
+        crate::plan_state::PlanStatus::Failed,
+        None,
+        None,
+    )
+    .await
+    .expect("finalize_plan 失败");
 
     assert_eq!(
         phase_status(&pool, plan_id, 1).await,
@@ -1311,4 +1323,98 @@ async fn test_upsert_chapter_keeps_plan_generating_until_every_phase_complete(po
         Some("complete".into()),
         "最后一个待写章节落地后计划应结算为 complete"
     );
+}
+
+/// 状态机配对测试（2026-10-22 架构收敛）。
+///
+/// 状态的语义定义在 `plan_state`（枚举 + 纯函数），但热路径上的推进是 SQL
+/// 常量（`SQL_PHASE_STATUS_CASE`）。两套实现必须同语义，否则又会回到
+/// 「同一状态两处判定」的老路。本用例用真实的 phases/chapters 行构造各种
+/// 章节状态组合，分别跑 SQL 与纯函数并断言结果一致。
+#[sqlx::test]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
+async fn sql_phase_status_matches_pure_function(pool: PgPool) {
+    use crate::plan_state::{self, ChapterStatus};
+
+    // 每组是被预设到章节行上的状态集合；空集合代表「阶段下没有章节」
+    let cases: Vec<Vec<ChapterStatus>> = vec![
+        vec![],
+        vec![ChapterStatus::Pending],
+        vec![ChapterStatus::Complete],
+        vec![ChapterStatus::Complete, ChapterStatus::Complete],
+        vec![ChapterStatus::Complete, ChapterStatus::Failed],
+        vec![ChapterStatus::Failed, ChapterStatus::Pending],
+        vec![ChapterStatus::Complete, ChapterStatus::Pending],
+        vec![ChapterStatus::Generating, ChapterStatus::Complete],
+        vec![ChapterStatus::Generating, ChapterStatus::Failed],
+    ];
+
+    for (case_index, statuses) in cases.iter().enumerate() {
+        prepare_schema(&pool).await;
+        let plan_id = new_generating_plan(&pool).await;
+        let chapter_count = statuses.len().max(1);
+        plan_store::seed_outline(
+            &pool,
+            plan_id,
+            &sample_outline(&["配对阶段"], &[chapter_count]),
+            &[],
+        )
+        .await
+        .unwrap();
+
+        // 清空骨架章节后按用例重造（空集合用例保持零章节）
+        sqlx::query(
+            "DELETE FROM chapters c USING phases p WHERE c.phase_id = p.id AND p.plan_id = $1",
+        )
+        .bind(plan_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (idx, status) in statuses.iter().enumerate() {
+            sqlx::query(
+                "INSERT INTO chapters (phase_id, idx, title, summary, content_md, status)
+                 SELECT p.id, $2, '章', '', '正文', $3 FROM phases p
+                 WHERE p.plan_id = $1 AND p.idx = 0",
+            )
+            .bind(plan_id)
+            .bind(idx as i32)
+            .bind(status.as_str())
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        // SQL 版：跑与 upsert_chapter 相同的 UPDATE 文本
+        let sql = format!(
+            "UPDATE phases SET status = {} WHERE plan_id = $1 AND idx = 0",
+            plan_state::SQL_PHASE_STATUS_CASE
+        );
+        sqlx::query(&sql)
+            .bind(plan_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let from_sql = phase_status(&pool, plan_id, 0).await;
+
+        // 纯函数版
+        let expected = plan_state::phase_of_chapters(statuses).as_str().to_string();
+
+        assert_eq!(
+            from_sql,
+            Some(expected.clone()),
+            "第 {case_index} 组（{statuses:?}）：SQL 与 phase_of_chapters 不一致"
+        );
+
+        // 计划级配对：all_chapters_complete 已走纯函数，这里锁住它与
+        // plan_of_chapters 的等价关系（防止将来有人改回 SQL 而口径漂移）
+        let all_complete = plan_store::all_chapters_complete(&pool, plan_id)
+            .await
+            .unwrap();
+        let expected_plan_complete =
+            plan_state::plan_of_chapters(statuses) == plan_state::PlanStatus::Complete;
+        assert_eq!(
+            all_complete, expected_plan_complete,
+            "第 {case_index} 组（{statuses:?}）：all_chapters_complete 与 plan_of_chapters 不一致"
+        );
+    }
 }

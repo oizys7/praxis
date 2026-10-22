@@ -11,6 +11,7 @@ mod db;
 mod db_ddl;
 mod error;
 mod logging;
+mod plan_state;
 mod plan_store;
 mod protocol;
 mod schedule;

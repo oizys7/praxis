@@ -20,6 +20,7 @@ use uuid::Uuid;
 
 use crate::db::{db_err, fail};
 use crate::error::AgentError;
+use crate::plan_state;
 use crate::protocol::{
     ChapterDef, GlossaryEntryDef, OutlinePhasePayload, PhaseProject, PlanRequest, StudyPhase,
     StudyPlan, StudyResource,
@@ -113,17 +114,16 @@ pub async fn upsert_phase(
         .await
         .map_err(|e| fail("开启阶段写入事务", e))?;
 
-    // 0. 阶段状态由本章正文定价派生：有章节且每章正文非空才 complete
-    let phase_status = if !phase.chapters.is_empty()
-        && phase
-            .chapters
-            .iter()
-            .all(|c| !c.content_md.trim().is_empty())
-    {
-        "complete"
-    } else {
-        "pending"
-    };
+    // 0. 阶段状态由子章定价汇总——唯一算法见 plan_state::phase_of_chapters。
+    //    整体写入口径：空正文是「尚未生成」→ Pending（等待章级填充），全非空
+    //    → Complete。这与单章写入的 chapter_of_content（空 → Failed）刻意不同，
+    //    两者的区别此前只存在于两段内联代码里，现已收敛到 plan_state 模块。
+    let chapter_statuses: Vec<plan_state::ChapterStatus> = phase
+        .chapters
+        .iter()
+        .map(|c| plan_state::chapter_after_bulk_write(&c.content_md))
+        .collect();
+    let phase_status = plan_state::phase_of_chapters(&chapter_statuses).as_str();
 
     // 1. phases 行：冲突即更新（UNIQUE (plan_id, idx)），RETURNING 拿物理行 id；
     //    status 用绑定参数透传（INSERT 与 DO UPDATE 双路同值，骨架 pending 行在此翻牌）
@@ -224,12 +224,13 @@ pub async fn seed_outline(
     for (i, outline) in phases.iter().enumerate() {
         let phase_id: Uuid = sqlx::query_scalar(
             "INSERT INTO phases (plan_id, idx, name, week_range, status)
-             VALUES ($1, $2, $3, $4, 'pending') RETURNING id",
+             VALUES ($1, $2, $3, $4, $5) RETURNING id",
         )
         .bind(plan_id)
         .bind(i32::try_from(i).unwrap_or(0))
         .bind(&outline.name)
         .bind(&outline.week_range)
+        .bind(plan_state::PhaseStatus::Pending.as_str())
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| fail("播种阶段骨架", e))?;
@@ -237,11 +238,12 @@ pub async fn seed_outline(
         for (j, title) in outline.chapter_titles.iter().enumerate() {
             sqlx::query(
                 "INSERT INTO chapters (phase_id, idx, title, summary, status)
-                 VALUES ($1, $2, $3, '', 'pending')",
+                 VALUES ($1, $2, $3, '', $4)",
             )
             .bind(phase_id)
             .bind(i32::try_from(j).unwrap_or(0))
             .bind(title)
+            .bind(plan_state::ChapterStatus::Pending.as_str())
             .execute(&mut *tx)
             .await
             .map_err(|e| fail("播种章节骨架", e))?;
@@ -356,24 +358,17 @@ pub async fn upsert_chapter(
     // generating（逐章推进动画）；全 complete → complete；有 failed → failed；
     // 否则 pending。单章成功但阶段未全完成时从 generating 正确回落，
     // 不再悬挂（2026-10-16 反馈①回归：退出重进徽章消失）
-    sqlx::query(
-        "UPDATE phases SET status = CASE
-             WHEN EXISTS (
-                 SELECT 1 FROM chapters c WHERE c.phase_id = phases.id AND c.status = 'generating'
-             ) THEN 'generating'
-             WHEN NOT EXISTS (
-                 SELECT 1 FROM chapters c WHERE c.phase_id = phases.id AND c.status <> 'complete'
-             ) THEN 'complete'
-             WHEN EXISTS (
-                 SELECT 1 FROM chapters c WHERE c.phase_id = phases.id AND c.status = 'failed'
-             ) THEN 'failed'
-             ELSE 'pending' END
-         WHERE id = $1",
-    )
-    .bind(phase_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| fail("推进阶段状态", e))?;
+    // SQL 文本唯一来源在 plan_state::SQL_PHASE_STATUS_CASE（与纯函数
+    // phase_of_chapters 同语义，配对测试锁死），此处只做拼接。
+    let phase_status_sql = format!(
+        "UPDATE phases SET status = {} WHERE id = $1",
+        plan_state::SQL_PHASE_STATUS_CASE
+    );
+    sqlx::query(&phase_status_sql)
+        .bind(phase_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| fail("推进阶段状态", e))?;
 
     // 终态与学习状态联动（同事务原子、零额外往返）：
     // - status：generating 计划全章 complete → complete。计划终态按章节口径判定，
@@ -383,25 +378,27 @@ pub async fn upsert_chapter(
     // - learning_status：active 计划全章 complete → completed；不全 complete
     //   时条件不匹配，保持原值（not_started 同样不自动流转）。
     // 两个 CASE 各自守住当前值，因此同一条语句可服务两类计划。
-    sqlx::query(
+    // 状态字面量全部走 plan_state（$2/$3 计划态、$4/$5 学习态），
+    // 「全章 complete」判定复用 SQL_PLAN_ALL_CHAPTERS_COMPLETE（与
+    // plan_state::plan_of_chapters 同语义）。
+    let plan_status_sql = format!(
         "UPDATE plans SET
-             status = CASE WHEN status = 'generating' THEN 'complete' ELSE status END,
-             learning_status = CASE
-                 WHEN learning_status = 'active' THEN 'completed' ELSE learning_status END
+             status = CASE WHEN status = $2 THEN $3 ELSE status END,
+             learning_status = CASE WHEN learning_status = $4 THEN $5 ELSE learning_status END
          WHERE id = $1
-           AND (status = 'generating' OR learning_status = 'active')
-           AND EXISTS (
-               SELECT 1 FROM chapters c2 JOIN phases p2 ON c2.phase_id = p2.id
-               WHERE p2.plan_id = $1
-           ) AND NOT EXISTS (
-               SELECT 1 FROM chapters c JOIN phases p ON c.phase_id = p.id
-               WHERE p.plan_id = $1 AND c.status <> 'complete'
-           )",
-    )
-    .bind(plan_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(|e| fail("推进学习状态", e))?;
+           AND (status = $2 OR learning_status = $4)
+           AND {}",
+        plan_state::SQL_PLAN_ALL_CHAPTERS_COMPLETE
+    );
+    sqlx::query(&plan_status_sql)
+        .bind(plan_id)
+        .bind(plan_state::PlanStatus::Generating.as_str())
+        .bind(plan_state::PlanStatus::Complete.as_str())
+        .bind(plan_state::LearningStatus::Active.as_str())
+        .bind(plan_state::LearningStatus::Completed.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| fail("推进学习状态", e))?;
 
     tx.commit().await.map_err(|e| fail("提交单章事务", e))?;
     info!(%plan_id, phase_index, chapter_index, "单章已 upsert（status=complete）");
@@ -417,9 +414,10 @@ pub async fn mark_phase_generating(
     plan_id: Uuid,
     phase_index: u32,
 ) -> Result<(), AgentError> {
-    sqlx::query("UPDATE phases SET status = 'generating' WHERE plan_id = $1 AND idx = $2")
+    sqlx::query("UPDATE phases SET status = $3 WHERE plan_id = $1 AND idx = $2")
         .bind(plan_id)
         .bind(i32::try_from(phase_index).unwrap_or(0))
+        .bind(plan_state::PhaseStatus::Generating.as_str())
         .execute(pool)
         .await
         .map_err(|e| fail("置阶段生成中", e))?;
@@ -439,18 +437,20 @@ pub async fn mark_chapter_generating(
     let phase_i32 = i32::try_from(phase_index).unwrap_or(0);
     let chapter_i32 = i32::try_from(chapter_index).unwrap_or(0);
     sqlx::query(
-        "UPDATE chapters c SET status = 'generating'
+        "UPDATE chapters c SET status = $4
          FROM phases p WHERE c.phase_id = p.id AND p.plan_id = $1 AND p.idx = $2 AND c.idx = $3",
     )
     .bind(plan_id)
     .bind(phase_i32)
     .bind(chapter_i32)
+    .bind(plan_state::ChapterStatus::Generating.as_str())
     .execute(pool)
     .await
     .map_err(|e| fail("置章节生成中", e))?;
-    sqlx::query("UPDATE phases SET status = 'generating' WHERE plan_id = $1 AND idx = $2")
+    sqlx::query("UPDATE phases SET status = $3 WHERE plan_id = $1 AND idx = $2")
         .bind(plan_id)
         .bind(phase_i32)
+        .bind(plan_state::PhaseStatus::Generating.as_str())
         .execute(pool)
         .await
         .map_err(|e| fail("置所属阶段生成中", e))?;
@@ -468,12 +468,13 @@ pub async fn set_chapter_generating(
     chapter_index: u32,
 ) -> Result<(), AgentError> {
     sqlx::query(
-        "UPDATE chapters c SET status = 'generating'
+        "UPDATE chapters c SET status = $4
          FROM phases p WHERE c.phase_id = p.id AND p.plan_id = $1 AND p.idx = $2 AND c.idx = $3",
     )
     .bind(plan_id)
     .bind(i32::try_from(phase_index).unwrap_or(0))
     .bind(i32::try_from(chapter_index).unwrap_or(0))
+    .bind(plan_state::ChapterStatus::Generating.as_str())
     .execute(pool)
     .await
     .map_err(|e| fail("置章节生成中", e))?;
@@ -489,18 +490,26 @@ pub async fn set_chapter_generating(
 /// complete（生成成功）/ failed（生成失败）。消费方：commands 终态收尾
 /// （done 终态与断线耗尽收尾）。
 pub async fn all_chapters_complete(pool: &PgPool, plan_id: Uuid) -> Result<bool, AgentError> {
-    let all_done: bool = sqlx::query_scalar(
-        "SELECT EXISTS( SELECT 1 FROM chapters c JOIN phases p ON c.phase_id = p.id
-                        WHERE p.plan_id = $1 )
-             AND NOT EXISTS(
-                 SELECT 1 FROM chapters c2 JOIN phases p2 ON c2.phase_id = p2.id
-                 WHERE p2.plan_id = $1 AND c2.status <> 'complete' )",
+    // 判定口径唯一来源：plan_state::plan_of_chapters（纯函数）。
+    // 这是低频路径——终态收尾与启动清扫各调一次，不在「每章写入」的热路径上，
+    // 因此用「读全部章状态 + 纯函数」换取可测的单一语义；热路径上的状态推进
+    // 仍走 SQL 常量（SQL_PHASE_STATUS_CASE），两者由配对测试锁死。
+    // 未知状态兜底 Pending：plan_of_chapters 视其为「非 complete」→ 保守判 failed。
+    let statuses: Vec<String> = sqlx::query_scalar(
+        "SELECT c.status FROM chapters c JOIN phases p ON c.phase_id = p.id
+         WHERE p.plan_id = $1",
     )
     .bind(plan_id)
-    .fetch_one(pool)
+    .fetch_all(pool)
     .await
-    .map_err(|e| fail("查询全章节完成状态", e))?;
-    Ok(all_done)
+    .map_err(|e| fail("查询章节状态", e))?;
+    let parsed: Vec<plan_state::ChapterStatus> = statuses
+        .iter()
+        .map(|raw| {
+            plan_state::ChapterStatus::parse(raw).unwrap_or(plan_state::ChapterStatus::Pending)
+        })
+        .collect();
+    Ok(plan_state::plan_of_chapters(&parsed) == plan_state::PlanStatus::Complete)
 }
 
 /// 启动清扫（任务 22）：sidecar / 应用重启后，后台生成任务随 Python 进程消失，
@@ -512,9 +521,11 @@ pub async fn all_chapters_complete(pool: &PgPool, plan_id: Uuid) -> Result<bool,
 /// 返回清扫的行数（供日志）。消费方：main.rs setup 钩子。
 pub async fn sweep_stale_generating(pool: &PgPool) -> Result<(u64, u64), AgentError> {
     let stale: Vec<Uuid> = sqlx::query_scalar(
-        "UPDATE plans SET status = 'failed', updated_at = now()
-         WHERE status = 'generating' RETURNING id",
+        "UPDATE plans SET status = $1, updated_at = now()
+         WHERE status = $2 RETURNING id",
     )
+    .bind(plan_state::PlanStatus::Failed.as_str())
+    .bind(plan_state::PlanStatus::Generating.as_str())
     .fetch_all(pool)
     .await
     .map_err(|e| fail("清扫存量生成中计划", e))?;
@@ -531,7 +542,8 @@ pub async fn sweep_stale_generating(pool: &PgPool) -> Result<(u64, u64), AgentEr
     // failed 自愈（2026-10-16 裁定）：章节已全部 complete 的 failed 行
     // （重生成补齐后旧守卫收口漏翻的历史行）翻回 complete；尚有非
     // complete 章的真失败行保持 failed。幂等：已 complete 行不再入选。
-    let failed_rows: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM plans WHERE status = 'failed'")
+    let failed_rows: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM plans WHERE status = $1")
+        .bind(plan_state::PlanStatus::Failed.as_str())
         .fetch_all(pool)
         .await
         .map_err(|e| fail("扫描失败计划行", e))?;
@@ -540,10 +552,12 @@ pub async fn sweep_stale_generating(pool: &PgPool) -> Result<(u64, u64), AgentEr
         match all_chapters_complete(pool, plan_id).await {
             Ok(true) => {
                 sqlx::query(
-                    "UPDATE plans SET status = 'complete', updated_at = now()
-                     WHERE id = $1 AND status = 'failed'",
+                    "UPDATE plans SET status = $2, updated_at = now()
+                     WHERE id = $1 AND status = $3",
                 )
                 .bind(plan_id)
+                .bind(plan_state::PlanStatus::Complete.as_str())
+                .bind(plan_state::PlanStatus::Failed.as_str())
                 .execute(pool)
                 .await
                 .map_err(|e| fail("自愈失败计划行", e))?;
@@ -566,18 +580,22 @@ pub async fn sweep_stale_generating(pool: &PgPool) -> Result<(u64, u64), AgentEr
 /// complete 永不被 failed 覆盖（状态机不变量：失败收尾只动 pending）。
 /// 消费方：finalize_plan(status=failed) / regenerate 失败路径（任务 15）。
 pub async fn finalize_failed(pool: &PgPool, plan_id: Uuid) -> Result<(), AgentError> {
-    sqlx::query(
-        "UPDATE phases SET status = 'failed' WHERE plan_id = $1 AND status IN ('pending', 'generating')",
-    )
+    sqlx::query("UPDATE phases SET status = $2 WHERE plan_id = $1 AND status IN ($3, $4)")
         .bind(plan_id)
+        .bind(plan_state::PhaseStatus::Failed.as_str())
+        .bind(plan_state::PhaseStatus::Pending.as_str())
+        .bind(plan_state::PhaseStatus::Generating.as_str())
         .execute(pool)
         .await
         .map_err(|e| fail("收尾失败阶段状态", e))?;
     sqlx::query(
-        "UPDATE chapters c SET status = 'failed' FROM phases p
-         WHERE c.phase_id = p.id AND p.plan_id = $1 AND c.status IN ('pending', 'generating')",
+        "UPDATE chapters c SET status = $2 FROM phases p
+         WHERE c.phase_id = p.id AND p.plan_id = $1 AND c.status IN ($3, $4)",
     )
     .bind(plan_id)
+    .bind(plan_state::ChapterStatus::Failed.as_str())
+    .bind(plan_state::ChapterStatus::Pending.as_str())
+    .bind(plan_state::ChapterStatus::Generating.as_str())
     .execute(pool)
     .await
     .map_err(|e| fail("收尾失败章节状态", e))?;
@@ -593,7 +611,7 @@ pub async fn finalize_failed(pool: &PgPool, plan_id: Uuid) -> Result<(), AgentEr
 pub async fn finalize_plan(
     pool: &PgPool,
     plan_id: Uuid,
-    status: &str,
+    status: plan_state::PlanStatus,
     title: Option<&str>,
     estimated_total_hours: Option<i64>,
 ) -> Result<(), AgentError> {
@@ -606,18 +624,19 @@ pub async fn finalize_plan(
          WHERE id = $1",
     )
     .bind(plan_id)
-    .bind(status)
+    .bind(status.as_str())
     .bind(title)
     .bind(estimated_total_hours.map(|h| i32::try_from(h).unwrap_or(0)))
     .execute(pool)
     .await
     .map_err(|e| fail("收尾计划状态", e))?;
-    if status == "failed" {
+    // 状态类型化后只剩两种收尾：failed 需要把滞留 pending/generating 子行一并
+    // 收口；complete 不需要额外动作。历史上这里还有一个「未知状态」warn 分支，
+    // 枚举消除了它（调用方传错字符串这类缺陷从此不可能出现）。
+    if status == plan_state::PlanStatus::Failed {
         finalize_failed(pool, plan_id).await?;
-    } else if status != "complete" {
-        warn!(%plan_id, status, "未知计划收尾状态，children 位不流转");
     }
-    info!(%plan_id, status, "计划状态已收尾");
+    info!(%plan_id, status = status.as_str(), "计划状态已收尾");
     Ok(())
 }
 
@@ -633,8 +652,9 @@ pub async fn finalize_regen_complete(pool: &PgPool, plan_id: Uuid) -> Result<(),
         info!(%plan_id, "重生成收口：尚有非 complete 章节，计划行状态保持");
         return Ok(());
     }
-    sqlx::query("UPDATE plans SET status = 'complete', updated_at = now() WHERE id = $1")
+    sqlx::query("UPDATE plans SET status = $2, updated_at = now() WHERE id = $1")
         .bind(plan_id)
+        .bind(plan_state::PlanStatus::Complete.as_str())
         .execute(pool)
         .await
         .map_err(|e| fail("收尾重生成计划状态", e))?;
@@ -807,12 +827,10 @@ fn chapter_kind_or_default(kind: &str) -> &str {
     }
 }
 
+/// 章节行 status 定价（保留为薄封装，便于函数体内联阅读与单元测试引用）。
+/// 唯一算法在 `plan_state::chapter_of_content`——本模块不再自带一份。
 fn chapter_row_status(content_md: &str) -> &'static str {
-    if content_md.trim().is_empty() {
-        "failed"
-    } else {
-        "complete"
-    }
+    plan_state::chapter_of_content(content_md).as_str()
 }
 
 /// 写入单个章节行（冲突即更新 title/summary/content_md/status）。
