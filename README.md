@@ -170,7 +170,7 @@ command 抛错时前端捕获到 `{ code, message, hint }`：`code ∈ connectio
 ### 健康检查 `GET /health`
 
 ```json
-{ "status": "ok", "service": "praxis-agent", "version": "0.0.1" }
+{ "status": "ok", "service": "praxis-agent", "version": "0.1.1" }
 ```
 
 ## 配置（设置页优先）

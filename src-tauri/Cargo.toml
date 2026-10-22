@@ -1,6 +1,6 @@
 [package]
 name = "praxis"
-version = "0.0.1"
+version = "0.1.1"
 description = "Praxis 学习路线规划 Agent 桌面端：Tauri 2 桌面壳，暴露 generate_plan / ping_agent IPC 命令，reqwest 转发本地 Agent 服务并统一错误归一"
 license = "MIT"
 edition = "2021"

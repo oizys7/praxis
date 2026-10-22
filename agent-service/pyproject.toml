@@ -1,6 +1,6 @@
 [project]
 name = "praxis-agent-service"
-version = "0.0.1"
+version = "0.1.1"
 description = "Praxis 学习路线规划 Agent 服务：FastAPI + LangGraph 实现 clarify → plan → review 工作流，YAML 提示词驱动，LLM 结构化输出"
 requires-python = ">=3.10"
 dependencies = [

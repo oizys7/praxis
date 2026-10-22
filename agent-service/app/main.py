@@ -52,7 +52,7 @@ logger = logging.getLogger("praxis.main")
 
 app = FastAPI(
     title="Praxis Agent Service",
-    version="0.0.1",
+    version="0.1.1",
     description="学习路线规划 Agent：clarify（澄清）→ plan（规划）→ review（评审）",
 )
 

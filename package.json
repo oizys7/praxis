@@ -1,7 +1,7 @@
 {
   "name": "praxis",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.1.1",
   "license": "MIT",
   "description": "Praxis 学习路线规划 Agent 桌面应用",
   "scripts": {
