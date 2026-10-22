@@ -193,6 +193,17 @@ pub const SQL_PHASE_STATUS_CASE: &str = "CASE
              ) THEN 'failed'
              ELSE 'pending' END";
 
+/// 章节「正文 → 状态」的 SQL 翻译（`c` 为 chapters 表引用）。
+///
+/// 与 [`chapter_of_content`] 同语义：正文去空白后非空即 complete，否则 failed。
+/// 自愈时用它从最下层反推整棵状态树。刻意不使用绑定参数（状态字面量只允许出现
+/// 在本模块，风格同 [`SQL_PHASE_STATUS_CASE`]），这样调用方可自由组合自己的
+/// `$1/$2` 而不发生编号冲突。
+///
+/// 一致性由 `tests_plan_store::sql_chapter_status_matches_pure_function` 锁定。
+pub const SQL_CHAPTER_STATUS_FROM_CONTENT: &str =
+    "CASE WHEN length(btrim(coalesce(c.content_md, ''))) > 0 THEN 'complete' ELSE 'failed' END";
+
 /// 计划「全章 complete」判定（`$1` = plans.id），与 [`plan_of_chapters`] 的
 /// Complete 分支同语义：至少一章存在，且不存在非 complete 章。
 pub const SQL_PLAN_ALL_CHAPTERS_COMPLETE: &str = "EXISTS (

@@ -15,7 +15,7 @@
 use std::collections::HashMap;
 
 use sqlx::{PgPool, Row, Transaction};
-use tracing::{info, warn};
+use tracing::info;
 use uuid::Uuid;
 
 use crate::db::{db_err, fail};
@@ -512,68 +512,115 @@ pub async fn all_chapters_complete(pool: &PgPool, plan_id: Uuid) -> Result<bool,
     Ok(plan_state::plan_of_chapters(&parsed) == plan_state::PlanStatus::Complete)
 }
 
-/// 启动清扫（任务 22）：sidecar / 应用重启后，后台生成任务随 Python 进程消失，
-/// status='generating' 的存量行永远等不到终态事件 → 全部清为 failed（仅 DB
-/// 模式；重复执行恒为空集，幂等）；其 pending 骨架子行一并置 failed，
-/// complete 子行不动（finalize_failed 的状态机不变量）。
-/// 桌面单实例语义假定：若双实例并开，清扫可能把存活实例进行中的 generating
-/// 行暂翻 failed——该实例 done 收尾会终态覆写自愈，仅列表页短暂显示 failed。
-/// 返回清扫的行数（供日志）。消费方：main.rs setup 钩子。
-pub async fn sweep_stale_generating(pool: &PgPool) -> Result<(u64, u64), AgentError> {
-    let stale: Vec<Uuid> = sqlx::query_scalar(
-        "UPDATE plans SET status = $1, updated_at = now()
-         WHERE status = $2 RETURNING id",
+/// 启动自愈报告（幂等；每次启动执行一次）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SweepReport {
+    /// 扫过的可疑计划数（`status` 为 failed 或 generating）
+    pub scanned_plans: u64,
+    /// 反推后由非 complete 变为 complete 的计划数
+    pub healed_plans: u64,
+    /// 反推修正的章节 / 阶段行数
+    pub healed_children: u64,
+}
+
+impl SweepReport {
+    /// 没有任何修复动作时调用方无需打日志。
+    pub fn is_clean(&self) -> bool {
+        self.healed_plans == 0 && self.healed_children == 0
+    }
+}
+
+/// 启动自愈（任务 22 + 2026-10-22 改为「自下而上反推」）。
+///
+/// 崩溃 / 被强杀 / 重启后，后台生成任务随进程消失，不会再有终态事件来收尾。
+///
+/// **口径**：状态是派生数据，唯一真相在最下层——章节的 `content_md`。所以自愈
+/// 不做「找出哪些行还是 generating 再去修」的症状式修补（那样每种残留形态都要
+/// 单独写一条分支，且漏掉 pending 残留、状态与正文矛盾等情形），而是：
+///
+/// 1. 取出状态可疑的计划（`failed` / `generating`；`complete` 视为已收口不扫）；
+/// 2. 对每个计划，从最下层往上反推整棵状态树：
+///    - chapters ← `content_md`（有正文 → complete，无正文 → failed）；
+///    - phases ← 子章聚合（`SQL_PHASE_STATUS_CASE`，与在线写入同一条 SQL 常量）；
+///    - plans ← 全部章聚合（`SQL_PLAN_ALL_CHAPTERS_COMPLETE`）。
+///
+/// 这样一次覆盖全部不一致形态：崩溃留下的 generating、骨架期的 pending、正文已
+/// 写但状态没跟上、状态与正文矛盾（complete 却无正文）都收敛到同一个正确答案。
+///
+/// 只更新「状态确实需要变」的行（`IS DISTINCT FROM`），因此计数即真实修复量，
+/// 重复执行恒为 0（幂等）。
+///
+/// 桌面单实例语义假定：若双实例并开，自愈会按「当下的正文」给存活实例进行中的
+/// 行判态——该实例后续写入会重新推进状态，最终一致。
+pub async fn sweep_stale_generating(pool: &PgPool) -> Result<SweepReport, AgentError> {
+    let mut report = SweepReport::default();
+
+    let candidates: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM plans WHERE status = $1 OR status = $2 ORDER BY created_at",
     )
     .bind(plan_state::PlanStatus::Failed.as_str())
     .bind(plan_state::PlanStatus::Generating.as_str())
     .fetch_all(pool)
     .await
-    .map_err(|e| fail("清扫存量生成中计划", e))?;
-    for plan_id in &stale {
-        if let Err(e) = finalize_failed(pool, *plan_id).await {
-            warn!(%plan_id, error = %e, "清扫存量计划的子行收尾失败（主行已置 failed）");
-        }
-    }
-    let count = stale.len() as u64;
-    if count > 0 {
-        info!(count, "启动清扫：存量 generating 计划行已置 failed");
-    }
+    .map_err(|e| fail("扫描可疑计划", e))?;
+    report.scanned_plans = candidates.len() as u64;
 
-    // failed 自愈（2026-10-16 裁定）：章节已全部 complete 的 failed 行
-    // （重生成补齐后旧守卫收口漏翻的历史行）翻回 complete；尚有非
-    // complete 章的真失败行保持 failed。幂等：已 complete 行不再入选。
-    let failed_rows: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM plans WHERE status = $1")
-        .bind(plan_state::PlanStatus::Failed.as_str())
+    for plan_id in candidates {
+        // ① 叶子层：章节状态的真相只有正文
+        let fixed_chapters: Vec<Uuid> = sqlx::query_scalar(&format!(
+            "UPDATE chapters c SET status = {from_content}, updated_at = now()
+             WHERE c.phase_id IN (SELECT id FROM phases WHERE plan_id = $1)
+               AND c.status IS DISTINCT FROM {from_content}
+             RETURNING c.id",
+            from_content = plan_state::SQL_CHAPTER_STATUS_FROM_CONTENT
+        ))
+        .bind(plan_id)
         .fetch_all(pool)
         .await
-        .map_err(|e| fail("扫描失败计划行", e))?;
-    let mut healed = 0u64;
-    for plan_id in failed_rows {
-        match all_chapters_complete(pool, plan_id).await {
-            Ok(true) => {
-                sqlx::query(
-                    "UPDATE plans SET status = $2, updated_at = now()
-                     WHERE id = $1 AND status = $3",
-                )
-                .bind(plan_id)
-                .bind(plan_state::PlanStatus::Complete.as_str())
-                .bind(plan_state::PlanStatus::Failed.as_str())
-                .execute(pool)
-                .await
-                .map_err(|e| fail("自愈失败计划行", e))?;
-                healed += 1;
-            }
-            Ok(false) => {}
-            Err(e) => warn!(%plan_id, error = %e, "自愈判定失败，跳过该行"),
+        .map_err(|e| fail("按正文反推章节状态", e))?;
+        report.healed_children += fixed_chapters.len() as u64;
+
+        // ② 阶段层：由子章聚合（与 upsert_chapter 共用同一条 SQL 常量）
+        let fixed_phases: Vec<Uuid> = sqlx::query_scalar(&format!(
+            "UPDATE phases SET status = {case}, updated_at = now()
+             WHERE plan_id = $1 AND status IS DISTINCT FROM {case}
+             RETURNING id",
+            case = plan_state::SQL_PHASE_STATUS_CASE
+        ))
+        .bind(plan_id)
+        .fetch_all(pool)
+        .await
+        .map_err(|e| fail("按子章反推阶段状态", e))?;
+        report.healed_children += fixed_phases.len() as u64;
+
+        // ③ 计划层：由全部章聚合（$2 = complete、$3 = failed）
+        let healed: Option<String> = sqlx::query_scalar(&format!(
+            "UPDATE plans
+             SET status = CASE WHEN {all_done} THEN $2 ELSE $3 END, updated_at = now()
+             WHERE id = $1 AND status IS DISTINCT FROM (CASE WHEN {all_done} THEN $2 ELSE $3 END)
+             RETURNING status",
+            all_done = plan_state::SQL_PLAN_ALL_CHAPTERS_COMPLETE
+        ))
+        .bind(plan_id)
+        .bind(plan_state::PlanStatus::Complete.as_str())
+        .bind(plan_state::PlanStatus::Failed.as_str())
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| fail("按章节反推计划状态", e))?;
+        if healed.as_deref() == Some(plan_state::PlanStatus::Complete.as_str()) {
+            report.healed_plans += 1;
         }
     }
-    if healed > 0 {
+
+    if !report.is_clean() {
         info!(
-            healed,
-            "启动自愈：章节已全部 complete 的 failed 计划行已翻 complete"
+            scanned_plans = report.scanned_plans,
+            healed_plans = report.healed_plans,
+            healed_children = report.healed_children,
+            "启动自愈完成：按正文 / 子章 / 全章自下而上反推状态树"
         );
     }
-    Ok((count, healed))
+    Ok(report)
 }
 
 /// 失败收尾（children 位）：phases/chapters 中 status='pending' 的行置 failed；

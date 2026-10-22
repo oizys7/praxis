@@ -96,17 +96,19 @@ pub async fn run(app: tauri::AppHandle) {
         match crate::db::pool(&config).await {
             Ok(pool) => {
                 set("database", "云端数据库已连接", 60);
-                // 启动清扫（幂等）：① generating 滑口行置 failed；
-                // ② failed 自愈：章节全部 complete 的 failed 行翻回 complete。
+                // 启动自愈（幂等）：取出 failed/generating 的计划，按
+                // chapters（正文）→ phases → plans 自下而上反推整棵状态树。
                 match crate::plan_store::sweep_stale_generating(&pool).await {
-                    Ok((swept, healed)) if swept > 0 || healed > 0 => {
+                    Ok(report) if !report.is_clean() => {
                         info!(
-                            swept,
-                            healed, "启动清扫完成：generating 行置 failed / failed 全章完成行自愈"
+                            scanned_plans = report.scanned_plans,
+                            healed_plans = report.healed_plans,
+                            healed_children = report.healed_children,
+                            "启动自愈完成：可疑计划状态树已按叶子数据反推"
                         )
                     }
                     Ok(_) => {}
-                    Err(e) => warn!(error = %e, "启动清扫执行失败"),
+                    Err(e) => warn!(error = %e, "启动自愈执行失败"),
                 }
             }
             Err(e) => {

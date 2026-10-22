@@ -1111,9 +1111,12 @@ async fn test_sweep_stale_generating_only_touches_generating(pool: PgPool) {
         .await
         .unwrap();
 
-    let (swept, healed) = plan_store::sweep_stale_generating(&pool).await.unwrap();
-    assert_eq!(swept, 1, "只应清扫 generating 行");
-    assert_eq!(healed, 0, "本例无全章 complete 的 failed 行，不应自愈");
+    let report = plan_store::sweep_stale_generating(&pool).await.unwrap();
+    assert_eq!(report.scanned_plans, 1, "只有 generating 计划可疑");
+    assert_eq!(
+        report.healed_plans, 0,
+        "本例无全章 complete 的 failed 行，不应自愈"
+    );
 
     let stale_status: String = sqlx::query_scalar("SELECT status FROM plans WHERE id = $1")
         .bind(stale_id)
@@ -1136,11 +1139,10 @@ async fn test_sweep_stale_generating_only_touches_generating(pool: PgPool) {
     assert_eq!(done_status, "complete", "complete 行不应被清扫触碰");
 
     // 幂等：二次清扫无存量可清
-    let (swept_again, healed_again) = plan_store::sweep_stale_generating(&pool).await.unwrap();
-    assert_eq!(
-        (swept_again, healed_again),
-        (0, 0),
-        "清扫应幂等（二次调用为空集）"
+    let again = plan_store::sweep_stale_generating(&pool).await.unwrap();
+    assert!(
+        again.is_clean(),
+        "自愈应幂等（二次调用无修复量），实际 {again:?}"
     );
 }
 
@@ -1238,8 +1240,10 @@ async fn test_sweep_heals_failed_with_all_chapters_complete(pool: PgPool) {
         .execute(&pool)
         .await
         .unwrap();
+    // complete 与正文必须一致：自愈按 content_md 反推状态，只改 status 而不写
+    // 正文会造出「complete 却无正文」的矛盾行，被自愈正确地改回 failed。
     sqlx::query(
-        "UPDATE chapters SET status = 'complete'
+        "UPDATE chapters SET status = 'complete', content_md = '已完成的正文'
          WHERE phase_id IN (SELECT id FROM phases WHERE plan_id = $1)",
     )
     .bind(heal_id)
@@ -1258,9 +1262,9 @@ async fn test_sweep_heals_failed_with_all_chapters_complete(pool: PgPool) {
         .await
         .unwrap();
 
-    let (swept, healed) = plan_store::sweep_stale_generating(&pool).await.unwrap();
-    assert_eq!(swept, 0, "无 generating 行");
-    assert_eq!(healed, 1, "只应自愈全章 complete 的 failed 行");
+    let report = plan_store::sweep_stale_generating(&pool).await.unwrap();
+    assert_eq!(report.scanned_plans, 2, "两个 failed 计划都在候选集内");
+    assert_eq!(report.healed_plans, 1, "只应自愈全章 complete 的 failed 行");
 
     let heal_status: String = sqlx::query_scalar("SELECT status FROM plans WHERE id = $1")
         .bind(heal_id)
@@ -1275,6 +1279,140 @@ async fn test_sweep_heals_failed_with_all_chapters_complete(pool: PgPool) {
         .await
         .unwrap();
     assert_eq!(keep_status, "failed", "真失败行应保持 failed");
+}
+
+/// 崩溃自愈（2026-10-22）：重生成开始时 `mark_phase_generating` /
+/// `mark_chapter_generating` 会把阶段与章节置成 generating，但**不改
+/// `plans.status`**（计划整体仍是 failed / complete）。进程崩溃后这些子行再也
+/// 无人收尾，前端按 `chapter.status='generating'` 一直显示「生成中」。
+///
+/// 自愈口径是「候选计划 + 自下而上反推」：该计划 status=failed 进入候选集，
+/// 然后 chapters 按正文反推（有正文 → complete，空 → failed），phases 由子章
+/// 聚合，plans 由全章聚合。二次执行应完全幂等。
+#[sqlx::test]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
+async fn test_sweep_heals_generating_children_when_plan_not_generating(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+    plan_store::seed_outline(&pool, plan_id, &sample_outline(&["阶段甲"], &[2]), &[])
+        .await
+        .unwrap();
+
+    let phase_id: Uuid = sqlx::query_scalar("SELECT id FROM phases WHERE plan_id = $1")
+        .bind(plan_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    // 造崩溃现场：章 0 已有正文但状态停在 generating（写完未落状态就被杀），
+    // 章 1 空正文停在 generating，阶段停在 generating，而计划是 failed。
+    for (idx, md) in [(0i32, "已有正文"), (1, "")] {
+        sqlx::query(
+            "UPDATE chapters SET status = 'generating', content_md = $3
+             WHERE phase_id = $1 AND idx = $2",
+        )
+        .bind(phase_id)
+        .bind(idx)
+        .bind(md)
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query("UPDATE phases SET status = 'generating' WHERE id = $1")
+        .bind(phase_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE plans SET status = 'failed' WHERE id = $1")
+        .bind(plan_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let report = plan_store::sweep_stale_generating(&pool).await.unwrap();
+    assert_eq!(report.scanned_plans, 1, "该 failed 计划进入候选集");
+    assert!(
+        report.healed_children >= 2,
+        "章与阶段的残留都应被反推修正，实际 {}",
+        report.healed_children
+    );
+
+    let c0: String =
+        sqlx::query_scalar("SELECT status FROM chapters WHERE phase_id = $1 AND idx = 0")
+            .bind(phase_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(c0, "complete", "有正文的残留章应判 complete");
+    let c1: String =
+        sqlx::query_scalar("SELECT status FROM chapters WHERE phase_id = $1 AND idx = 1")
+            .bind(phase_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(c1, "failed", "空正文的残留章应判 failed");
+
+    let phase_status: String = sqlx::query_scalar("SELECT status FROM phases WHERE id = $1")
+        .bind(phase_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(phase_status, "failed", "阶段应随子章回落 failed");
+
+    let plan_status: String = sqlx::query_scalar("SELECT status FROM plans WHERE id = $1")
+        .bind(plan_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(plan_status, "failed", "仍有空章，计划保持 failed");
+
+    let again = plan_store::sweep_stale_generating(&pool).await.unwrap();
+    assert_eq!(again.healed_children, 0, "二次自愈不应再有修复量");
+}
+
+/// 叶子层配对测试（2026-10-22）：章节「正文 → 状态」的 SQL 翻译
+/// （`SQL_CHAPTER_STATUS_FROM_CONTENT`）必须与纯函数 `chapter_of_content` 同语义。
+/// 自愈的整棵状态树都建立在这一层之上，这里一旦漂移，上面的 phases / plans
+/// 反推会全部跟着错。
+#[sqlx::test]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
+async fn sql_chapter_status_matches_pure_function(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+    plan_store::seed_outline(&pool, plan_id, &sample_outline(&["阶段甲"], &[4]), &[])
+        .await
+        .unwrap();
+    let phase_id: Uuid = sqlx::query_scalar("SELECT id FROM phases WHERE plan_id = $1")
+        .bind(plan_id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    let cases = ["", "   ", "正文", "\n\t 带空白的内容 "];
+    for (idx, md) in cases.iter().enumerate() {
+        sqlx::query("UPDATE chapters SET content_md = $3, status = 'pending' WHERE phase_id = $1 AND idx = $2")
+            .bind(phase_id)
+            .bind(idx as i32)
+            .bind(md)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let sql_status: String = sqlx::query_scalar(&format!(
+            "UPDATE chapters c SET status = {from_content} WHERE c.phase_id = $1 AND c.idx = $2 RETURNING c.status",
+            from_content = crate::plan_state::SQL_CHAPTER_STATUS_FROM_CONTENT
+        ))
+        .bind(phase_id)
+        .bind(idx as i32)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        let pure = crate::plan_state::chapter_of_content(md);
+        assert_eq!(
+            sql_status,
+            pure.as_str(),
+            "content_md={md:?} 时 SQL 与纯函数不一致",
+        );
+    }
 }
 
 /// 结算口径回归（2026-10-22）：计划终态按「全章 complete」判定，与 done 事件解耦。
