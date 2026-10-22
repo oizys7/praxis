@@ -18,14 +18,13 @@ from typing import Any
 
 import httpx
 import pytest
-from pydantic import ValidationError
-
 from app import nodes
 from app.config import settings
 from app.errors import AgentServiceError
 from app.main import app
 from app.mock import build_mock_outline
 from app.schemas import Chapter
+from pydantic import ValidationError
 
 # 合法请求：goal 足够长、background 非空——避开规则澄清
 VALID_REQUEST = {

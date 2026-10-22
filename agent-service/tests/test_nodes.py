@@ -10,7 +10,6 @@ test_assemble_extras_missing_retries_once）。
 from typing import Any, cast
 
 import pytest
-
 from app import nodes
 from app.config import settings
 from app.errors import AgentServiceError

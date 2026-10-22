@@ -14,10 +14,9 @@ review stub 经 build_graph(review=...) 注入，验证章级定向回炉拓扑�
 
 from typing import Any
 
-import pytest
-
 import app.graph as graph_module
 import app.nodes as nodes_module
+import pytest
 from app.config import settings
 from app.graph import agent_graph, build_graph
 from app.nodes import AgentState

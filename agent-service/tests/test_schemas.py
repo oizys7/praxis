@@ -48,9 +48,8 @@ def test_plan_request_study_days_dedupes_and_sorts():
 def test_plan_request_study_days_rejects_out_of_range():
     """取值越界（0 / 8 / 负数）一律 422 拒绝。"""
     import pytest
-    from pydantic import ValidationError
-
     from app.schemas import PlanRequest
+    from pydantic import ValidationError
 
     for bad in ([0, 1], [1, 8], [-1], [2, 7, 9]):
         with pytest.raises(ValidationError):
@@ -60,9 +59,8 @@ def test_plan_request_study_days_rejects_out_of_range():
 def test_plan_request_study_days_rejects_empty():
     """空数组拒绝：至少保留一个学习日。"""
     import pytest
-    from pydantic import ValidationError
-
     from app.schemas import PlanRequest
+    from pydantic import ValidationError
 
     with pytest.raises(ValidationError):
         PlanRequest(goal="学 Rust", study_days=[])

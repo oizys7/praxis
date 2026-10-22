@@ -17,17 +17,16 @@ import time
 from collections import deque
 from typing import Any
 
+import app.graph as graph_module
 import httpx
 import pytest
-from fastapi.testclient import TestClient
-
-import app.graph as graph_module
 from app import nodes, tasks
 from app.config import settings
 from app.errors import AgentServiceError
 from app.main import app
 from app.mock import build_mock_outline
 from app.tasks import TaskKind, TaskStatus, registry
+from fastapi.testclient import TestClient
 
 # 合法请求：goal 足够长、background 非空——避开规则澄清（与 test_stream.py 同源）
 VALID_REQUEST = {

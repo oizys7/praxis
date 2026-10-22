@@ -5,7 +5,6 @@
 """
 
 import pytest
-
 from app.validators import validate_plan
 
 # 合法基准：3 个阶段 × 2 章，总学时 120 = weekly_hours(10) × weeks(12)

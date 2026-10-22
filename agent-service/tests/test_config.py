@@ -14,9 +14,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import pytest
-
 import app.config as config_module
+import pytest
 from app.config import (
     RUNTIME_DATA_DIR,
     ConfigNotFoundError,

@@ -7,11 +7,10 @@
 
 import httpx
 import pytest
-from httpx import ASGITransport
-
 from app import llm
 from app.config import settings
 from app.main import app
+from httpx import ASGITransport
 
 
 async def _post() -> dict:

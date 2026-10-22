@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
+from typing import Self
 
+import pytest
 from app import resource_check
 from app.resource_check import REACHABLE, UNVERIFIED, verify_resources
 
@@ -22,7 +23,7 @@ class _FakeClient:
         self.head_calls: list[str] = []
         self.get_calls: list[str] = []
 
-    async def __aenter__(self) -> "_FakeClient":
+    async def __aenter__(self) -> Self:
         return self
 
     async def __aexit__(self, *exc: object) -> bool:

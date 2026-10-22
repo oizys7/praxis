@@ -7,10 +7,9 @@ with_structured_output 返回 None；原实现经 cast 直接穿透，
 """
 
 import pytest
-from pydantic import BaseModel
-
 from app import llm
 from app.errors import AgentServiceError
+from pydantic import BaseModel
 
 _VARS = {
     "plan_context": "测试上下文",

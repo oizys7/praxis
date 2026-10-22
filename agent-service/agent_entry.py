@@ -21,7 +21,6 @@ import sys
 from pathlib import Path
 
 import uvicorn
-
 from app.config import settings
 from app.logging_config import setup_logging, uvicorn_log_config
 from app.main import app
