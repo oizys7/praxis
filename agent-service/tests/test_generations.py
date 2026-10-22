@@ -193,7 +193,15 @@ async def test_plan_event_sequence(monkeypatch):
     # techFacts 由真实路径的版本探测注入（mock 不联网、不探测，故此处不产生）；
     # 读取方一律 `.get("techFacts") or []`，两种形态都能工作。
     for e in chapter_events:
-        assert set(e) == {"type", "index", "phaseIndex", "chapter"}
+        assert set(e) == {
+            "type",
+            "index",
+            "phaseIndex",
+            "chapter",
+            # 生成输入留档：素材（重生成复用）+ 提示词变量快照（可复原提示词）
+            "researchSnippets",
+            "promptTrace",
+        }
         chapter = e["chapter"]
         assert set(chapter) == {"title", "summary", "contentMd", "kind", "keyTerms"}
         assert "```mermaid" in chapter["contentMd"], "正文必须内联 mermaid 码块"

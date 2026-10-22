@@ -97,6 +97,31 @@ pub(crate) const DDL_PLANS_LEARNING_STARTED_COL: &str =
 pub(crate) const DDL_PLANS_OUTLINE_JSON_COL: &str =
     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS outline_json JSONB";
 
+/// 生成过程输入留档表（2026-10-22）：把「不可重建的外部输入」与「提示词变量
+/// 快照」按 (计划, 阶段, 章, 类别) 各存一份。
+///
+/// 为什么独立成表而不挂在 chapters 上：这些是**过程产物**而非业务数据，
+/// 生命周期完全不同（可按保留期整体丢弃），挂业务表会把「清理」变成「改业务行」。
+///
+/// 复合主键让写入天然是 upsert：重生成同一章只覆盖自己那一行，不会追加膨胀。
+/// kind: 'research'（联网检索素材，重生成直接复用）/ 'prompt'（提示词变量快照，审计用）。
+/// chapter_idx = -1 表示阶段级产物。plans 删除时级联清理。
+pub(crate) const DDL_GENERATION_ARTIFACTS_TABLE: &str =
+    "CREATE TABLE IF NOT EXISTS generation_artifacts (
+            plan_id     UUID NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+            phase_idx   INT  NOT NULL,
+            chapter_idx INT  NOT NULL DEFAULT -1,
+            kind        TEXT NOT NULL,
+            payload     JSONB NOT NULL DEFAULT '{}'::jsonb,
+            created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY (plan_id, phase_idx, chapter_idx, kind)
+        )";
+
+/// 保留期清理按 created_at 扫描（清理条件最终由 plans.status/updated_at 决定，
+/// 这个索引只为 DELETE 的候选扫描服务）
+pub(crate) const DDL_GENERATION_ARTIFACTS_CREATED_IDX: &str =
+    "CREATE INDEX IF NOT EXISTS idx_generation_artifacts_created ON generation_artifacts (created_at)";
+
 /// plans 学习状态三分类列：not_started | active | completed
 pub(crate) const DDL_PLANS_LEARNING_STATUS_COL: &str =
     "ALTER TABLE plans ADD COLUMN IF NOT EXISTS learning_status TEXT NOT NULL DEFAULT 'not_started'";
@@ -337,6 +362,8 @@ pub(crate) const DDL_STATEMENTS: &[&str] = &[
     DDL_PLANS_BACKGROUND_COL,
     // 4.4 重生成上下文：完整大纲列（只依赖 plans 表）
     DDL_PLANS_OUTLINE_JSON_COL,
+    // 4.6 生成过程输入留档表（外键依赖 plans，故排在 plans 建表之后）
+    DDL_GENERATION_ARTIFACTS_TABLE,
     // 4.5 学习日程演进：每周学习日列 + 学习状态/开始日期列 + 学习日程表
     //    （均只依赖 plans 表；旧打卡表 study_day_marks 在第 5 段退役）
     DDL_PLANS_STUDY_DAYS_COL,
@@ -344,6 +371,7 @@ pub(crate) const DDL_STATEMENTS: &[&str] = &[
     DDL_PLANS_LEARNING_STATUS_COL,
     DDL_STUDY_SCHEDULE_TABLE,
     DDL_STUDY_SCHEDULE_DATE_IDX,
+    DDL_GENERATION_ARTIFACTS_CREATED_IDX,
     // 5. 任务 18 演进：chapters 正文列 + 退役子表 DROP（统一收尾，
     //    历史 DB 与全新 DB 都收敛到同一终态）
     DDL_CHAPTERS_CONTENT_MD_COL,

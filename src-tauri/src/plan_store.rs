@@ -816,17 +816,40 @@ pub async fn load_plan_outline(
     // 兜底成 concept、只用章标题当检索词、并告诉模型「未探测到版本信息」。
     // 旧计划该列为 NULL，回退到下面按 phases/chapters 行重建的骨架形态。
     let stored: Option<serde_json::Value> = row.try_get("outline_json").map_err(db_err)?;
-    if let Some(value) = stored {
-        let parsed: crate::protocol::RegenOutline = serde_json::from_value(value)
-            .map_err(|e| AgentError::Db(format!("解析已存计划大纲（outline_json）失败：{e}")))?;
-        return Ok(Some(PlanOutlineRow {
-            title: parsed.title,
-            overview: parsed.overview,
-            estimated_total_hours: parsed.estimated_total_hours,
-            phases: parsed.phases,
-        }));
-    }
+    let mut outline = match stored {
+        Some(value) => {
+            let parsed: crate::protocol::RegenOutline =
+                serde_json::from_value(value).map_err(|e| {
+                    AgentError::Db(format!("解析已存计划大纲（outline_json）失败：{e}"))
+                })?;
+            PlanOutlineRow {
+                title: parsed.title,
+                overview: parsed.overview,
+                estimated_total_hours: parsed.estimated_total_hours,
+                phases: parsed.phases,
+            }
+        }
+        None => PlanOutlineRow {
+            title: row.try_get("title").map_err(db_err)?,
+            overview: row.try_get("overview").map_err(db_err)?,
+            estimated_total_hours: hours.max(0) as u32,
+            phases: rebuild_outline_phases(pool, plan_id).await?,
+        },
+    };
 
+    // 检索素材留档：填成与 chapter_titles 等长的并行数组。Python 侧命中即跳过
+    // 联网检索——重生成与首次生成因此用同一份素材，且省掉重复的检索计费。
+    apply_research_artifacts(pool, plan_id, &mut outline.phases).await?;
+    Ok(Some(outline))
+}
+
+/// 骨架重建：outline_json 缺失（本轮改造前生成的老计划）时，按
+/// phases/chapters 行还原最小可用大纲。这条路径拿不到重生成上下文
+/// （章型 / 知识点 / 阶段目标 / 版本事实）。
+async fn rebuild_outline_phases(
+    pool: &PgPool,
+    plan_id: Uuid,
+) -> Result<Vec<OutlinePhasePayload>, AgentError> {
     let phase_rows =
         sqlx::query("SELECT id, name, week_range FROM phases WHERE plan_id = $1 ORDER BY idx ASC")
             .bind(plan_id)
@@ -850,19 +873,126 @@ pub async fn load_plan_outline(
             name: prow.try_get("name").map_err(db_err)?,
             week_range: prow.try_get("week_range").map_err(db_err)?,
             chapter_titles: titles,
-            project_brief: None,
-            // 骨架重建路径拿不到重生成上下文（章型/知识点/目标/版本事实），
-            // 只有完整大纲缺失（旧计划 outline_json 为 NULL）时才会走到这里。
             ..Default::default()
         });
     }
+    Ok(phases)
+}
 
-    Ok(Some(PlanOutlineRow {
-        title: row.try_get("title").map_err(db_err)?,
-        overview: row.try_get("overview").map_err(db_err)?,
-        estimated_total_hours: hours.max(0) as u32,
-        phases,
-    }))
+/// 把 generation_artifacts 里的检索素材填进大纲阶段。
+/// 无留档 = 空数组 = 该章照常联网检索（不是错误，老计划与首次生成都是这样）。
+async fn apply_research_artifacts(
+    pool: &PgPool,
+    plan_id: Uuid,
+    phases: &mut [OutlinePhasePayload],
+) -> Result<(), AgentError> {
+    let rows = sqlx::query(
+        "SELECT phase_idx, chapter_idx, payload FROM generation_artifacts
+         WHERE plan_id = $1 AND kind = 'research'",
+    )
+    .bind(plan_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| fail("查询检索素材留档", e))?;
+
+    let mut by_key: HashMap<(i32, i32), serde_json::Value> = HashMap::new();
+    for row in rows {
+        let phase_idx: i32 = row.try_get("phase_idx").map_err(db_err)?;
+        let chapter_idx: i32 = row.try_get("chapter_idx").map_err(db_err)?;
+        let payload: serde_json::Value = row.try_get("payload").map_err(db_err)?;
+        by_key.insert((phase_idx, chapter_idx), payload);
+    }
+
+    for (index, phase) in phases.iter_mut().enumerate() {
+        let phase_idx = i32::try_from(index).unwrap_or(-1);
+        phase.chapter_research_snippets = (0..phase.chapter_titles.len())
+            .map(|chapter_index| {
+                let key = (phase_idx, i32::try_from(chapter_index).unwrap_or(-1));
+                by_key
+                    .get(&key)
+                    .and_then(|payload| payload.as_array())
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect();
+    }
+    Ok(())
+}
+
+/// 写入章节生成输入留档（research / prompt 两类）。
+///
+/// 复合主键 upsert：重生成同一章只覆盖自己那一行，不会追加膨胀——
+/// 这也是留档能长期开着的前提。写失败由调用方只 warn，绝不影响生成主链路：
+/// 留档是「加速与追溯」的优化，不是正确性依赖。
+pub async fn upsert_chapter_artifacts(
+    pool: &PgPool,
+    plan_id: Uuid,
+    phase_index: u32,
+    chapter_index: u32,
+    research_snippets: &[serde_json::Value],
+    prompt_trace: Option<&serde_json::Value>,
+) -> Result<(), AgentError> {
+    let phase_idx = i32::try_from(phase_index).unwrap_or(-1);
+    let chapter_idx = i32::try_from(chapter_index).unwrap_or(-1);
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| fail("开启生成留档事务", e))?;
+
+    let research = serde_json::Value::Array(research_snippets.to_vec());
+    sqlx::query(
+        "INSERT INTO generation_artifacts (plan_id, phase_idx, chapter_idx, kind, payload)
+         VALUES ($1, $2, $3, 'research', $4)
+         ON CONFLICT (plan_id, phase_idx, chapter_idx, kind)
+         DO UPDATE SET payload = EXCLUDED.payload, created_at = now()",
+    )
+    .bind(plan_id)
+    .bind(phase_idx)
+    .bind(chapter_idx)
+    .bind(&research)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| fail("写入检索素材留档", e))?;
+
+    if let Some(trace) = prompt_trace {
+        sqlx::query(
+            "INSERT INTO generation_artifacts (plan_id, phase_idx, chapter_idx, kind, payload)
+             VALUES ($1, $2, $3, 'prompt', $4)
+             ON CONFLICT (plan_id, phase_idx, chapter_idx, kind)
+             DO UPDATE SET payload = EXCLUDED.payload, created_at = now()",
+        )
+        .bind(plan_id)
+        .bind(phase_idx)
+        .bind(chapter_idx)
+        .bind(trace)
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| fail("写入提示词留档", e))?;
+    }
+
+    tx.commit().await.map_err(|e| fail("提交生成留档事务", e))?;
+    Ok(())
+}
+
+/// 按保留期清理留档：只清「已完成且超过保留期未变动」的计划。
+///
+/// 生成中 / 失败的计划一概不动——失败计划随时可能被用户点重生成，
+/// 那时正需要留档里的素材与提示词。留档不承担长期归档职责，
+/// 计划一旦稳定完成，过程输入就没有保留价值了。
+pub async fn purge_stale_artifacts(pool: &PgPool, retention_days: i64) -> Result<u64, AgentError> {
+    let result = sqlx::query(
+        "DELETE FROM generation_artifacts
+         WHERE plan_id IN (
+             SELECT id FROM plans
+             WHERE status = $1 AND updated_at < now() - make_interval(days => $2)
+         )",
+    )
+    .bind(plan_state::PlanStatus::Complete.as_str())
+    .bind(i32::try_from(retention_days).unwrap_or(7))
+    .execute(pool)
+    .await
+    .map_err(|e| fail("清理过期生成留档", e))?;
+    Ok(result.rows_affected())
 }
 
 /// 读取目标阶段的既有项目名（单章重生成的 projectBrief 上下文：任务 15 裁定

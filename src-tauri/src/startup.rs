@@ -15,6 +15,10 @@ use std::time::Instant;
 use serde::Serialize;
 use tracing::{info, warn};
 
+/// 生成留档保留期（天）：已完成计划超过该天数未变动后，清理其检索素材与
+/// 提示词快照。留档只为「短期内重生成复用 + 问题追溯」，不是长期归档。
+const ARTIFACT_RETENTION_DAYS: i64 = 7;
+
 /// 启动状态快照（前端据此渲染时间轴；阶段边界固定，阶段内不假装精确）
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -109,6 +113,14 @@ pub async fn run(app: tauri::AppHandle) {
                     }
                     Ok(_) => {}
                     Err(e) => warn!(error = %e, "启动自愈执行失败"),
+                }
+                // 留档保留期清理（幂等）：只清已完成且超过保留期的计划。
+                // 放启动时跑一次——桌面应用启动频率足够，无需常驻定时器。
+                match crate::plan_store::purge_stale_artifacts(&pool, ARTIFACT_RETENTION_DAYS).await
+                {
+                    Ok(0) => {}
+                    Ok(purged) => info!(purged_rows = purged, "已清理过期生成留档"),
+                    Err(e) => warn!(error = %e, "生成留档清理失败"),
                 }
             }
             Err(e) => {

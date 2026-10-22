@@ -38,6 +38,10 @@ pub struct OutlinePhasePayload {
     /// 版本事实（name / ecosystem / latestVersion），原样透传
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tech_facts: Vec<serde_json::Value>,
+    /// 与 chapter_titles 等长的检索素材留档（每章一组），由 generation_artifacts
+    /// 读回填入：重生成直接复用，不再重复调用检索服务。空数组 = 无留档，照常联网。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chapter_research_snippets: Vec<Vec<serde_json::Value>>,
 }
 
 /// regenerate 端点的出站请求（Rust -> Python，POST /api/regenerate/stream；
@@ -474,6 +478,14 @@ pub enum StreamEvent {
         index: u32,
         phase_index: u32,
         chapter: ChapterDef,
+        /// 本次生成实际使用的检索素材（留档到 generation_artifacts 供重生成复用）。
+        /// 不进 ChapterDef：它不是章节内容，前端也永远不读。
+        #[serde(default)]
+        research_snippets: Vec<serde_json::Value>,
+        /// 提示词变量快照（审计用）。提示词是「模板 + 变量」的确定性函数，
+        /// 所以存变量即可复原完整提示词，不必存渲染后文本。
+        #[serde(default)]
+        prompt_trace: Option<serde_json::Value>,
     },
     /// 章节开始生成（2026-10-16 逐章动画）：重生成流在每章 LLM 调用前发出，
     /// Rust 置该章 generating 落库并推前端转圈——状态退出重进可保持。
@@ -775,9 +787,14 @@ mod tests {
                 index,
                 phase_index,
                 chapter,
+                research_snippets,
+                prompt_trace,
             } => {
                 assert_eq!(index, 1);
                 assert_eq!(phase_index, 0);
+                // 留档字段可选：旧载荷不带也要能解析（serde default）
+                assert!(research_snippets.is_empty());
+                assert!(prompt_trace.is_none());
                 assert_eq!(chapter.title, "所有权与借用");
                 assert!(chapter.content_md.starts_with("## 所有权与借用"));
                 assert!(chapter.content_md.contains("```mermaid"));

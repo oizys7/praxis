@@ -133,7 +133,9 @@ async def test_expand_chapter_parallel_safe(monkeypatch):
             }
             result = await nodes.expand_chapter_node(payload)
 
-            assert set(result) == {"chapter_drafts"}, "顶层只允许 chapter_drafts 一个键"
+            assert set(result) == {"chapter_drafts", "chapter_traces"}, (
+                "顶层只允许 chapter_drafts / chapter_traces 两个并行键"
+            )
             assert set(result["chapter_drafts"]) == {f"{index}:{chapter_index}"}, (
                 "只写本实例负责的复合键"
             )
@@ -188,7 +190,7 @@ async def test_expand_chapter_real_path_variables(monkeypatch):
     assert (
         variables["sibling_chapter_titles"] == f"- {phase_outline['chapterTitles'][1]}"
     )
-    assert set(result) == {"chapter_drafts"}
+    assert set(result) == {"chapter_drafts", "chapter_traces"}
     # 章型以大纲为准强制回写：大纲未给 chapterKinds → 兜底 concept
     assert result["chapter_drafts"] == {
         "0:0": {

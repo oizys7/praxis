@@ -1502,6 +1502,81 @@ async fn test_outline_json_roundtrip_and_preferred_on_load(pool: PgPool) {
     );
 }
 
+/// 生成留档（2026-10-22）：素材与提示词快照按 (计划, 阶段, 章, 类别) 覆盖写，
+/// 重生成时经 load_plan_outline 读回为与章标题等长的并行数组；保留期清理
+/// **只清已完成计划**——失败计划随时会被重新生成，那时正需要留档。
+#[sqlx::test]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
+async fn test_generation_artifacts_roundtrip_and_purge(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+    plan_store::seed_outline(&pool, plan_id, &sample_outline(&["阶段甲"], &[2]), &[])
+        .await
+        .unwrap();
+
+    let research = vec![serde_json::json!({
+        "title": "装饰器 - Python 文档",
+        "url": "https://docs.python.org/3/glossary.html",
+        "snippet": "装饰器是接受函数并返回函数的可调用对象。"
+    })];
+    let trace = serde_json::json!({
+        "promptKey": "chapter",
+        "variables": {"chapter_title": "阶段甲·章0"}
+    });
+    plan_store::upsert_chapter_artifacts(&pool, plan_id, 0, 0, &research, Some(&trace))
+        .await
+        .unwrap();
+    // 覆盖写：同键再写一次只更新，不追加（留档不会随重生成膨胀）
+    plan_store::upsert_chapter_artifacts(&pool, plan_id, 0, 0, &research, None)
+        .await
+        .unwrap();
+
+    let outline = plan_store::load_plan_outline(&pool, plan_id)
+        .await
+        .unwrap()
+        .expect("应返回大纲");
+    let groups = &outline.phases[0].chapter_research_snippets;
+    assert_eq!(groups.len(), 2, "并行数组与章标题等长");
+    assert_eq!(groups[0].len(), 1, "首章素材被读回");
+    assert!(groups[1].is_empty(), "未生成过的章没有素材（照常联网检索）");
+
+    let rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM generation_artifacts WHERE plan_id = $1")
+            .bind(plan_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(rows, 2, "research + prompt 各一行，覆盖写不新增");
+
+    // 生成中的计划不清理：它随时可能被重新生成，正需要留档
+    assert_eq!(
+        plan_store::purge_stale_artifacts(&pool, -1).await.unwrap(),
+        0,
+        "generating 计划不参与清理"
+    );
+
+    // 只改状态：title / 学时传 None 表示沿用列上现值
+    plan_store::finalize_plan(
+        &pool,
+        plan_id,
+        crate::plan_state::PlanStatus::Complete,
+        None,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        plan_store::purge_stale_artifacts(&pool, -1).await.unwrap(),
+        2,
+        "已完成且超保留期的计划整体清掉留档"
+    );
+    assert_eq!(
+        plan_store::purge_stale_artifacts(&pool, -1).await.unwrap(),
+        0,
+        "重复清理幂等"
+    );
+}
+
 /// 结算口径回归（2026-10-22）：计划终态按「全章 complete」判定，与 done 事件解耦。
 /// 关键防线——单个阶段写完不等于计划完成：另一阶段还停着 pending 骨架章时，
 /// upsert_chapter 不得把计划翻成 complete（否则会出现「内容不全却显示已完成」）。

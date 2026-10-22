@@ -90,6 +90,10 @@ class AgentState(TypedDict, total=False):
     # Annotated reducer（operator.or_，即 dict union）：并行 Send 多实例
     # 各写各的复合键，LangGraph 据此做增量合并而非整值覆盖
     chapter_drafts: Annotated[dict[str, dict[str, Any]], operator.or_]
+    # 章节生成留档："<阶段索引>:<章索引>" -> {researchSnippets, promptTrace}。
+    # 与 chapter_drafts 同键同 reducer：生产章的实例同时写自己的留档，
+    # 事件层据此把素材与提示词快照随 chapter 事件下发，由 Rust 落留档表。
+    chapter_traces: Annotated[dict[str, dict[str, Any]], operator.or_]
     # 阶段轻装（practice / assignments / project）：阶段索引字符串 -> extras dict。
     # 每阶段仅 expand_phase_wrap 一个实例写自己的键，reducer 同上防覆盖
     phase_extras: Annotated[dict[str, dict[str, Any]], operator.or_]
@@ -482,6 +486,21 @@ async def _expand_phase_draft(
     return phase.model_dump(mode="json", by_alias=True)
 
 
+def _chapter_research_snippets(
+    phase_outline: dict[str, Any], chapter_index: int
+) -> list[dict[str, Any]]:
+    """读回留档的联网检索素材（与 chapterTitles 等长的并行数组）。
+
+    命中即不再联网检索——重生成与首次生成因此看到同一份素材，
+    也省掉一次检索计费。空列表表示无留档，调用方照常检索。
+    """
+    groups = phase_outline.get("chapterResearchSnippets") or []
+    if not 0 <= chapter_index < len(groups):
+        return []
+    items = groups[chapter_index] or []
+    return [item for item in items if isinstance(item, dict)]
+
+
 async def _expand_chapter_draft(
     request: dict[str, Any],
     phase_outline: dict[str, Any],
@@ -490,15 +509,22 @@ async def _expand_chapter_draft(
     *,
     plan_context: str,
     review_notes: str,
-) -> dict[str, Any]:
-    """扩展单个章节（mock / 真实 LLM 双路径），返回 Chapter camelCase dict。
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """扩展单个章节（mock / 真实 LLM 双路径）。
+
+    返回 ``(Chapter camelCase dict, 生成留档 trace)``。trace 里带**本次实际使用**
+    的检索素材与提示词变量快照：素材用于重生成复用（省一次检索），变量快照
+    用于复原完整提示词（提示词是「模板 + 变量」的确定性函数）。
 
     章级扇出主链（首展 / 定向回炉 / regen 端点单章路径）共用本函数，
     保证三条路径注入给 LLM 的上下文形状一致。
     首展 Send 多实例与定向回炉 gather 共用 _EXPAND_SEMAPHORE。
     """
     if settings.allow_mock_llm:
-        return build_mock_chapter(request, phase_outline, chapter_index)
+        return build_mock_chapter(request, phase_outline, chapter_index), {
+            "researchSnippets": [],
+            "promptTrace": {"promptKey": "mock", "variables": {}},
+        }
     if not has_llm_config():
         raise AgentServiceError(_NO_KEY_HINT)
 
@@ -507,59 +533,62 @@ async def _expand_chapter_draft(
     chapter_title = titles[chapter_index]
     kind = _chapter_kind(phase_outline, chapter_index)
     points = _chapter_knowledge_points(phase_outline, chapter_index)
-    snippets = await _research_snippets(" ".join([chapter_title, *points]))
-    async with _EXPAND_SEMAPHORE:
-        chapter = await invoke_structured(
-            Chapter,
-            "chapter",
-            {
-                "goal": req.goal,
-                "level": _level_audience(req),
-                "background": req.background or "未填写",
-                "interests": "、".join(req.interests) if req.interests else "未填写",
-                "weekly_hours": str(req.weekly_hours),
-                "weeks": str(req.weeks),
-                "phase_name": phase_outline.get("name", ""),
-                "phase_week_range": phase_outline.get("weekRange", ""),
-                "phase_objectives": (
-                    "\n".join(
-                        f"- {obj}" for obj in phase_outline.get("objectives") or []
-                    )
-                    or "（无）"
-                ),
-                "chapter_title": chapter_title,
-                "sibling_chapter_titles": "\n".join(
-                    f"- {t}"
-                    for t in _sibling_chapter_titles(phase_outline, chapter_index)
-                ),
-                "project_brief": phase_outline.get("projectBrief", "") or "（无）",
-                "plan_context": plan_context,
-                "review_notes": review_notes,
-                "chapter_kind": kind,
-                "kind_requirements": _CHAPTER_KIND_REQUIREMENTS[kind],
-                # 知识点是大纲钉下的骨架：小节标题要对得上，否则措施B 的覆盖率
-                # 校验会判不合格并定向回炉该章
-                "chapter_knowledge_points": chr(10).join(f"- {point}" for point in points)
-                or "（未指定，按章节标题自行组织）",
-                # 版本事实：实测得到的当前版本。模型据此写当前 API，
-                # 而不是训练截止时的写法；没探测到就明确要求别写死版本号
-                "tech_facts": chr(10).join(
-                    f"- {fact.get('name', '')}（{fact.get('ecosystem', '')}）"
-                    f"当前版本 {fact.get('latestVersion', '')}"
-                    for fact in (phase_outline.get("techFacts") or [])
-                )
-                or "（未探测到版本信息：不确定的版本号不要写具体数字）",
-                "research_snippets": chr(10).join(
-                    f"- {item.get('title', '')}：{item.get('snippet', '')}"
-                    for item in snippets
-                )
-                or "（未启用联网检索，按你的知识范围组织内容）",
-            },
+    # 留档命中即复用（重生成场景）：没有留档才联网检索
+    snippets = _chapter_research_snippets(phase_outline, chapter_index)
+    if not snippets:
+        snippets = await _research_snippets(" ".join([chapter_title, *points]))
+    variables = {
+        "goal": req.goal,
+        "level": _level_audience(req),
+        "background": req.background or "未填写",
+        "interests": "、".join(req.interests) if req.interests else "未填写",
+        "weekly_hours": str(req.weekly_hours),
+        "weeks": str(req.weeks),
+        "phase_name": phase_outline.get("name", ""),
+        "phase_week_range": phase_outline.get("weekRange", ""),
+        "phase_objectives": (
+            "\n".join(
+                f"- {obj}" for obj in phase_outline.get("objectives") or []
+            )
+            or "（无）"
+        ),
+        "chapter_title": chapter_title,
+        "sibling_chapter_titles": "\n".join(
+            f"- {t}"
+            for t in _sibling_chapter_titles(phase_outline, chapter_index)
+        ),
+        "project_brief": phase_outline.get("projectBrief", "") or "（无）",
+        "plan_context": plan_context,
+        "review_notes": review_notes,
+        "chapter_kind": kind,
+        "kind_requirements": _CHAPTER_KIND_REQUIREMENTS[kind],
+        # 知识点是大纲钉下的骨架：小节标题要对得上，否则措施B 的覆盖率
+        # 校验会判不合格并定向回炉该章
+        "chapter_knowledge_points": chr(10).join(f"- {point}" for point in points)
+        or "（未指定，按章节标题自行组织）",
+        # 版本事实：实测得到的当前版本。模型据此写当前 API，
+        # 而不是训练截止时的写法；没探测到就明确要求别写死版本号
+        "tech_facts": chr(10).join(
+            f"- {fact.get('name', '')}（{fact.get('ecosystem', '')}）"
+            f"当前版本 {fact.get('latestVersion', '')}"
+            for fact in (phase_outline.get("techFacts") or [])
         )
+        or "（未探测到版本信息：不确定的版本号不要写具体数字）",
+        "research_snippets": chr(10).join(
+            f"- {item.get('title', '')}：{item.get('snippet', '')}"
+            for item in snippets
+        )
+        or "（未启用联网检索，按你的知识范围组织内容）",
+    }
+    async with _EXPAND_SEMAPHORE:
+        chapter = await invoke_structured(Chapter, "chapter", variables)
     # 章型以大纲为准：模型可能自行改写 kind，这里强制回写，
     # 保证「生成形态 / 校验规则 / 前端徽标」看到的是同一个值
     chapter.kind = kind
-    return chapter.model_dump(mode="json", by_alias=True)
+    return chapter.model_dump(mode="json", by_alias=True), {
+        "researchSnippets": snippets,
+        "promptTrace": {"promptKey": "chapter", "variables": variables},
+    }
 
 
 async def _expand_phase_extras(
@@ -677,10 +706,10 @@ async def regenerate_chapter(
     phase_index: int,
     chapter_index: int,
 ) -> dict[str, Any]:
-    """单章重生成（regen 端点 chapterIndex 指定路径）：返回 Chapter camelCase dict。
+    """单章重生成（regen 端点 chapterIndex 指定路径）。
 
-    上下文取自阶段大纲：兄弟章标题排除自身（参考而非必写，空列表合法传空）；
-    结构合法性由 Pydantic Chapter 模型兜底，不跑整计划 validators。
+    返回 ``(Chapter camelCase dict, 生成留档 trace)``，与图内章节扩展同形。
+    结构合法性由 Pydantic Chapter 模型兜底；整阶段范围的校验/评审由编排层负责。
     """
     phase_outline = _phase_outline_at(outline, phase_index)
     return await _expand_chapter_draft(
@@ -711,7 +740,7 @@ async def expand_chapter_node(payload: dict[str, Any]) -> dict[str, Any]:
     chapter_index: int = payload["chapter_index"]
 
     try:
-        chapter = await _expand_chapter_draft(
+        chapter, trace = await _expand_chapter_draft(
             request,
             phase_outline,
             phase_index,
@@ -736,7 +765,11 @@ async def expand_chapter_node(payload: dict[str, Any]) -> dict[str, Any]:
             exc,
         )
         return {}
-    return {"chapter_drafts": {_chapter_key(phase_index, chapter_index): chapter}}
+    key = _chapter_key(phase_index, chapter_index)
+    return {
+        "chapter_drafts": {key: chapter},
+        "chapter_traces": {key: trace},
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -822,11 +855,13 @@ async def expand_revision_node(state: AgentState) -> dict[str, Any]:
             jobs.extend(("chapter", index, c) for c in range(len(titles)))
             jobs.append(("extras", index, -1))
 
-    async def _redo(job: tuple[str, int, int]) -> tuple[str, int, int, dict[str, Any]]:
+    async def _redo(
+        job: tuple[str, int, int],
+    ) -> tuple[str, int, int, dict[str, Any], dict[str, Any] | None]:
         kind, phase_index, chapter_index = job
         phase_outline = phases[phase_index] if 0 <= phase_index < len(phases) else {}
         if kind == "chapter":
-            chapter = await _expand_chapter_draft(
+            chapter, trace = await _expand_chapter_draft(
                 request,
                 phase_outline,
                 phase_index,
@@ -834,7 +869,7 @@ async def expand_revision_node(state: AgentState) -> dict[str, Any]:
                 plan_context=build_plan_context(outline, phase_index),
                 review_notes=review_notes_text,
             )
-            return kind, phase_index, chapter_index, chapter
+            return kind, phase_index, chapter_index, chapter, trace
         extras = await _expand_phase_extras(
             request,
             phase_outline,
@@ -842,7 +877,7 @@ async def expand_revision_node(state: AgentState) -> dict[str, Any]:
             plan_context=build_plan_context(outline, phase_index),
             review_notes=review_notes_text,
         )
-        return kind, phase_index, chapter_index, extras
+        return kind, phase_index, chapter_index, extras, None
 
     results = await asyncio.gather(
         *(_redo(job) for job in jobs), return_exceptions=True
@@ -850,6 +885,7 @@ async def expand_revision_node(state: AgentState) -> dict[str, Any]:
 
     # gather 保序，job 与 result 一一对应：成功回填增量，失败追加中文备注（保旧）
     chapter_delta: dict[str, dict[str, Any]] = {}
+    trace_delta: dict[str, dict[str, Any]] = {}
     extras_delta: dict[str, dict[str, Any]] = {}
     for job, result in zip(jobs, results, strict=True):
         _kind, phase_index, chapter_index = job
@@ -869,13 +905,18 @@ async def expand_revision_node(state: AgentState) -> dict[str, Any]:
                 )
             continue
         payload = result[3]
+        trace = result[4]
         if _kind == "chapter":
-            chapter_delta[_chapter_key(phase_index, chapter_index)] = payload
+            key = _chapter_key(phase_index, chapter_index)
+            chapter_delta[key] = payload
+            if trace is not None:
+                trace_delta[key] = trace
         else:
             extras_delta[str(phase_index)] = payload
 
     return {
         "chapter_drafts": chapter_delta,
+        "chapter_traces": trace_delta,
         "phase_extras": extras_delta,
         "revised": True,
         "review_notes": notes,

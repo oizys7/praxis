@@ -837,6 +837,8 @@ impl StreamEventSink for GenerationConsumer {
                     index,
                     phase_index,
                     ref chapter,
+                    ref research_snippets,
+                    ref prompt_trace,
                 } => {
                     let outcome = if let Some(s) = &self.storage {
                         plan_store::upsert_chapter(
@@ -859,6 +861,25 @@ impl StreamEventSink for GenerationConsumer {
                             error = %e,
                             "生成章节入库失败，不中断生成"
                         );
+                    }
+                    // 生成输入留档：检索素材 + 提示词变量快照。留档后重生成可
+                    // 直接复用素材（不再联网检索），提示词也能据此复原。
+                    // 写失败只告警——留档是可选的加速项，不承担正确性。
+                    if outcome.is_ok() {
+                        if let Some(s) = &self.storage {
+                            if let Err(e) = plan_store::upsert_chapter_artifacts(
+                                &s.pool,
+                                self.plan_id,
+                                phase_index,
+                                index,
+                                research_snippets,
+                                prompt_trace.as_ref(),
+                            )
+                            .await
+                            {
+                                warn!(req_id = %self.req_id, seq, index, phase_index, error = %e, "章节生成留档写入失败，不影响生成");
+                            }
+                        }
                     }
                     emit_progress(
                         &self.app,
@@ -1040,6 +1061,8 @@ impl StreamEventSink for RegenSink<'_> {
                     index,
                     phase_index: _,
                     chapter,
+                    ref research_snippets,
+                    ref prompt_trace,
                 } => {
                     // 两路径共用（D1 后 Python 全阶段重生成也逐章发事件）：
                     // 单章路径目标章 = 入口校验的 self.chapter_index（事件值由
@@ -1074,6 +1097,20 @@ impl StreamEventSink for RegenSink<'_> {
                                 chapter_index: ci,
                             },
                         );
+                        // 重生成同样刷新留档：素材若为复用命中，写回的是同一份；
+                        // 若这次重新检索过，则覆盖成最新素材（下次重生成用它）。
+                        if let Err(e) = plan_store::upsert_chapter_artifacts(
+                            self.pool,
+                            self.plan_id,
+                            self.phase_index,
+                            ci,
+                            research_snippets,
+                            prompt_trace.as_ref(),
+                        )
+                        .await
+                        {
+                            warn!(%self.req_id, index = ci, error = %e, "重生成留档写入失败，不中断流");
+                        }
                     }
                     Ok(None)
                 }

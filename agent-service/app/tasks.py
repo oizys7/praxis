@@ -377,15 +377,21 @@ async def _plan_event_dicts(request: PlanRequest) -> AsyncIterator[dict[str, Any
                     ):
                         # 章级扇出：每章实例产一条 chapter 事件（与 WS 重生成单章
                         # 事件同构；回炉轮返回的增量仅含重扩成功的章）
+                        traces = update.get("chapter_traces") or {}
                         for key, chapter in update["chapter_drafts"].items():
                             phase_index, chapter_index = (
                                 int(part) for part in key.split(":")
                             )
+                            trace = traces.get(key) or {}
                             yield {
                                 "type": "chapter",
                                 "index": chapter_index,
                                 "phaseIndex": phase_index,
                                 "chapter": chapter,
+                                # 生成输入留档：素材供重生成复用，提示词变量
+                                # 快照供复原完整提示词。Rust 落专门留档表。
+                                "researchSnippets": trace.get("researchSnippets") or [],
+                                "promptTrace": trace.get("promptTrace"),
                             }
                     elif node == "assemble" and "plan" in update:
                         # 拼装即推完整阶段（含全章，消费方 upsert_phase 幂等覆盖）；
@@ -453,7 +459,7 @@ async def _regen_event_dicts(payload: RegenRequest) -> AsyncIterator[dict[str, A
                     "phaseIndex": phase_index,
                     "chapterIndex": ci,
                 }
-                chapter = await nodes.regenerate_chapter(
+                chapter, trace = await nodes.regenerate_chapter(
                     request_dict, outline_dict, phase_index, ci
                 )
                 chapters.append(chapter)
@@ -462,6 +468,8 @@ async def _regen_event_dicts(payload: RegenRequest) -> AsyncIterator[dict[str, A
                     "index": ci,
                     "phaseIndex": phase_index,
                     "chapter": chapter,
+                    "researchSnippets": trace.get("researchSnippets") or [],
+                    "promptTrace": trace.get("promptTrace"),
                 }
             extras = await nodes.regenerate_phase_extras(
                 request_dict, outline_dict, phase_index
@@ -490,7 +498,7 @@ async def _regen_event_dicts(payload: RegenRequest) -> AsyncIterator[dict[str, A
                     "phaseIndex": phase_index,
                     "chapterIndex": chapter_index,
                 }
-                chapter = await nodes.regenerate_chapter(
+                chapter, trace = await nodes.regenerate_chapter(
                     request_dict, outline_dict, phase_index, chapter_index
                 )
                 yield {
@@ -498,6 +506,8 @@ async def _regen_event_dicts(payload: RegenRequest) -> AsyncIterator[dict[str, A
                     "index": chapter_index,
                     "phaseIndex": phase_index,
                     "chapter": chapter,
+                    "researchSnippets": trace.get("researchSnippets") or [],
+                    "promptTrace": trace.get("promptTrace"),
                 }
                 response = PlanResponse(status="plan")
     except AgentServiceError as exc:

@@ -94,12 +94,15 @@ def _patch_rework_expand(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
 
     async def _chapter_with_rework_sentinel(
         *args: Any, **kwargs: Any
-    ) -> dict[str, Any]:
-        chapter = await original_chapter(*args, **kwargs)
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        chapter, trace = await original_chapter(*args, **kwargs)
         if not _is_rework(kwargs):
-            return chapter
+            return chapter, trace
         calls["chapter"] += 1
-        return {**chapter, "summary": f"{_REWORK_SENTINEL}{chapter.get('summary', '')}"}
+        return (
+            {**chapter, "summary": f"{_REWORK_SENTINEL}{chapter.get('summary', '')}"},
+            trace,
+        )
 
     async def _extras_with_rework_sentinel(*args: Any, **kwargs: Any) -> dict[str, Any]:
         extras = await original_extras(*args, **kwargs)
