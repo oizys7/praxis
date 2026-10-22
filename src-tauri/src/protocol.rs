@@ -189,6 +189,12 @@ pub struct StudyResource {
     pub kind: String,
     #[serde(default)]
     pub note: String,
+    /// 资源真实地址；空串表示模型没有给出（禁止编造路径）
+    #[serde(default)]
+    pub url: String,
+    /// 可达性：reachable / unverified（由 Python 侧真实探测得出，不信模型自评）
+    #[serde(default)]
+    pub verification: String,
 }
 
 /// 完整学习计划

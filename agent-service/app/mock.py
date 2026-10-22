@@ -328,13 +328,26 @@ def build_mock_outline(request: dict[str, Any]) -> dict[str, Any]:
         ),
         "estimatedTotalHours": weeks * hours,
         "phases": phases,
+        # mock 资源给真实可点的通用地址（离线演示也可验证链接渲染），
+        # verification 保持 unverified：mock 分支刻意不联网，不谎报「已核实」
         "resources": [
-            {"title": "官方入门文档", "type": "docs", "note": "最权威的第一手资料"},
-            {"title": "经典入门书籍", "type": "book", "note": "系统建立知识框架"},
+            {
+                "title": "官方入门文档",
+                "type": "docs",
+                "note": "最权威的第一手资料",
+                "url": "https://developer.mozilla.org/",
+            },
+            {
+                "title": "经典入门书籍",
+                "type": "book",
+                "note": "系统建立知识框架",
+                "url": "https://openlibrary.org/",
+            },
             {
                 "title": "视频实战课",
                 "type": "video",
                 "note": "跟着做一遍，降低上手门槛",
+                "url": "https://www.bilibili.com/",
             },
         ],
     }

@@ -162,11 +162,15 @@ fn sample_resources() -> Vec<StudyResource> {
             title: "The Rust Book".into(),
             kind: "docs".into(),
             note: "官方教程".into(),
+            url: "https://doc.rust-lang.org/book/".into(),
+            verification: "reachable".into(),
         },
         StudyResource {
             title: "Rust by Example".into(),
             kind: "docs".into(),
             note: "示例驱动".into(),
+            url: "https://doc.rust-lang.org/rust-by-example/".into(),
+            verification: "unverified".into(),
         },
     ]
 }

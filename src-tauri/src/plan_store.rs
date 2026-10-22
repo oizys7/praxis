@@ -248,13 +248,16 @@ pub async fn seed_outline(
 
     for (i, resource) in resources.iter().enumerate() {
         sqlx::query(
-            "INSERT INTO resources (plan_id, idx, title, type, note) VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO resources (plan_id, idx, title, type, note, url, verification)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(plan_id)
         .bind(i32::try_from(i).unwrap_or(0))
         .bind(&resource.title)
         .bind(&resource.kind)
         .bind(&resource.note)
+        .bind(&resource.url)
+        .bind(&resource.verification)
         .execute(&mut *tx)
         .await
         .map_err(|e| fail("播种学习资源", e))?;
@@ -290,13 +293,16 @@ pub async fn upsert_resources(
 
     for (i, resource) in resources.iter().enumerate() {
         sqlx::query(
-            "INSERT INTO resources (plan_id, idx, title, type, note) VALUES ($1, $2, $3, $4, $5)",
+            "INSERT INTO resources (plan_id, idx, title, type, note, url, verification)
+             VALUES ($1, $2, $3, $4, $5, $6, $7)",
         )
         .bind(plan_id)
         .bind(i32::try_from(i).unwrap_or(0))
         .bind(&resource.title)
         .bind(&resource.kind)
         .bind(&resource.note)
+        .bind(&resource.url)
+        .bind(&resource.verification)
         .execute(&mut *tx)
         .await
         .map_err(|e| fail("写入学习资源", e))?;
@@ -971,17 +977,21 @@ pub async fn load_study_plan(
     }
 
     let mut resources = Vec::new();
-    for r in
-        sqlx::query("SELECT title, type, note FROM resources WHERE plan_id = $1 ORDER BY idx ASC")
-            .bind(plan_id)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| fail("查询资源列表", e))?
+    for r in sqlx::query(
+        "SELECT title, type, note, url, verification
+             FROM resources WHERE plan_id = $1 ORDER BY idx ASC",
+    )
+    .bind(plan_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| fail("查询资源列表", e))?
     {
         resources.push(StudyResource {
             title: r.try_get("title").map_err(db_err)?,
             kind: r.try_get("type").map_err(db_err)?,
             note: r.try_get("note").map_err(db_err)?,
+            url: r.try_get("url").map_err(db_err)?,
+            verification: r.try_get("verification").map_err(db_err)?,
         });
     }
 
@@ -1101,6 +1111,8 @@ mod tests {
                 title: "The Rust Book".into(),
                 kind: "docs".into(),
                 note: "官方教程".into(),
+                url: "https://doc.rust-lang.org/book/".into(),
+                verification: "reachable".into(),
             }],
             phases: vec![
                 PhaseRows {

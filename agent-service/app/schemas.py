@@ -204,11 +204,19 @@ class StudyPhase(CamelModel):
 
 
 class Resource(CamelModel):
-    """推荐学习资源。"""
+    """推荐学习资源。
+
+    url 为空串表示模型没有给出确切地址（禁止编造路径）；
+    verification 由 resource_check 的真实探测得出，两档：reachable / unverified。
+    """
 
     title: str = Field(..., description="资源名称")
     type: str = Field(default="docs", description="类型：book/course/docs/video/other")
     note: str = Field(default="", description="推荐理由")
+    url: str = Field(default="", description="资源真实地址；空串表示未给出")
+    verification: str = Field(
+        default="unverified", description="可达性：reachable / unverified"
+    )
 
 
 class GlossaryEntry(CamelModel):

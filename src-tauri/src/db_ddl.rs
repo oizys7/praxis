@@ -131,6 +131,14 @@ pub(crate) const DDL_CHAPTERS_KIND_COL: &str =
 pub(crate) const DDL_CHAPTERS_KEY_TERMS_COL: &str =
     "ALTER TABLE chapters ADD COLUMN IF NOT EXISTS key_terms JSONB NOT NULL DEFAULT '[]'::jsonb";
 
+/// 资源真实地址列（2026-10-22 资源可信化）：空串表示模型没有给出地址
+pub(crate) const DDL_RESOURCES_URL_COL: &str =
+    "ALTER TABLE resources ADD COLUMN IF NOT EXISTS url TEXT NOT NULL DEFAULT ''";
+
+/// 资源可达性列：reachable | unverified，由真实探测得出
+pub(crate) const DDL_RESOURCES_VERIFICATION_COL: &str =
+    "ALTER TABLE resources ADD COLUMN IF NOT EXISTS verification TEXT NOT NULL DEFAULT 'unverified'";
+
 /// 退役子表 DROP（IF EXISTS 幂等）：外键存在于子表指向 chapters，删子表
 /// 不破坏 chapters 自身及其余级联链；历史建过子表的 DB 与全新 DB 都收敛到
 /// 同一终态。统一排在序列最后执行（先前建后删与只删等价，一样幂等）。
@@ -186,6 +194,7 @@ pub(crate) const DDL_RESOURCES_TABLE: &str = "CREATE TABLE IF NOT EXISTS resourc
           id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
           plan_id UUID NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
           idx INT NOT NULL, title TEXT NOT NULL, type TEXT NOT NULL DEFAULT 'docs', note TEXT NOT NULL DEFAULT '',
+          url TEXT NOT NULL DEFAULT '', verification TEXT NOT NULL DEFAULT 'unverified',
           created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
           updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
         )";
@@ -277,6 +286,8 @@ const COMMENT_STATEMENTS: &[&str] = &[
     "COMMENT ON COLUMN resources.title IS '资源名称'",
     "COMMENT ON COLUMN resources.type IS '资源类型（如 docs | video | book | interactive）'",
     "COMMENT ON COLUMN resources.note IS '备注说明'",
+    "COMMENT ON COLUMN resources.url IS '资源真实地址（空串 = 模型未给出）'",
+    "COMMENT ON COLUMN resources.verification IS '可达性：reachable | unverified'",
     "COMMENT ON COLUMN resources.created_at IS '创建时间'",
     "COMMENT ON COLUMN resources.updated_at IS '修改时间（触发器自动维护）'",
     // ---- study_schedule ----
@@ -328,6 +339,8 @@ pub(crate) const DDL_STATEMENTS: &[&str] = &[
     // 5. 任务 18 演进：chapters 正文列 + 退役子表 DROP（统一收尾，
     //    历史 DB 与全新 DB 都收敛到同一终态）
     DDL_CHAPTERS_CONTENT_MD_COL,
+    DDL_RESOURCES_URL_COL,
+    DDL_RESOURCES_VERIFICATION_COL,
     DDL_CHAPTERS_KIND_COL,
     DDL_CHAPTERS_KEY_TERMS_COL,
     DDL_DROP_CONCEPTS_TABLE,

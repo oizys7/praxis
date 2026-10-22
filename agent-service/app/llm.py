@@ -99,7 +99,9 @@ def _openai_compatible(
         api_key=SecretStr(api_key),
         base_url=base_url,
         extra_body=extra_body,
-        max_tokens=_MAX_OUTPUT_TOKENS,
+        # Pyright 无法解析 pydantic 模型的 alias 参数（运行期已实测两个 SDK 均接受），
+        # 这里是静态误报而非真实缺陷
+        max_tokens=_MAX_OUTPUT_TOKENS,  # pyright: ignore[reportCallIssue]
         temperature=_TEMPERATURE,
         timeout=_TIMEOUT_SECONDS,
         max_retries=_MAX_RETRIES,
@@ -139,7 +141,9 @@ def _build_anthropic() -> BaseChatModel:
         model_name=settings.anthropic_model,
         stop=None,
         api_key=SecretStr(settings.anthropic_api_key),
-        max_tokens=_MAX_OUTPUT_TOKENS,
+        # Pyright 无法解析 pydantic 模型的 alias 参数（运行期已实测两个 SDK 均接受），
+        # 这里是静态误报而非真实缺陷
+        max_tokens=_MAX_OUTPUT_TOKENS,  # pyright: ignore[reportCallIssue]
         temperature=_TEMPERATURE,
         timeout=_TIMEOUT_SECONDS,
         max_retries=_MAX_RETRIES,
@@ -152,7 +156,9 @@ def _build_deepseek() -> BaseChatModel:
     return ChatDeepSeek(
         model=settings.deepseek_model,
         api_key=SecretStr(settings.deepseek_api_key),
-        max_tokens=_MAX_OUTPUT_TOKENS,
+        # Pyright 无法解析 pydantic 模型的 alias 参数（运行期已实测两个 SDK 均接受），
+        # 这里是静态误报而非真实缺陷
+        max_tokens=_MAX_OUTPUT_TOKENS,  # pyright: ignore[reportCallIssue]
         temperature=_TEMPERATURE,
         timeout=_TIMEOUT_SECONDS,
         max_retries=_MAX_RETRIES,

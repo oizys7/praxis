@@ -226,8 +226,30 @@ const resourceTypeLabels: Record<string, string> = {
             <Badge variant="outline" class="mt-0.5 shrink-0">
               {{ resourceTypeLabels[res.type] ?? res.type }}
             </Badge>
-            <div>
-              <span class="font-medium">{{ res.title }}</span>
+            <div class="min-w-0">
+              <a
+                v-if="res.url"
+                :href="res.url"
+                target="_blank"
+                rel="noopener noreferrer"
+                class="font-medium underline decoration-border underline-offset-4 transition-colors hover:text-primary"
+              >
+                {{ res.title }}
+              </a>
+              <span v-else class="font-medium">{{ res.title }}</span>
+              <!-- 两档是客观事实（真探测过 / 没探测过），不是模型自评的可信度 -->
+              <span
+                v-if="res.verification === 'reachable'"
+                class="ml-2 align-middle text-xs text-success"
+              >
+                ✓ 已核实可达
+              </span>
+              <span
+                v-else
+                class="ml-2 align-middle text-xs text-muted-foreground"
+              >
+                未经核实
+              </span>
               <span v-if="res.note" class="text-muted-foreground">
                 —— {{ res.note }}</span
               >

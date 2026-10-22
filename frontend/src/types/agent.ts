@@ -157,6 +157,10 @@ export interface StudyResource {
   /** book | course | docs | video | other */
   type: string;
   note: string;
+  /** 资源真实地址；空串表示模型没有给出（禁止编造路径） */
+  url?: string;
+  /** 可达性：reachable（真实探测可达）/ unverified（未核实） */
+  verification?: string;
 }
 
 /** 完整学习计划 */

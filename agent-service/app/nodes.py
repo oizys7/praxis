@@ -43,6 +43,7 @@ from app.mock import (
     build_mock_outline,
     build_mock_phase,
 )
+from app.resource_check import verify_resources
 from app.schemas import (
     Chapter,
     ClarificationOutput,
@@ -252,8 +253,13 @@ async def outline_node(state: AgentState) -> dict[str, Any]:
             "background": req.background or "未填写",
         },
     )
+    outline_dump = outline.model_dump(mode="json", by_alias=True)
+    # 资源可达性：一次真实探测（fail-open，最坏只退回「未经核实」，绝不中断生成）
+    outline_dump["resources"] = await verify_resources(
+        outline_dump.get("resources") or []
+    )
     # 以 camelCase JSON 形式存入状态（与后续节点及响应包络直接对齐）
-    return {"outline": outline.model_dump(mode="json", by_alias=True)}
+    return {"outline": outline_dump}
 
 
 # ---------------------------------------------------------------------------
