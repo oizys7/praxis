@@ -414,6 +414,8 @@ async def test_assemble_node_sorts_and_validates(monkeypatch):
         "pending_phase_indexes",
         "failed_chapter_keys",
         "phase_extras",
+        # 作用域下 phase 事件要用真实阶段索引（首次生成为 None → 事件层回退 enumerate）
+        "phase_event_index",
     }
     plan = result["plan"]
     assert len(plan["phases"]) == len(outline["phases"]), "阶段按大纲序重组"

@@ -33,6 +33,8 @@ import operator
 import re
 from typing import Annotated, Any, TypedDict
 
+from langgraph.config import get_stream_writer
+
 from app import prompts, validators
 from app.config import settings
 from app.errors import AgentServiceError
@@ -105,6 +107,13 @@ class AgentState(TypedDict, total=False):
     validation_issues: list[str]  # assemble 产出：程序化校验问题描述列表
     pending_phase_indexes: list[int]  # 待定向回炉的阶段索引（0-based，升序去重）
     failed_chapter_keys: list[str]  # assemble 标定的失败章复合键列表（"<p>:<c>"）
+    # 重生成作用域（2026-10-22 编排统一）：{phase: 阶段索引, chapters: [章索引] | None}。
+    # 存在即表示「重生成」——图从 intake 直接扇出到目标范围，跳过 clarify/outline，
+    # 之后 assemble / review / expand_revision 全部复用生成链的同一套实现。
+    regen_scope: dict[str, Any]
+    # assemble 产出：phase 事件的真实阶段索引。作用域下 plan.phases 只有一段，
+    # enumerate 从 0 起会与库里的阶段索引错位，事件必须用真实值。
+    phase_event_index: int
 
 
 def _request_of(state: AgentState) -> PlanRequest:
@@ -400,7 +409,7 @@ def _build_glossary(
 _SUMMARY_SECTION_KEYWORDS = ("学习目标", "前置知识", "动手练习", "自检", "深入", "验收")
 
 
-def _plan_summary(plan: dict[str, Any]) -> str:
+def _plan_summary(plan: dict[str, Any], phase_offset: int = 0) -> str:
     """把计划压成结构摘要，作为评审输入（**不含正文全文**）。
 
     动机：全量正文（20 章 × 3000 字 ≈ 6 万字）会撑爆上下文并稀释注意力，
@@ -415,7 +424,7 @@ def _plan_summary(plan: dict[str, Any]) -> str:
     for index, phase in enumerate(plan.get("phases") or []):
         lines.append("")
         lines.append(
-            f"第 {index + 1} 阶段「{phase.get('name', '')}」"
+            f"第 {index + 1 + phase_offset} 阶段「{phase.get('name', '')}」"
             f"（{phase.get('weekRange', '')}）"
         )
         objectives = phase.get("objectives") or []
@@ -739,6 +748,22 @@ async def expand_chapter_node(payload: dict[str, Any]) -> dict[str, Any]:
     phase_index: int = payload["phase_index"]
     chapter_index: int = payload["chapter_index"]
 
+    if payload.get("emit_chapter_start"):
+        # 重生成链的逐章动画：进图前 Rust 只把阶段置 generating，「这一章开始转了」
+        # 需要一个明确信号。走 LangGraph custom stream 直达事件层，图拓扑不变。
+        try:
+            writer = get_stream_writer()
+        except Exception:  # noqa: BLE001 —— 单测直调节点，不在图上下文时没有 writer
+            writer = None
+        if writer is not None:
+            writer(
+                {
+                    "type": "chapterStart",
+                    "phaseIndex": phase_index,
+                    "chapterIndex": chapter_index,
+                }
+            )
+
     try:
         chapter, trace = await _expand_chapter_draft(
             request,
@@ -945,9 +970,27 @@ async def assemble_node(state: AgentState) -> dict[str, Any]:
     chapter_drafts: dict[str, dict[str, Any]] = state.get("chapter_drafts") or {}
     extras_map: dict[str, dict[str, Any]] = dict(state.get("phase_extras") or {})
 
+    # 重生成作用域（None = 首次生成整计划）：只拼装与校验目标范围。
+    # 范围外的阶段既不补空占位也不判失败——否则单章重生成会把该阶段其余
+    # 缺失章判成失败并连带回炉，把「修一章」放大成「整阶段重写」。
+    scope = state.get("regen_scope") or {}
+    scope_phase: int | None = scope.get("phase")
+    scope_chapters_raw = scope.get("chapters")
+    scope_chapters: list[int] | None = (
+        [int(c) for c in scope_chapters_raw] if scope_chapters_raw is not None else None
+    )
+    # 单章重生成不重做阶段轻装：practice/assignments/project 不在本次范围内
+    partial_phase = scope_phase is not None and scope_chapters is not None
+    target_indexes: list[int] = (
+        [scope_phase] if scope_phase is not None else list(range(len(outline_phases)))
+    )
+
     # extras 缺失防线：wrap 轻调用丢失时当场重试一次，成功则增量合并进状态
     retried_extras: dict[str, dict[str, Any]] = {}
-    for index, phase_outline in enumerate(outline_phases):
+    for index in target_indexes:
+        if partial_phase or not 0 <= index < len(outline_phases):
+            continue
+        phase_outline = outline_phases[index]
         key = str(index)
         extras = extras_map.get(key)
         if extras and extras.get("project"):
@@ -970,10 +1013,15 @@ async def assemble_node(state: AgentState) -> dict[str, Any]:
 
     phases: list[dict[str, Any]] = []
     failed_keys: list[str] = []
-    for index, phase_outline in enumerate(outline_phases):
+    for index in target_indexes:
+        phase_outline = outline_phases[index] if 0 <= index < len(outline_phases) else {}
         titles = phase_outline.get("chapterTitles") or []
         chapters: list[dict[str, Any]] = []
-        for chapter_index in range(len(titles)):
+        if scope_chapters is None:
+            chapter_indexes = list(range(len(titles)))
+        else:
+            chapter_indexes = [c for c in scope_chapters if 0 <= c < len(titles)]
+        for chapter_index in chapter_indexes:
             key = _chapter_key(index, chapter_index)
             chapter = chapter_drafts.get(key)
             if chapter is None:
@@ -1015,7 +1063,10 @@ async def assemble_node(state: AgentState) -> dict[str, Any]:
     knowledge_points: dict[tuple[int, int], list[str]] = {}
     seen_points: dict[str, str] = {}
     duplicates: list[str] = []
-    for phase_index, phase_outline in enumerate(outline_phases):
+    for phase_index in target_indexes:
+        phase_outline = (
+            outline_phases[phase_index] if 0 <= phase_index < len(outline_phases) else {}
+        )
         titles = phase_outline.get("chapterTitles") or []
         for chapter_index, points in enumerate(
             phase_outline.get("chapterKnowledgePoints") or []
@@ -1036,7 +1087,12 @@ async def assemble_node(state: AgentState) -> dict[str, Any]:
                     seen_points[point] = where
 
     issues, failed_indexes, validator_failed_chapters = validators.validate_plan(
-        plan, req.weekly_hours, req.weeks, knowledge_points
+        plan,
+        req.weekly_hours,
+        req.weeks,
+        knowledge_points,
+        scope_phase=scope_phase,
+        scope_chapters=scope_chapters,
     )
     if duplicates:
         issues.append(
@@ -1062,6 +1118,8 @@ async def assemble_node(state: AgentState) -> dict[str, Any]:
         "pending_phase_indexes": failed_indexes,
         "failed_chapter_keys": failed_keys,
         "phase_extras": retried_extras,
+        # 作用域下 phases 只含目标阶段，事件层要用真实索引而非 enumerate
+        "phase_event_index": scope_phase,
     }
 
 
@@ -1082,6 +1140,9 @@ async def review_node(state: AgentState) -> dict[str, Any]:
     """
     plan = state.get("plan") or {}
     validation_issues: list[str] = state.get("validation_issues") or []
+    # 作用域下摘要只含目标阶段，阶段序号按真实索引显示（否则永远写「第 1 阶段」）
+    review_scope = state.get("regen_scope") or {}
+    phase_offset = int(review_scope.get("phase") or 0)
 
     if settings.allow_mock_llm:
         return {"passed": True, "review_notes": ["（Mock 模式：未执行真实 LLM 评审）"]}
@@ -1098,7 +1159,7 @@ async def review_node(state: AgentState) -> dict[str, Any]:
             ReviewOutput,
             "review",
             {
-                "plan_summary": _plan_summary(plan),
+                "plan_summary": _plan_summary(plan, phase_offset),
                 "validation_issues": (
                     "\n".join(f"- {issue}" for issue in validation_issues)
                     if validation_issues

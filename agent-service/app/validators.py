@@ -132,8 +132,16 @@ def validate_plan(
     weekly_hours: int,
     weeks: int,
     knowledge_points: dict[tuple[int, int], list[str]] | None = None,
+    *,
+    scope_phase: int | None = None,
+    scope_chapters: list[int] | None = None,
 ) -> tuple[list[str], list[int], list[str]]:
     """校验 camelCase 计划 dict。
+
+    scope_phase / scope_chapters 为重生成作用域（2026-10-22 编排统一）：
+    此时 plan_dict 只含目标阶段的若干章，阶段级索引要回填成真实值，
+    且计划级规则（阶段数、总学时漂移）不适用——它们衡量的是整份计划，
+    而重生成只负责眼前这一段，跑它只会制造与本次无关的假失败。
 
     返回（问题描述列表, 不合格阶段索引列表, 不合格章复合键列表 "阶段:章"）。
     阶段索引仍覆盖全部不合格阶段（回炉入口）；章级键是它的精度提升——调用方
@@ -147,7 +155,8 @@ def validate_plan(
     failed_chapters: set[str] = set()
 
     phases = plan_dict.get("phases") or []
-    if not (MIN_PHASES <= len(phases) <= MAX_PHASES):
+    scoped = scope_phase is not None
+    if not scoped and not (MIN_PHASES <= len(phases) <= MAX_PHASES):
         issues.append(f"阶段数为 {len(phases)}，需在 {MIN_PHASES}-{MAX_PHASES} 个之间")
         # 规则 1 全局失败：映射所有阶段索引（0 个阶段时为空集）
         failed_indexes.update(range(len(phases)))
@@ -156,7 +165,10 @@ def validate_plan(
     for (phase_index, chapter_index), points in (knowledge_points or {}).items():
         points_by_phase.setdefault(phase_index, {})[chapter_index] = points
 
-    for index, phase in enumerate(phases):
+    for local_index, phase in enumerate(phases):
+        # 作用域下 plan_dict 只含目标阶段，真实索引由 scope_phase 回填：
+        # 否则回炉会按 0 号阶段找章，打错目标
+        index = scope_phase if scoped else local_index
         _check_phase(
             phase,
             index,
@@ -164,9 +176,12 @@ def validate_plan(
             failed_indexes,
             failed_chapters,
             points_by_phase.get(index),
+            scope_chapters=scope_chapters,
+            skip_phase_level=scope_chapters is not None,
         )
 
-    _check_total_hours(plan_dict, weekly_hours, weeks, issues)
+    if not scoped:
+        _check_total_hours(plan_dict, weekly_hours, weeks, issues)
 
     return (
         issues,
@@ -182,8 +197,17 @@ def _check_phase(
     failed: set[int],
     failed_chapters: set[str],
     chapter_points: dict[int, list[str]] | None = None,
+    scope_chapters: list[int] | None = None,
+    skip_phase_level: bool = False,
 ) -> None:
-    """单阶段校验：章节正文 / 项目 / 目标（markdown 化后的规则 2-6）。"""
+    """单阶段校验：章节正文 / 项目 / 目标（markdown 化后的规则 2-6）。
+
+    scope_chapters 为重生成作用域内的真实章索引：此时 chapters 列表只含
+    目标章，回填真实索引才能让章级失败键命中回炉目标、知识点覆盖也查得对。
+
+    skip_phase_level=单章重生成：项目/作业等阶段级产物这次根本不生产，
+    校验它们只会把「修一章」误判成「阶段结构性问题」并连带回炉整个阶段。
+    """
     label = f"第 {index + 1} 阶段「{phase.get('name', '')}」"
 
     chapters = phase.get("chapters") or []
@@ -195,7 +219,8 @@ def _check_phase(
         failed.add(index)
         return
 
-    for chapter_index, chapter in enumerate(chapters):
+    for local_index, chapter in enumerate(chapters):
+        chapter_index = scope_chapters[local_index] if scope_chapters else local_index
         _check_chapter(
             chapter,
             f"{label}第 {chapter_index + 1} 章",
@@ -207,7 +232,8 @@ def _check_phase(
             (chapter_points or {}).get(chapter_index),
         )
 
-    _check_project(phase, label, issues, failed, index)
+    if not skip_phase_level:
+        _check_project(phase, label, issues, failed, index)
 
     if not (phase.get("objectives") or []):
         issues.append(f"{label}缺少阶段目标（objectives 为空）")

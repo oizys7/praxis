@@ -700,6 +700,11 @@ pub async fn finalize_plan(
 /// 尚有非 complete 章（如其余 pending）时不动行状态，计划级语义仍由
 /// 后续重生成推进。消费方：commands regenerate 双命令的 done(plan) 路径。
 pub async fn finalize_regen_complete(pool: &PgPool, plan_id: Uuid) -> Result<(), AgentError> {
+    // 先把本次没产出的子行收口：单章生成失败在图内是静默的（不炸整条流，
+    // 也不发 chapter 事件），若不清理，那一章会永远停在 generating、前端一直
+    // 转圈。finalize_failed 只动 pending|generating，complete 章不受影响，
+    // 因此对「部分成功的重生成」也只是把没产出的部分标成失败。
+    finalize_failed(pool, plan_id).await?;
     if !all_chapters_complete(pool, plan_id).await? {
         info!(%plan_id, "重生成收口：尚有非 complete 章节，计划行状态保持");
         return Ok(());

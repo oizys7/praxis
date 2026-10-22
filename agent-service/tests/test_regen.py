@@ -72,8 +72,13 @@ async def test_regen_phase_stream(monkeypatch):
     assert body.count("chapterStart") == body.count("chapter") > 0, (
         f"chapterStart 与 chapter 必须成对且非空：{body}"
     )
-    assert body[0::2] == ["chapterStart"] * (len(body) // 2), f"交替序错乱：{body}"
-    assert body[1::2] == ["chapter"] * (len(body) // 2), f"交替序错乱：{body}"
+    # 章级并行（2026-10-22 编排统一后重生成与首次生成共用同一扇出）：各章的
+    # chapterStart 在对应章调 LLM 前立即发出，因此所有 start 可能集中在前面，
+    # 不再严格交替。只要求两类事件等量、且 start 全部先于 chapter 完成。
+    assert set(body) == {"chapterStart", "chapter"}, f"事件类型异常：{body}"
+    assert body[: body.count("chapterStart")] == ["chapterStart"] * body.count(
+        "chapterStart"
+    ), f"chapterStart 必须先于章节完成事件：{body}"
     phase_event = events[-2]
     assert phase_event["index"] == 0, "phase 事件的 index 必须等于请求的 phaseIndex"
     assert phase_event["phase"]["chapters"], "重生成的阶段必须携带章节正文"
@@ -99,9 +104,12 @@ async def test_regen_chapter_stream(monkeypatch):
         },
     )
 
+    # phase 由 assemble 统一产出：单章模式下 Rust 忽略它（只 upsert chapter），
+    # 但保留一条让事件流与全阶段路径同构。
     assert [event["type"] for event in events] == [
         "chapterStart",
         "chapter",
+        "phase",
         "done",
     ]
     assert events[0]["chapterIndex"] == chapter_index
@@ -151,12 +159,22 @@ async def test_regen_service_error_yields_error_done(monkeypatch):
         },
     )
 
-    # chapterStart 先行（点击即转圈），业务异常 → done(error) 收尾
-    assert [event["type"] for event in events] == ["chapterStart", "done"]
+    # 章生成失败在图内静默（与首次生成的单章容错同源），不再炸成 done(error)：
+    # 本用例请求的是全阶段（两章并行）→ 两个 chapterStart；两章都没产出正文，
+    # 故无 chapter 事件，assemble 用空占位拼出阶段并判失败 → 回炉再拼一轮 →
+    # done(plan)。落库后这两章正文为空，Rust 收口为 failed，用户可再次重生成。
+    assert [event["type"] for event in events] == [
+        "chapterStart",
+        "chapterStart",
+        "phase",
+        "phase",
+        "done",
+    ]
     response = events[-1]["response"]
-    assert response["status"] == "error"
-    assert response["error"]["code"] == "service"
-    assert response["error"]["message"], "error 包络必须携带异常信息"
+    assert response["status"] == "plan", "单章失败不再中止整条流"
+    phase_event = next(event for event in events if event["type"] == "phase")
+    placeholder = phase_event["phase"]["chapters"][0]
+    assert not (placeholder.get("contentMd") or "").strip(), "失败章正文应为空"
 
 
 @pytest.mark.asyncio
@@ -190,3 +208,75 @@ async def test_regen_out_of_range(monkeypatch):
     response = events[0]["response"]
     assert response["status"] == "error"
     assert response["error"]["code"] == "validation"
+
+@pytest.mark.asyncio
+async def test_regen_chapter_scope_is_isolated(monkeypatch):
+    """单章重生成只生产目标章：范围外不补占位、不因阶段级产物缺失回炉整阶段。
+
+    这是「重生成并入统一流水线」最容易踩的坑：assemble 若把 scope 外的章节
+    也当作缺失章，单章修复会立刻被放大成整阶段重写。
+    """
+    monkeypatch.setattr(settings, "allow_mock_llm", True)
+    target = 1
+
+    events = await _post_stream(
+        "/api/regenerate/stream",
+        {
+            "request": VALID_REQUEST,
+            "outline": build_mock_outline(VALID_REQUEST),
+            "phaseIndex": 0,
+            "chapterIndex": target,
+        },
+    )
+
+    chapters = [event for event in events if event["type"] == "chapter"]
+    assert len(chapters) == 1, f"只应生产目标章：{chapters}"
+    assert chapters[0]["index"] == target
+
+    phases = [event for event in events if event["type"] == "phase"]
+    assert len(phases) == 1, "单章只拼装一轮（无整阶段回炉）"
+    assert len(phases[0]["phase"]["chapters"]) == 1, "范围外章节不补空占位"
+    assert events[-1]["response"]["status"] == "plan"
+
+
+@pytest.mark.asyncio
+async def test_regen_applies_quality_gate_with_one_repair(monkeypatch):
+    """重生成与首次生成共用同一道校验闸门：正文过短判失败，并定向重扩一次。
+
+    改造前重生成是「一次成稿」——哪怕只吐 10 个字也直接落库标 complete。
+    现在它走 assemble 的 validators，不合格会触发 expand_revision 重扩，
+    且回炉上限仍是一次（与生成链一致）。
+    """
+    monkeypatch.setattr(settings, "allow_mock_llm", True)
+    calls: list[tuple[int, int]] = []
+
+    async def _short_chapter(*args, **kwargs):
+        calls.append((args[2], args[3]))
+        return (
+            {
+                "title": "占位",
+                "summary": "短",
+                "contentMd": "太短了",
+                "kind": "concept",
+                "keyTerms": [],
+            },
+            {"researchSnippets": [], "promptTrace": None},
+        )
+
+    monkeypatch.setattr(nodes, "_expand_chapter_draft", _short_chapter)
+
+    events = await _post_stream(
+        "/api/regenerate/stream",
+        {
+            "request": VALID_REQUEST,
+            "outline": build_mock_outline(VALID_REQUEST),
+            "phaseIndex": 0,
+            "chapterIndex": 0,
+        },
+    )
+
+    assert len(calls) == 2, f"首轮 + 定向回炉一次，共 2 次调用：{calls}"
+    assert calls[0] == calls[1] == (0, 0), "回炉必须打在同一章上"
+    types = [event["type"] for event in events]
+    assert types.count("phase") == 2, f"两轮拼装（首轮 + 回炉后）：{types}"
+    assert types[-1] == "done"

@@ -1,6 +1,8 @@
 """LangGraph 状态图定义：章级扇出拓扑（骨架 → 章级并行扩展 → 拼装 → 评审/章级回炉）。
 
 流程：
+- intake 分流：state 带 regen_scope（重生成）→ 直接按作用域扇出，跳过
+  clarify/outline；否则 → clarify
 - clarify 发现信息缺口 → END（返回澄清问题给用户）
 - clarify 通过 → outline（骨架规划）→ 条件边 Send 双路分发：
   - expand_chapter：每章一个实例（每章 1 次 LLM 调用，一次只写一章正文）
@@ -46,19 +48,42 @@ def _route_after_clarify(state: dict[str, Any]) -> str:
 
 
 def _fan_out_chapters(state: dict[str, Any]) -> list[Send]:
-    """outline 之后的条件边：按骨架章级分发 Send（并行扩展）。
+    """扇出条件边：按骨架章级分发 Send（并行扩展）。
 
     双路分发：每章一个 expand_chapter 实例（payload 携带 request /
     phase_outline / phase_index / chapter_index / plan_context），
     加每阶段一个 expand_phase_wrap 实例（轻量收尾内容，不含章节正文）。
     plan_context 由 build_plan_context 从大纲构造（相邻阶段名 / 标题 / 概述）。
+
+    重生成（state.regen_scope 存在）时按作用域过滤：只发目标阶段的 Send，
+    单章重生成只发那一个 expand_chapter、且不发 wrap（不动阶段轻装）。
     """
     outline = state.get("outline") or {}
+    phases = outline.get("phases") or []
     request = state.get("request")
+    scope = state.get("regen_scope") or {}
+    scope_phase = scope.get("phase")
+    scope_chapters_raw = scope.get("chapters")
+    scope_chapters = (
+        [int(c) for c in scope_chapters_raw] if scope_chapters_raw is not None else None
+    )
+    phase_indexes: list[int] = (
+        [int(scope_phase)] if scope_phase is not None else list(range(len(phases)))
+    )
+
     sends: list[Send] = []
-    for index, phase in enumerate(outline.get("phases") or []):
+    for index in phase_indexes:
+        if not 0 <= index < len(phases):
+            continue
+        phase = phases[index]
         plan_context = build_plan_context(outline, index)
-        for chapter_index in range(len(phase.get("chapterTitles") or [])):
+        titles = phase.get("chapterTitles") or []
+        chapter_indexes = (
+            [c for c in scope_chapters if 0 <= c < len(titles)]
+            if scope_chapters is not None
+            else list(range(len(titles)))
+        )
+        for chapter_index in chapter_indexes:
             sends.append(
                 Send(
                     "expand_chapter",
@@ -68,21 +93,42 @@ def _fan_out_chapters(state: dict[str, Any]) -> list[Send]:
                         "phase_index": index,
                         "chapter_index": chapter_index,
                         "plan_context": plan_context,
+                        # 重生成链需要「本章开始生成」信号做逐章动画；
+                        # 首次生成不需要（Rust 侧对 chapterStart 会忽略）
+                        "emit_chapter_start": scope_phase is not None,
                     },
                 )
             )
-        # 阶段轻装（practice / assignments / project）与章节正文并行生成
-        sends.append(
-            Send(
-                "expand_phase_wrap",
-                {
-                    "request": request,
-                    "phase_outline": phase,
-                    "phase_index": index,
-                },
+        # 阶段轻装（practice / assignments / project）与章节正文并行生成。
+        # 单章重生成不发：只修那一章，不动阶段收尾内容。
+        if scope_chapters is None:
+            sends.append(
+                Send(
+                    "expand_phase_wrap",
+                    {
+                        "request": request,
+                        "phase_outline": phase,
+                        "phase_index": index,
+                    },
+                )
             )
-        )
     return sends
+
+
+async def _intake_node(state: dict[str, Any]) -> dict[str, Any]:
+    """入口占位节点：只做路由，不产生任何状态。
+
+    存在的唯一理由是让「重生成」能从入口就扇出——LangGraph 的条件边必须
+    挂在一个节点上，而重生成不需要 clarify/outline 这两步。
+    """
+    return {}
+
+
+def _route_after_intake(state: dict[str, Any]) -> list[Send] | str:
+    """入口条件边：重生成直接扇出到目标范围；首次生成先走 clarify。"""
+    if state.get("regen_scope"):
+        return _fan_out_chapters(state)
+    return "clarify"
 
 
 def _route_after_assemble(state: dict[str, Any]) -> str:
@@ -109,6 +155,7 @@ def build_graph(review: ReviewNode | None = None):
     """
     graph = StateGraph(AgentState)
 
+    graph.add_node("intake", _intake_node)  # type: ignore[arg-type]
     graph.add_node("clarify", clarify_node)
     graph.add_node("outline", outline_node)
     # Send 目标节点收 payload dict 而非全局状态，LangGraph 的节点类型签名
@@ -120,8 +167,9 @@ def build_graph(review: ReviewNode | None = None):
     graph.add_node("review", review or review_node)  # type: ignore[arg-type]
     graph.add_node("expand_revision", expand_revision_node)
 
-    # 入口：clarify
-    graph.set_entry_point("clarify")
+    # 入口：intake 分流——重生成直接扇出，首次生成先 clarify
+    graph.set_entry_point("intake")
+    graph.add_conditional_edges("intake", _route_after_intake)
     graph.add_conditional_edges(
         "clarify",
         _route_after_clarify,

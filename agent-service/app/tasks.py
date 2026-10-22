@@ -320,10 +320,20 @@ class TaskRegistry:
 # ---------------------------------------------------------------------------
 
 
-async def _plan_event_dicts(request: PlanRequest) -> AsyncIterator[dict[str, Any]]:
+async def _plan_event_dicts(
+    request: PlanRequest,
+    *,
+    outline: dict[str, Any] | None = None,
+    regen_scope: dict[str, Any] | None = None,
+) -> AsyncIterator[dict[str, Any]]:
     """驱动图流式执行，把节点增量翻译为事件 dict（终态 done 行同 dict）。
 
-    消费面：TaskRegistry 后台任务（kind=plan，WS 主链路）独占。
+    这是**生成与重生成共用的唯一事件生成器**：
+    - 首次生成：outline/regen_scope 均为 None，图走 clarify → outline → 扇出；
+    - 重生成：outline 已给定（来自库）、regen_scope 指定目标范围，图从 intake
+      直接扇出到那一段，之后 assemble / review / expand_revision 完全复用。
+
+    消费面：TaskRegistry 后台任务（kind=plan / regen_*，WS 主链路）。
 
     业务异常（AgentServiceError）在此捕获并翻译为 error 包络的 done 终态
     （与全局 handler 的包络产出一致，见 app/errors.py）；意外异常
@@ -335,17 +345,27 @@ async def _plan_event_dicts(request: PlanRequest) -> AsyncIterator[dict[str, Any
 
     # langgraph v1 astream 的 Sequence stream_mode 重载未建模 (mode, chunk)
     # 元组返回形状，cast 对齐运行时实际产出（与 main.py 同理）
+    initial_state: dict[str, Any] = {"request": request.model_dump(by_alias=True)}
+    if outline is not None:
+        initial_state["outline"] = outline
+    if regen_scope is not None:
+        initial_state["regen_scope"] = regen_scope
+
     stream = cast(
         AsyncIterator[tuple[str, Any]],
         agent_graph.astream(
-            {"request": request.model_dump(by_alias=True)},
-            stream_mode=["updates", "values"],
+            initial_state,
+            # custom：节点经 get_stream_writer() 直发事件（重生成链的 chapterStart）
+            stream_mode=["updates", "values", "custom"],
         ),
     )
     final_state: dict[str, Any] = {}
     try:
         async for mode, chunk in stream:
-            if mode == "updates":
+            if mode == "custom":
+                # 节点直发事件（chapterStart）：形状已与 wire 一致，原样透传
+                yield chunk
+            elif mode == "updates":
                 for node, update in chunk.items():
                     # 图终态哨兵（如 __end__）的增量可能非 dict，直接跳过
                     if not isinstance(update, dict):
@@ -395,13 +415,16 @@ async def _plan_event_dicts(request: PlanRequest) -> AsyncIterator[dict[str, Any
                             }
                     elif node == "assemble" and "plan" in update:
                         # 拼装即推完整阶段（含全章，消费方 upsert_phase 幂等覆盖）；
-                        # 回炉后第二轮 assemble 会再推一次，旧语义不变
+                        # 回炉后第二轮 assemble 会再推一次，旧语义不变。
+                        # 重生成作用域下 plan.phases 只有目标阶段，索引必须用
+                        # assemble 回填的真实值（enumerate 会从 0 起错位）。
+                        offset = update.get("phase_event_index")
                         for index, phase in enumerate(
                             update["plan"].get("phases") or []
                         ):
                             yield {
                                 "type": "phase",
-                                "index": index,
+                                "index": offset if offset is not None else index,
                                 "phase": phase,
                             }
             else:  # values：整图状态快照，记录最新一份作为终态
@@ -424,112 +447,46 @@ async def _plan_event_dicts(request: PlanRequest) -> AsyncIterator[dict[str, Any
 
 
 async def _regen_event_dicts(payload: RegenRequest) -> AsyncIterator[dict[str, Any]]:
-    """把单条重生成结果翻译为事件 dict（phase / chapter → done）。
+    """阶段/章节级重生成事件流。
 
-    数据由 phase / chapter 事件先行携带，done 只报告成败（plan / error）；
-    越界 phaseIndex / chapterIndex 属参数失败：走 done(error, code=validation)；
-    业务失败（AgentServiceError）翻译为 done(error, code=service)；
-    意外异常由 _run 统一翻译，保证 done 必为最后一项。
+    与首次生成走**同一条图流水线**（`_plan_event_dicts`），只换初始状态：
+    大纲来自库（不经 outline 节点）、作用域限定在目标阶段/章节。因此校验、
+    评审、定向回炉、并发全部复用生成链的同一套实现——不再有第二份编排。
+
+    越界索引仍走 done(error, code=validation)（不抛 4xx）；done 包络只报成败
+    （plan 置空），数据已由前置 chapter / phase 事件携带，与原 wire 契约一致。
     """
-    from app import nodes
-
-    request_dict = payload.request.model_dump(by_alias=True)
     outline_dict = payload.outline.model_dump(by_alias=True)
     phases = outline_dict.get("phases") or []
     phase_index = payload.phase_index
-    phase_outline = phases[phase_index] if 0 <= phase_index < len(phases) else None
-
-    if phase_outline is None:
+    if not 0 <= phase_index < len(phases):
         yield _validation_done(
             f"重生成目标阶段越界：phaseIndex={phase_index}，大纲共 {len(phases)} 个阶段"
         )
         return
 
-    try:
-        if payload.chapter_index is None:  # 全阶段重生成：串行逐章
-            # 每章前发 chapterStart（Rust 置该章 generating 落库 + 推前端
-            # 转圈），完成后发 chapter——逐章动画推进（2026-10-16 反馈④）；
-            # 全部章完成后一次轻量调用补阶段轻装，组装整阶段 phase 收尾
-            # （upsert_phase 整体替换落库，practice/assignments/project 齐备）
-            chapter_titles = phase_outline.get("chapterTitles") or []
-            chapters: list[dict[str, Any]] = []
-            for ci in range(len(chapter_titles)):
-                yield {
-                    "type": "chapterStart",
-                    "phaseIndex": phase_index,
-                    "chapterIndex": ci,
-                }
-                chapter, trace = await nodes.regenerate_chapter(
-                    request_dict, outline_dict, phase_index, ci
-                )
-                chapters.append(chapter)
-                yield {
-                    "type": "chapter",
-                    "index": ci,
-                    "phaseIndex": phase_index,
-                    "chapter": chapter,
-                    "researchSnippets": trace.get("researchSnippets") or [],
-                    "promptTrace": trace.get("promptTrace"),
-                }
-            extras = await nodes.regenerate_phase_extras(
-                request_dict, outline_dict, phase_index
-            )
-            phase = {**phase_outline, "chapters": chapters, **extras}
-            yield {"type": "phase", "index": phase_index, "phase": phase}
-            response = PlanResponse(status="plan")
-        else:  # 单章重生成
-            chapter_index = payload.chapter_index
-            chapter_titles = phase_outline.get("chapterTitles") or []
-            if not 0 <= chapter_index < len(chapter_titles):
-                response = PlanResponse(
-                    status="error",
-                    error=ErrorDetail(
-                        code="validation",
-                        message=(
-                            f"重生成目标章节越界：phaseIndex={phase_index} 的 chapterIndex="
-                            f"{chapter_index}，该阶段共 {len(chapter_titles)} 个章节"
-                        ),
-                    ),
-                )
-            else:
-                # 动画与全阶段路径一致：先 chapterStart 再 chapter（反馈②）
-                yield {
-                    "type": "chapterStart",
-                    "phaseIndex": phase_index,
-                    "chapterIndex": chapter_index,
-                }
-                chapter, trace = await nodes.regenerate_chapter(
-                    request_dict, outline_dict, phase_index, chapter_index
-                )
-                yield {
-                    "type": "chapter",
-                    "index": chapter_index,
-                    "phaseIndex": phase_index,
-                    "chapter": chapter,
-                    "researchSnippets": trace.get("researchSnippets") or [],
-                    "promptTrace": trace.get("promptTrace"),
-                }
-                response = PlanResponse(status="plan")
-    except AgentServiceError as exc:
-        # 业务失败（无 Key / 超时 / 解析失败等）翻译为 error 终态（code=service）
-        logger.warning("重生成业务失败：%s", exc)
-        response = PlanResponse(
-            status="error", error=ErrorDetail(code="service", message=str(exc))
+    chapter_titles = phases[phase_index].get("chapterTitles") or []
+    chapter_index = payload.chapter_index
+    if chapter_index is not None and not 0 <= chapter_index < len(chapter_titles):
+        yield _validation_done(
+            f"重生成目标章节越界：phaseIndex={phase_index} 的 chapterIndex="
+            f"{chapter_index}，该阶段共 {len(chapter_titles)} 个章节"
         )
-    except Exception as exc:
-        # 意外异常兜底：NDJSON 链路不经 WS 的 _run 翻译，异常冒泡会直接
-        # 断流，Rust reqwest 端表现为 "error decoding response body"
-        # （2026-10-16 实测）——done 必为最后一项的契约在此收口
-        logger.exception("重生成意外异常")
-        response = PlanResponse(
-            status="error",
-            error=ErrorDetail(code="service", message=f"重生成失败：{exc}"),
-        )
+        return
 
-    yield {
-        "type": "done",
-        "response": response.model_dump(mode="json", by_alias=True),
+    scope = {
+        "phase": phase_index,
+        "chapters": None if chapter_index is None else [chapter_index],
     }
+    async for event in _plan_event_dicts(
+        payload.request, outline=outline_dict, regen_scope=scope
+    ):
+        if event.get("type") == "done":
+            # 保持既有 wire 契约：done 只报成败，不携带计划体
+            response = dict(event.get("response") or {})
+            response["plan"] = None
+            event = {**event, "response": response}
+        yield event
 
 
 def _validation_done(message: str) -> dict[str, Any]:
