@@ -255,6 +255,10 @@ class PhaseOutline(CamelModel):
     chapter_titles: list[str] = Field(default_factory=list, description="章节标题列表")
     # 与 chapter_titles 等长的章型列表（并行数组：保持 outline 事件载荷不变，
     # 避免破坏已上线的骨架渲染契约）。越界/缺失时读取方按 concept 兜底。
+    chapter_knowledge_points: list[list[str]] = Field(
+        default_factory=list,
+        description="与 chapterTitles 等长同序的知识点列表（每章 3-6 个）",
+    )
     chapter_kinds: list[str] = Field(
         default_factory=list, description="与 chapterTitles 等长的章型列表"
     )

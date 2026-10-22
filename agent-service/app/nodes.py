@@ -327,6 +327,20 @@ def _chapter_kind(phase_outline: dict[str, Any], chapter_index: int) -> str:
     return _DEFAULT_CHAPTER_KIND
 
 
+def _chapter_knowledge_points(
+    phase_outline: dict[str, Any], chapter_index: int
+) -> list[str]:
+    """取该章的知识点列表：与 chapterKinds 同源的并行数组，越界/缺失回落空。
+
+    知识点是大纲给出、正文必须覆盖的骨架；空列表表示「本章未给定知识点」，
+    此时覆盖率校验自动跳过（不罚），绝不阻断生成。
+    """
+    points = phase_outline.get("chapterKnowledgePoints") or []
+    if 0 <= chapter_index < len(points):
+        return [str(p).strip() for p in (points[chapter_index] or []) if str(p).strip()]
+    return []
+
+
 def _build_glossary(
     phases: list[dict[str, Any]], limit: int = 60
 ) -> list[dict[str, str]]:
@@ -495,6 +509,15 @@ async def _expand_chapter_draft(
                 "review_notes": review_notes,
                 "chapter_kind": kind,
                 "kind_requirements": _CHAPTER_KIND_REQUIREMENTS[kind],
+                # 知识点是大纲钉下的骨架：小节标题要对得上，否则措施B 的覆盖率
+                # 校验会判不合格并定向回炉该章
+                "chapter_knowledge_points": chr(10).join(
+                    f"- {point}"
+                    for point in _chapter_knowledge_points(
+                        phase_outline, chapter_index
+                    )
+                )
+                or "（未指定，按章节标题自行组织）",
             },
         )
     # 章型以大纲为准：模型可能自行改写 kind，这里强制回写，
@@ -906,9 +929,37 @@ async def assemble_node(state: AgentState) -> dict[str, Any]:
         "glossary": _build_glossary(phases),
     }
 
+    knowledge_points: dict[tuple[int, int], list[str]] = {}
+    seen_points: dict[str, str] = {}
+    duplicates: list[str] = []
+    for phase_index, phase_outline in enumerate(outline_phases):
+        titles = phase_outline.get("chapterTitles") or []
+        for chapter_index, points in enumerate(
+            phase_outline.get("chapterKnowledgePoints") or []
+        ):
+            cleaned = [str(p).strip() for p in (points or []) if str(p).strip()]
+            if cleaned:
+                knowledge_points[(phase_index, chapter_index)] = cleaned
+            chapter_title = (
+                titles[chapter_index] if chapter_index < len(titles) else ""
+            )
+            where = f"第 {phase_index + 1} 阶段「{chapter_title}」"
+            for point in cleaned:
+                # 跨章重复是「啰嗦」的主要来源之一：同一概念在多章各讲一遍。
+                # 只比对完全相同的条目（措辞近似的判断交给评审），避免误报。
+                if point in seen_points:
+                    duplicates.append(f"「{point}」（{seen_points[point]} 与 {where}）")
+                else:
+                    seen_points[point] = where
+
     issues, failed_indexes, validator_failed_chapters = validators.validate_plan(
-        plan, req.weekly_hours, req.weeks
+        plan, req.weekly_hours, req.weeks, knowledge_points
     )
+    if duplicates:
+        issues.append(
+            "跨章知识点重复，同一概念在多章各讲一遍是注水的主要来源："
+            + "；".join(duplicates[:3])
+        )
     # 章级校验键与 assemble 自己标定的失败章合并：validators 报的是
     # 「mermaid 首词非法 / 正文过短」这类能定位到单章的问题，直接进
     # failed_chapter_keys 即可只重扩这一章，不必整阶段重写。

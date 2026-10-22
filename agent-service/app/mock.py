@@ -232,6 +232,7 @@ def _chapter(
     *,
     kind: str = "concept",
     key_terms: list[str] | None = None,
+    knowledge_points: list[str] | None = None,
 ) -> dict[str, Any]:
     """按章节标题构造 StudyPhase.chapters 元素（Chapter 形状，camelCase）。
 
@@ -251,6 +252,12 @@ def _chapter(
                 "### 前置知识\n\n需要先掌握上一章的术语与基本操作；本章出现的"
                 "新概念一律就地解释，不假设你已经会。"
             ),
+            # 知识点小节：标题与大纲 chapterKnowledgePoints 一字不差，
+            # 覆盖率校验必然命中（mock 产物同样要过真实校验）
+            *[
+                f"## {point}\n\n{_knowledge_section(point, goal)}"
+                for point in (knowledge_points or [])
+            ],
             "### 什么是它 / 为什么需要它\n\n" + _knowledge_section(title, goal),
             _CHAPTER_MERMAID,
             # 用 ### 级（与后续「### 动手练习」同级）：validators 的深入小节
@@ -285,6 +292,15 @@ def _chapter(
 _KIND_CYCLE = ("concept", "concept", "practice", "project")
 
 
+def _mock_knowledge_points(title: str) -> list[str]:
+    """mock 章节的知识点：与正文 `## ` 小节标题一字不差，保证覆盖率校验命中。"""
+    return [
+        f"{title}的定位与作用",
+        f"{title}的核心机制",
+        f"{title}的常见误区",
+    ]
+
+
 def _kind_for(index: int) -> str:
     """按章索引确定 mock 章型（越界安全，负数也能落到合法值）。"""
     return _KIND_CYCLE[index % len(_KIND_CYCLE)]
@@ -312,6 +328,9 @@ def build_mock_outline(request: dict[str, Any]) -> dict[str, Any]:
             "chapterTitles": list(stage["chapterTitles"]),
             "chapterKinds": [
                 _kind_for(i) for i in range(len(stage["chapterTitles"]))
+            ],
+            "chapterKnowledgePoints": [
+                _mock_knowledge_points(title) for title in stage["chapterTitles"]
             ],
             "projectBrief": stage["projectBrief"],
         }
@@ -368,7 +387,15 @@ def build_mock_chapter(
     title = chapter_titles[chapter_index] if chapter_titles else "未命名章节"
     kinds: list[str] = phase_outline.get("chapterKinds") or []
     kind = kinds[chapter_index] if chapter_index < len(kinds) else _kind_for(chapter_index)
-    return _chapter(title, goal, kind=kind, key_terms=[title])
+    points_map = phase_outline.get("chapterKnowledgePoints") or []
+    points = points_map[chapter_index] if chapter_index < len(points_map) else []
+    return _chapter(
+        title,
+        goal,
+        kind=kind,
+        key_terms=[title],
+        knowledge_points=[str(p) for p in (points or [])],
+    )
 
 
 def build_mock_extras(

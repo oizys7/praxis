@@ -13,6 +13,8 @@
 
 from __future__ import annotations
 
+import re
+
 # ---------------------------------------------------------------------------
 # 校验阈值（模块顶部常量）
 # ---------------------------------------------------------------------------
@@ -55,6 +57,37 @@ MIN_PROJECT_STEPS = 2
 MIN_PROJECT_ACCEPTANCE = 2
 # 总学时相对偏差上限（|实际-期望|/期望）
 MAX_HOUR_DRIFT = 0.2
+
+#: 知识点在小节标题里的最低命中率。
+#: 用比例而不是「一个都不能少」：知识点措辞与标题天然有差异，个别对不上
+#: 不该触发回炉；但半数以上对不上，说明模型根本没照大纲组织正文。
+COVERAGE_MIN_RATIO = 0.6
+
+#: 匹配前先剔除的动作词/虚词，避免「理解」「掌握」这类词主导命中判定
+_COVERAGE_STOPWORDS = (
+    "理解",
+    "掌握",
+    "熟悉",
+    "了解",
+    "认识",
+    "学会",
+    "能够",
+    "知道",
+    "区分",
+    "以及",
+    "如何",
+    "什么",
+    "为什么",
+    "并且",
+    "与",
+    "和",
+    "的",
+    "了",
+    "是",
+)
+
+#: 固定小节与深度小节本来就不承载知识点，反向检查时跳过
+_COVERAGE_SKIP_TITLES = (*REQUIRED_CHAPTER_SECTIONS, DEEP_DIVE_KEYWORD, "验收")
 # Mermaid 图类型白名单（源码首词，大小写敏感）
 MERMAID_DIAGRAM_TYPES = {
     "graph",
@@ -95,13 +128,19 @@ def _mark_chapter(
 
 
 def validate_plan(
-    plan_dict: dict, weekly_hours: int, weeks: int
+    plan_dict: dict,
+    weekly_hours: int,
+    weeks: int,
+    knowledge_points: dict[tuple[int, int], list[str]] | None = None,
 ) -> tuple[list[str], list[int], list[str]]:
     """校验 camelCase 计划 dict。
 
     返回（问题描述列表, 不合格阶段索引列表, 不合格章复合键列表 "阶段:章"）。
     阶段索引仍覆盖全部不合格阶段（回炉入口）；章级键是它的精度提升——调用方
     有章级键时只重扩这些章，没有时（结构性问题）才整阶段回炉。
+
+    knowledge_points 由调用方从大纲转成 {(阶段索引, 章索引): [知识点]}；
+    缺省（旧路径 / mock 无大纲）时跳过覆盖率校验。
     """
     issues: list[str] = []
     failed_indexes: set[int] = set()
@@ -113,8 +152,19 @@ def validate_plan(
         # 规则 1 全局失败：映射所有阶段索引（0 个阶段时为空集）
         failed_indexes.update(range(len(phases)))
 
+    points_by_phase: dict[int, dict[int, list[str]]] = {}
+    for (phase_index, chapter_index), points in (knowledge_points or {}).items():
+        points_by_phase.setdefault(phase_index, {})[chapter_index] = points
+
     for index, phase in enumerate(phases):
-        _check_phase(phase, index, issues, failed_indexes, failed_chapters)
+        _check_phase(
+            phase,
+            index,
+            issues,
+            failed_indexes,
+            failed_chapters,
+            points_by_phase.get(index),
+        )
 
     _check_total_hours(plan_dict, weekly_hours, weeks, issues)
 
@@ -131,6 +181,7 @@ def _check_phase(
     issues: list[str],
     failed: set[int],
     failed_chapters: set[str],
+    chapter_points: dict[int, list[str]] | None = None,
 ) -> None:
     """单阶段校验：章节正文 / 项目 / 目标（markdown 化后的规则 2-6）。"""
     label = f"第 {index + 1} 阶段「{phase.get('name', '')}」"
@@ -153,6 +204,7 @@ def _check_phase(
             failed_chapters,
             index,
             chapter_index,
+            (chapter_points or {}).get(chapter_index),
         )
 
     _check_project(phase, label, issues, failed, index)
@@ -170,6 +222,7 @@ def _check_chapter(
     failed_chapters: set[str],
     index: int,
     chapter_index: int,
+    knowledge_points: list[str] | None = None,
 ) -> None:
     """单章校验：markdown 正文非空、≥ 1000 字、```mermaid 码块首词白名单。"""
     title = chapter.get("title", "")
@@ -220,6 +273,83 @@ def _check_chapter(
                 f"要求不少于 {DEEP_DIVE_MIN_CHARS} 字"
             )
             _mark_chapter(failed, failed_chapters, index, chapter_index)
+
+    if knowledge_points:
+        missed = _check_coverage(
+            content, knowledge_points, title, label, issues
+        )
+        hit_ratio = 1 - len(missed) / len(knowledge_points)
+        if hit_ratio < COVERAGE_MIN_RATIO:
+            issues.append(
+                f"{label}知识点覆盖率 {hit_ratio:.0%}"
+                f"（{len(knowledge_points) - len(missed)}/{len(knowledge_points)}），"
+                f"低于 {COVERAGE_MIN_RATIO:.0%}：正文没有按大纲知识点组织小节"
+            )
+            _mark_chapter(failed, failed_chapters, index, chapter_index)
+
+
+def _section_titles(content: str) -> list[str]:
+    """提取正文的 ## / ### 小节标题（含章节标题那一行，由调用方排除）。"""
+    titles: list[str] = []
+    for line in content.splitlines():
+        match = re.match(r"^#{2,3}\s+(.+?)\s*$", line)
+        if match:
+            titles.append(match.group(1).strip())
+    return titles
+
+
+def _coverage_tokens(point: str) -> list[str]:
+    """把知识点切成可用于标题匹配的 token（剔除虚词，保留 ≥2 字片段）。"""
+    text = str(point or "")
+    for word in _COVERAGE_STOPWORDS:
+        text = text.replace(word, " ")
+    return [token for token in re.split(r"[^\w]+", text) if len(token) >= 2]
+
+
+def _point_covered(point: str, titles: list[str]) -> bool:
+    """知识点是否落到某个小节标题上：任一 token 出现在任一标题即算命中。"""
+    tokens = _coverage_tokens(point)
+    if not tokens:
+        # 整条都是虚词，无法检验，按已覆盖处理（不罚）
+        return True
+    return any(token in title for title in titles for token in tokens)
+
+
+def _check_coverage(
+    content: str,
+    knowledge_points: list[str],
+    chapter_title: str,
+    label: str,
+    issues: list[str],
+) -> list[str]:
+    """检查正文小节是否覆盖大纲知识点，返回未命中的知识点列表。
+
+    正向（必须）：每个知识点都要在小节标题里有落点，命中率低于
+    COVERAGE_MIN_RATIO 才判不合格——措辞差异不该频繁误杀并白烧回炉调用。
+    反向（提示）：与任何知识点都对不上的小节只记 issue 不罚：它可能是
+    正常过渡段，只是注水信号，交由评审与读者判断。
+    """
+    titles = [
+        title
+        for title in _section_titles(content)
+        if title != chapter_title
+        and not any(skip in title for skip in _COVERAGE_SKIP_TITLES)
+    ]
+
+    missed = [point for point in knowledge_points if not _point_covered(point, titles)]
+    extra = [
+        title
+        for title in titles
+        if not any(_point_covered(point, [title]) for point in knowledge_points)
+    ]
+    # 单个过渡小节（如「为什么需要它」）是正常写法，不算注水；
+    # 只有小节数明显多于知识点时才值得提示
+    if len(extra) >= 2:
+        issues.append(
+            f"{label}有 {len(extra)} 个小节与大纲知识点对不上"
+            f"（可能是补充内容，也可能是注水）：{'、'.join(extra[:3])}"
+        )
+    return missed
 
 
 def _deep_dive_chars(content: str) -> int | None:
