@@ -29,7 +29,14 @@ let hintSeq = 0;
 </script>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import {
+  computed,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  ref,
+  watch,
+} from "vue";
 
 /**
  * MermaidDiagram：渲染 markdown 正文内联 ```mermaid 码块（MarkdownContent 切段后传入）。
@@ -59,6 +66,8 @@ const hintId = `mermaid-zoom-hint-${++hintSeq}`;
 
 /** 观测容器（根 figure） */
 const rootEl = ref<HTMLElement | null>(null);
+/** 图视口（固定高度的画布窗口，缩放/平移都在它里面发生） */
+const viewportEl = ref<HTMLElement | null>(null);
 /**
  * 是否已进入视口 —— 懒渲染开关。
  *
@@ -88,6 +97,9 @@ async function render(): Promise<void> {
     const mod = await loadMermaid();
     const { svg: out } = await mod.default.render(id, props.code);
     svg.value = out;
+    // 等 DOM 挂上再量尺寸：图的自然高度只有挂载后才是可测的
+    await nextTick();
+    applyInitialFit();
   } catch {
     // mermaid.render 失败时可能在 body 残留错误占位节点（#d{id}），清理掉
     document.getElementById(`d${id}`)?.remove();
@@ -110,8 +122,15 @@ const dragging = ref(false);
 const animated = ref(false);
 
 const zoomPercent = computed(() => `${Math.round(scale.value * 100)}%`);
-/** 放大后才允许拖动，避免默认状态下误拖走图 */
-const pannable = computed(() => scale.value > 1);
+/**
+ * 初始适配倍率（把图放大到高度填满视口）。重置按钮回到这个倍率而不是
+ * 死板的 100%——100% 恰恰是用户抱怨「太小看不清」的那个状态。
+ */
+const fitScale = ref(1);
+/** 图在 100% 下就已经超出视口（纵向长图）：此时即使没放大也要允许拖 */
+const overflows = ref(false);
+/** 能拖动 = 放大过 或 内容本身就装不下 */
+const pannable = computed(() => scale.value > 1 || overflows.value);
 
 const canvasStyle = computed(() => ({
   transform: `translate(${offsetX.value}px, ${offsetY.value}px) scale(${scale.value})`,
@@ -147,10 +166,48 @@ function zoomBy(factor: number): void {
 
 function reset(): void {
   withTransition(() => {
-    scale.value = 1;
+    scale.value = fitScale.value;
     offsetX.value = 0;
     offsetY.value = 0;
   });
+}
+
+/**
+ * 初始适配：按「高度填满视口」算一个倍率。
+ *
+ * mermaid 的横图（flowchart LR）在图宽被正文列限制住之后，高度只有两百上下
+ * 像素，字挤成一团；而视口高度是固定的，所以按高度反推一个倍率，让横图一进来
+ * 就接近可读（倍率封顶 2.2，避免把简单的图放成马赛克）。纵向长图算出来小于 1，
+ * 保持 100% 不缩小，改为标记 overflows 让用户可以直接拖。
+ */
+const AUTO_FIT_MAX = 2.2;
+
+function applyInitialFit(): void {
+  const viewport = viewportEl.value;
+  const svgNode = viewport?.querySelector("svg");
+  if (!viewport || !svgNode) {
+    fitScale.value = 1;
+    overflows.value = false;
+    return;
+  }
+  // render 开头已 reset 到 100%，此处量到的是自然布局尺寸
+  const rect = svgNode.getBoundingClientRect();
+  const naturalHeight = rect.height;
+  const naturalWidth = rect.width;
+  if (naturalHeight <= 0 || naturalWidth <= 0) {
+    fitScale.value = 1;
+    overflows.value = false;
+    return;
+  }
+  const heightFit = viewport.clientHeight / naturalHeight;
+  const next = clampScale(Math.min(AUTO_FIT_MAX, Math.max(1, heightFit)));
+  fitScale.value = next;
+  scale.value = next;
+  offsetX.value = 0;
+  offsetY.value = 0;
+  overflows.value =
+    naturalHeight * next > viewport.clientHeight + 4 ||
+    naturalWidth * next > viewport.clientWidth + 4;
 }
 
 let activePointer: number | null = null;
@@ -238,10 +295,7 @@ watch(() => props.code, renderIfVisible);
 </script>
 
 <template>
-  <figure
-    ref="rootEl"
-    class="group relative rounded-lg border bg-muted/30 p-3"
-  >
+  <figure ref="rootEl" class="group relative rounded-lg border bg-muted/30 p-3">
     <!-- 工具条：悬停或键盘聚焦时出现（focus-within 保证键盘用户也能到达） -->
     <div
       v-if="svg"
@@ -272,17 +326,18 @@ watch(() => props.code, renderIfVisible);
       <button
         type="button"
         class="flex h-6 items-center rounded px-1.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        aria-label="重置为 100% 并居中"
+        aria-label="重置为适配视图并居中"
         @click="reset"
       >
-        重置
+        适配
       </button>
     </div>
 
     <!-- 渲染成功：注入 SVG（mermaid 样式随 SVG 内嵌） -->
     <div
       v-if="svg"
-      class="flex touch-none items-center justify-center overflow-hidden rounded select-none"
+      ref="viewportEl"
+      class="flex h-[18rem] touch-none items-center justify-center overflow-hidden rounded select-none sm:h-[22rem]"
       :class="dragging ? 'cursor-grabbing' : pannable ? 'cursor-grab' : ''"
       tabindex="0"
       role="img"
