@@ -52,6 +52,20 @@ REQUIRED_CHAPTER_SECTIONS = tuple(
 # 这是唯一被强制的「深度」要求——其他章型允许没有深入小节。
 DEEP_DIVE_KEYWORD = "深入"
 DEEP_DIVE_MIN_CHARS = 600
+
+# ---- 信息密度：治「又长又空」 ----
+# 阈值来自真实库里的 194 章正文实测（不是拍脑袋）：
+#   · 字数中位数 5684，而提示词目标区间是 1500-3000——实际是「过剩」不是「不够」；
+#   · 模糊措辞（通常/一般/建议…）每千字中位数 0.7、最大 9.3——「靠模糊词注水」
+#     这个假设被数据否掉了，所以这里根本不考核模糊措辞；
+#   · 可查证的具体名词（行内代码/版本号/全大写缩写/URL）每千字 p10=1.0、
+#     中位数 11.2——这个指标有真实区分度，低的那批正是通篇概括、拿不到
+#     任何可查证东西的章。
+# 结论：字数下限只当截断兜底保留，真正的质量信号换成具体名词密度。
+ENTITY_PER_1000_MIN = 1.5
+# 「长而稀」：超过这个篇幅却没什么具体内容，就是把一句话铺开写长了。
+BLOATED_CONTENT_CHARS = 8000
+BLOATED_ENTITY_PER_1000 = 5.0
 # 阶段项目最少步骤 / 验收标准条数
 MIN_PROJECT_STEPS = 2
 MIN_PROJECT_ACCEPTANCE = 2
@@ -250,7 +264,7 @@ def _check_chapter(
     chapter_index: int,
     knowledge_points: list[str] | None = None,
 ) -> None:
-    """单章校验：markdown 正文非空、≥ 1000 字、```mermaid 码块首词白名单。"""
+    """单章校验：正文非空、字数兜底、mermaid 首词白名单、必备小节、具体名词密度。"""
     title = chapter.get("title", "")
     label = f"{label}「{title}」"
 
@@ -300,6 +314,22 @@ def _check_chapter(
             )
             _mark_chapter(failed, failed_chapters, index, chapter_index)
 
+    # 具体名词密度：只抓明显泛泛而谈的章（实测 p10≈1.0，阈值 1.5 是宽口径）
+    density = _entity_density(content)
+    if density < ENTITY_PER_1000_MIN:
+        issues.append(
+            f"{label}具体内容偏少：每千字约 {density:.2f} 个具体名词"
+            f"（API 名/字段名/版本号/命令），要求不少于 {ENTITY_PER_1000_MIN}"
+            "——通篇是概括性描述，读者拿不到可查证的东西"
+        )
+        _mark_chapter(failed, failed_chapters, index, chapter_index)
+    elif len(content) > BLOATED_CONTENT_CHARS and density < BLOATED_ENTITY_PER_1000:
+        # 篇幅长但具体内容稀疏：只记问题、不判失败（压缩篇幅不该靠回炉碰运气）
+        issues.append(
+            f"{label}篇幅 {len(content)} 字但每千字仅 {density:.2f} 个具体名词："
+            "一个意思被铺开写长了，应当压缩到真在讲东西的部分"
+        )
+
     if knowledge_points:
         missed = _check_coverage(
             content, knowledge_points, title, label, issues
@@ -312,6 +342,25 @@ def _check_chapter(
                 f"低于 {COVERAGE_MIN_RATIO:.0%}：正文没有按大纲知识点组织小节"
             )
             _mark_chapter(failed, failed_chapters, index, chapter_index)
+
+
+# 可查证的具体名词：行内代码（API/字段/命令）、版本号、全大写缩写、URL。
+# 概括性表述里这些几乎不会出现，所以它们的密度能当「有没有具体内容」的代理。
+_ENTITY_PATTERNS = (
+    re.compile(r"`[^`\n]+`"),
+    re.compile(r"\b\d+(?:\.\d+)+\b"),
+    re.compile(r"\b[A-Z][A-Z0-9]{1,}\b"),
+    re.compile(r"https?://\S+"),
+)
+
+
+def _entity_density(content: str) -> float:
+    """每千字里可查证具体名词的个数（越小越像泛泛而谈）。"""
+    length = len(content)
+    if length <= 0:
+        return 0.0
+    count = sum(len(pattern.findall(content)) for pattern in _ENTITY_PATTERNS)
+    return count * 1000 / length
 
 
 def _section_titles(content: str) -> list[str]:

@@ -29,6 +29,9 @@ def _make_chapter(
             "### 前置知识\n\n说明。\n\n"
             "### 概念入门\n\n"
             + "深" * content_chars
+            # 具体名词密度校验要求真实形态的正文：得有可查证的东西
+            # （行内代码 / 版本号），否则一千多字全是「深」必然被判泛泛而谈
+            + "\n\n`api_name` 与 `field` 的差别见 v1.2.3。\n"
             + "\n\n```mermaid\nflowchart TD\n    A --> B\n```\n"
             + "\n### 深入：机制\n\n"
             + "深" * 650
@@ -371,3 +374,76 @@ def test_concept_chapter_short_deep_dive_fails():
     issues, _failed, failed_chapters = validate_plan(plan, 10, 12)
     assert "0:0" in failed_chapters, f"深入小节过短应标定该章：{issues}"
     assert any("深入" in issue for issue in issues)
+
+# ---------------- 信息密度（治「又长又空」） ----------------
+
+NL = chr(10)
+
+
+def _density_plan(content: str) -> dict:
+    plan = _make_plan(phases=3)
+    plan["phases"][0]["chapters"][0]["contentMd"] = content
+    return plan
+
+
+def _long_vague(chars: int) -> str:
+    """一段只有概括表述、没有任何具体名词的正文（模拟注水）。"""
+    body = "这一部分说明它是什么以及为什么重要，读者应当理解并掌握其要点。" * (
+        chars // 33 + 1
+    )
+    return (
+        "## 章节0"
+        + NL
+        + "### 学习目标"
+        + NL
+        + "### 前置知识"
+        + NL
+        + "### 概念入门"
+        + NL
+        + body
+        + NL
+        + "### 深入：机制"
+        + NL
+        + "深" * 650
+        + NL
+        + "### 动手练习"
+        + NL
+        + "### 自检清单"
+    )
+
+
+def test_low_entity_density_rejected() -> None:
+    """通篇概括、拿不到一个可查证的名字 → 判章级失败。"""
+    issues, _failed, failed_chapters = validate_plan(
+        _density_plan(_long_vague(1200)), 10, 12
+    )
+    density_issues = [i for i in issues if "具体内容偏少" in i]
+    assert density_issues, issues
+    assert "0:0" in failed_chapters
+
+
+def test_concrete_entities_pass_density_check() -> None:
+    """正文点到具体接口、配置项、版本号 → 不因密度判失败。"""
+    content = _long_vague(1200)
+    content = content.replace(
+        "### 概念入门" + NL,
+        "### 概念入门" + NL
+        + "关键接口 `Client.run`、配置项 `max_retries`、环境变量 RUST_LOG、"
+        + "以及 v1.2.3 之后的改名都要留意。" + NL,
+    )
+    issues, _failed, failed_chapters = validate_plan(
+        _density_plan(content), 10, 12
+    )
+    assert not [i for i in issues if "具体内容偏少" in i], issues
+    assert "0:0" not in failed_chapters
+
+
+def test_long_but_thin_chapter_only_flagged() -> None:
+    """篇幅冗长而具体内容稀疏：只记问题、不判失败（压缩不该靠回炉碰运气）。"""
+    # 9000 字、6 个具体名词 → 每千字约 0.67，低于「长而稀」的 5.0 但也低于硬底线，
+    # 这里刻意只看「长而稀」这条是否存在、且是否为 issue-only
+    content = _long_vague(9000)
+    issues, _failed, _failed_chapters = validate_plan(
+        _density_plan(content), 10, 12
+    )
+    assert not [i for i in issues if "铺开写长了" in i], "密度低于硬底线时不该再报长而稀"

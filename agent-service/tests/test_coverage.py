@@ -13,7 +13,9 @@ def _content(sections: list[str]) -> str:
     """构造一段能过其余校验的正文（practice 章型，无 mermaid 块）。"""
     parts = [
         "## 章标题",
-        "### 学习目标" + NL + NL + "能独立完成一个最小示例。",
+        # 带两个具体名词（接口名 + 版本号）：具体名词密度是硬校验，
+        # 全是「内容」重复的正文会被判泛泛而谈，那样测的就不是覆盖率了
+        "### 学习目标" + NL + NL + "能独立完成一个最小示例（`Client.run` 配 `max_retries`，v1.2.3，日志看 RUST_LOG）。",
         "### 前置知识" + NL + NL + "无。",
     ]
     parts.extend("## " + name + NL + NL + "内容" * 200 for name in sections)
