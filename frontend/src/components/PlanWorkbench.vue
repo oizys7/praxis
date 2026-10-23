@@ -458,18 +458,6 @@ function onPlanRefreshed(plan: StudyPlan) {
     />
 
     <div v-else class="mx-auto w-full max-w-6xl px-6 py-8 2xl:max-w-7xl">
-      <!-- 返回列表：跨两栏顶部（反馈⑥改位，grid 外层）；sticky 不随滚动；
-           反馈⑤：加大字号与圆角胶囊、叠压时阴影/描边/毛玻璃更明显 -->
-      <div v-if="planView === 'create'" class="-mt-2 mb-3">
-        <Button
-          variant="outline"
-          class="rounded-full border-border/70 bg-background/90 text-sm shadow-md backdrop-blur transition-colors hover:border-primary/40 hover:bg-muted hover:text-primary"
-          @click="exitToPlanList"
-        >
-          <ArrowLeft class="h-4 w-4" aria-hidden="true" />
-          返回列表
-        </Button>
-      </div>
       <!-- 整计划重生成：仅「大纲未产出」（failed 且零阶段）时提供入口 -->
       <div
         v-if="historyMode && resultRowStatus === 'failed' && resultPhaseCount === 0"
@@ -488,6 +476,19 @@ function onPlanRefreshed(plan: StudyPlan) {
         >
           <RotateCcw class="h-4 w-4" aria-hidden="true" />
           {{ replayingPlan ? "正在提交…" : "重新生成整个计划" }}
+        </Button>
+      </div>
+      <!-- 返回列表：位置与样式不变，只是滚动时不跟着走。
+           用 sticky 而不是 fixed：sticky 留在内容流原位（自动对齐内容区左缘，
+           不会压到侧栏），滚动时才吸附；top 留出间距，避免像之前那样紧贴顶部 -->
+      <div v-if="planView === 'create'" class="sticky top-3 z-20 -mt-1 mb-3">
+        <Button
+          variant="outline"
+          class="rounded-full border-border/70 bg-background/90 text-sm shadow-md backdrop-blur transition-colors hover:border-primary/40 hover:bg-muted hover:text-primary"
+          @click="exitToPlanList"
+        >
+          <ArrowLeft class="h-4 w-4" aria-hidden="true" />
+          返回列表
         </Button>
       </div>
       <!-- 交互重构：单轴纵向流——参数卡在顶部（生成中收起为摘要条），
