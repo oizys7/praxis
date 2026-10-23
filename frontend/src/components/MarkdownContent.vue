@@ -2,6 +2,18 @@
 import { computed } from "vue";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
+import hljs from "highlight.js/lib/core";
+import bash from "highlight.js/lib/languages/bash";
+import css from "highlight.js/lib/languages/css";
+import javascript from "highlight.js/lib/languages/javascript";
+import json from "highlight.js/lib/languages/json";
+import markdown from "highlight.js/lib/languages/markdown";
+import python from "highlight.js/lib/languages/python";
+import rust from "highlight.js/lib/languages/rust";
+import sql from "highlight.js/lib/languages/sql";
+import typescript from "highlight.js/lib/languages/typescript";
+import xml from "highlight.js/lib/languages/xml";
+import yaml from "highlight.js/lib/languages/yaml";
 import MermaidDiagram from "@/components/MermaidDiagram.vue";
 
 /**
@@ -31,10 +43,58 @@ function lazyImages(node: Node) {
 }
 DOMPurify.addHook("afterSanitizeAttributes", lazyImages);
 
-/** 同步 marked 解析 + DOMPurify 消毒：进入 v-html 的 HTML 必经此函数 */
+/**
+ * 按需注册语言：只装学习计划里真会出现的几种（python/rust/js/ts/bash/
+ * json/sql/yaml/xml/css/markdown），而不是引 highlight.js 全量包。
+ * 认不出的语言走 highlightAuto 自动猜测。
+ */
+const HIGHLIGHT_LANGUAGES = {
+  bash,
+  css,
+  javascript,
+  json,
+  markdown,
+  python,
+  rust,
+  sql,
+  typescript,
+  xml,
+  yaml,
+};
+for (const [name, language] of Object.entries(HIGHLIGHT_LANGUAGES)) {
+  hljs.registerLanguage(name, language);
+}
+
+/**
+ * 代码块语法高亮。刻意放在 marked 产出之后、DOMPurify 消毒之前：
+ * 先高亮成带 span 的 HTML，再统一过一遍消毒，保证进入 v-html 的仍然是
+ * 「消毒后」的内容（顺序反过来就等于把未消毒的 innerHTML 塞进 DOM）。
+ * 配色不在这里写死，由 index.css 的 Catppuccin 变量按明暗主题给出。
+ */
+function highlightCodeBlocks(html: string): string {
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  doc.querySelectorAll("pre code").forEach((node) => {
+    const el = node as HTMLElement;
+    const code = el.textContent ?? "";
+    if (!code.trim()) return;
+    const declared = Array.from(el.classList)
+      .find((cls) => cls.startsWith("language-"))
+      ?.slice("language-".length);
+    el.innerHTML =
+      declared && hljs.getLanguage(declared)
+        ? hljs.highlight(code, { language: declared, ignoreIllegals: true })
+            .value
+        : hljs.highlightAuto(code).value;
+  });
+  return doc.body.innerHTML;
+}
+
+/** 同步 marked 解析 + 高亮 + DOMPurify 消毒：进入 v-html 的 HTML 必经此函数 */
 function renderHtml(markdown: string): string {
   const html = marked.parse(markdown, { async: false }) as string;
-  return DOMPurify.sanitize(html, { USE_PROFILES: { html: true } });
+  return DOMPurify.sanitize(highlightCodeBlocks(html), {
+    USE_PROFILES: { html: true },
+  });
 }
 
 /** 正文 → 渲染段列表：mermaid 码块抽出为图组件段，其余段依次转消毒 HTML */
@@ -79,7 +139,7 @@ const segments = computed<ContentSegment[]>(() =>
       <!-- eslint-disable-next-line vue/no-v-html：DOMPurify 消毒红线已过 -->
       <div
         v-if="segment.kind === 'html'"
-        class="max-w-none text-[15px] leading-[1.9] text-foreground/90 [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:text-xs [&_h1]:mb-2 [&_h1]:mt-4 [&_h1]:text-base [&_h1]:font-semibold [&_h1]:text-foreground [&_h2]:mb-2 [&_h2]:mt-4 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:text-foreground [&_h3]:mb-1 [&_h3]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-foreground [&_img]:h-auto [&_img]:max-w-full [&_img]:rounded [&_li]:my-1 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-2.5 [&_pre]:overflow-x-auto [&_pre]:rounded [&_pre]:bg-muted [&_pre]:p-2 [&_pre]:text-xs [&_strong]:font-semibold [&_strong]:text-foreground [&_ul]:list-disc [&_ul]:pl-6 [&>p]:indent-[2em]"
+        class="markdown-code max-w-none text-[15px] leading-[1.9] text-foreground/90 [&_h1]:mb-2 [&_h1]:mt-4 [&_h1]:text-base [&_h1]:font-semibold [&_h1]:text-foreground [&_h2]:mb-2 [&_h2]:mt-4 [&_h2]:text-base [&_h2]:font-semibold [&_h2]:text-foreground [&_h3]:mb-1 [&_h3]:mt-3 [&_h3]:text-sm [&_h3]:font-semibold [&_h3]:text-foreground [&_img]:h-auto [&_img]:max-w-full [&_img]:rounded [&_li]:my-1 [&_ol]:list-decimal [&_ol]:pl-6 [&_p]:my-2.5 [&_strong]:font-semibold [&_strong]:text-foreground [&_ul]:list-disc [&_ul]:pl-6 [&>p]:indent-[2em]"
         v-html="segment.html"
       />
       <MermaidDiagram v-else :code="segment.code" />

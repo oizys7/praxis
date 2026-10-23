@@ -41,6 +41,27 @@
     /* 书绿 #5E7B57 成长语义（完成/知识点/正向） */
     --success: 96 17% 41%;
     --radius: 0.625rem;
+    /*
+     * 代码块配色：Catppuccin Latte（白主题）。
+     * 这一组刻意独立于上面的语义变量——上面是 HSL 通道三元组（由
+     * hsl(var(--x)) 消费），而代码高亮要十几种语义色，塞进去只会把 19 个
+     * 变量扩成 40 个；这里直接用 Catppuccin 官方 hex，跟着 .dark 换。
+     */
+    --code-base: #eff1f5;
+    --code-mantle: #e6e9ef;
+    --code-text: #4c4f69;
+    --code-subtext: #6c6f85;
+    --code-comment: #9ca0b0;
+    --code-border: #ccd0da;
+    --code-keyword: #8839ef;
+    --code-string: #40a02b;
+    --code-number: #fe640b;
+    --code-function: #1e66f5;
+    --code-type: #df8e1d;
+    --code-attr: #df8e1d;
+    --code-variable: #d20f39;
+    --code-meta: #179299;
+    --code-tag: #d20f39;
   }
 
   /*
@@ -82,6 +103,22 @@
     --ring: 209 33% 62%;
     /* 书绿提亮变体 #8FAB7C（亮色 #5E7B57 的暗底等值，暗底 ~6.9:1） */
     --success: 96 22% 58%;
+    /* 代码块配色：Catppuccin Frappé（黑主题），与 Latte 逐项对应 */
+    --code-base: #303446;
+    --code-mantle: #292c3c;
+    --code-text: #c6d0f5;
+    --code-subtext: #a5adce;
+    --code-comment: #737994;
+    --code-border: #414559;
+    --code-keyword: #ca9ee6;
+    --code-string: #a6d189;
+    --code-number: #ef9f76;
+    --code-function: #8caaee;
+    --code-type: #e5c890;
+    --code-attr: #e5c890;
+    --code-variable: #e78284;
+    --code-meta: #81c8be;
+    --code-tag: #e78284;
   }
 }
 
@@ -253,4 +290,110 @@ button:not(:disabled):active {
 
 .stamp-in {
   animation: stamp-in 240ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+}
+
+/* ---------------------------------------------------------------------------
+ * 章节正文的代码块（.markdown-code 由 MarkdownContent 挂在外层容器上）
+ *
+ * 放在 @layer 之外是有意的：v-html 注入的正文拿不到工具类，pre/code 的外观
+ * 只能靠这里统一；而 Tailwind preflight 在 base 层，层级外的规则天然压过它。
+ * ------------------------------------------------------------------------- */
+.markdown-code pre {
+  margin: 0.75rem 0;
+  padding: 0.75rem 0.875rem;
+  overflow-x: auto;
+  background: var(--code-base);
+  color: var(--code-text);
+  border: 1px solid var(--code-border);
+  border-radius: calc(var(--radius) - 2px);
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono",
+    monospace;
+  font-size: 0.8125rem;
+  line-height: 1.7;
+  tab-size: 2;
+  /* 正文段落带 text-indent（首行缩进 2em），而 text-indent 是可继承属性：
+     这里必须显式归零，否则代码块第一行会凭空缩进 */
+  text-indent: 0;
+}
+
+/* pre 里的 code 只是「容器内的纯文本」：不能再有背景或内边距，
+   否则整块代码会比正文多内缩一截（旧的 [&_code]:px-1 正是这么来的） */
+.markdown-code pre code {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font-size: inherit;
+  white-space: pre;
+}
+
+/* 行内 code（片段、字段名） */
+.markdown-code :not(pre) > code {
+  padding: 0.1em 0.35em;
+  background: var(--code-mantle);
+  color: var(--code-variable);
+  border: 1px solid var(--code-border);
+  border-radius: 4px;
+  font-family:
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono",
+    monospace;
+  font-size: 0.875em;
+}
+
+/* Catppuccin 语法着色：highlight.js 的 token 类名 */
+.hljs-comment,
+.hljs-quote {
+  color: var(--code-comment);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag {
+  color: var(--code-keyword);
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: var(--code-string);
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet {
+  color: var(--code-number);
+}
+.hljs-title,
+.hljs-section,
+.hljs-name,
+.hljs-selector-id,
+.hljs-selector-class {
+  color: var(--code-function);
+}
+.hljs-type,
+.hljs-built_in,
+.hljs-class .hljs-title {
+  color: var(--code-type);
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-property {
+  color: var(--code-attr);
+}
+.hljs-variable,
+.hljs-template-variable {
+  color: var(--code-variable);
+}
+.hljs-meta {
+  color: var(--code-meta);
+}
+.hljs-tag,
+.hljs-deletion {
+  color: var(--code-tag);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
 }
