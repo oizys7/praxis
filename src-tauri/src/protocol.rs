@@ -136,6 +136,44 @@ mod study_days_serde {
 /// content_md 缺省空串（旧流式载荷未携带时不阻塞解析，终态由 status 列承载）。
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(rename_all = "camelCase")]
+pub struct VisualizationStepDef {
+    #[serde(default)]
+    pub state: Vec<String>,
+    #[serde(default)]
+    pub highlight: Vec<i32>,
+    #[serde(default)]
+    pub note: String,
+}
+
+/// 一段过程动画：模型只给状态序列，渲染器由前端预置
+///
+/// 刻意不放「怎么画」的信息——数据错了看得见，代码错了直接崩，
+/// 而崩的时候分不清是渲染问题还是理解问题。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct VisualizationDef {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub steps: Vec<VisualizationStepDef>,
+}
+
+/// 结构化自测题：题目 + 它考的知识点 + 题型（recall / scenario）
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExerciseDef {
+    #[serde(default)]
+    pub question: String,
+    #[serde(default)]
+    pub targets: Vec<String>,
+    #[serde(default)]
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
 pub struct ChapterDef {
     #[serde(default)]
     pub title: String,
@@ -150,6 +188,15 @@ pub struct ChapterDef {
     /// 本章核心术语（2-4 个）：计算属性列全计划术语表，不单独存储
     #[serde(default)]
     pub key_terms: Vec<String>,
+    /// 过程动画（至多一段）：仅「执行过程不可见」的算法/数据结构章才有
+    #[serde(default)]
+    pub visualizations: Vec<VisualizationDef>,
+    /// 结构化自测题：与正文「自检清单」同一批题，带知识点归属供程序校验
+    #[serde(default)]
+    pub exercises: Vec<ExerciseDef>,
+    /// 只读派生：该章是否已打卡（由 study_schedule 聚合，Python 不产出）
+    #[serde(default)]
+    pub done: Option<bool>,
     #[serde(default)]
     pub status: Option<String>,
 }
@@ -655,6 +702,9 @@ mod tests {
                     kind: "concept".into(),
                     key_terms: vec!["所有权".into(), "借用".into()],
                     content_md: "## 所有权与借用\n\n```mermaid\nflowchart LR\n```".into(),
+                    visualizations: Vec::new(),
+                    exercises: Vec::new(),
+                    done: None,
                     status: Some("complete".into()),
                 }],
                 project: PhaseProject {

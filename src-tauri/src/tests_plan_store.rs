@@ -48,6 +48,9 @@ fn sample_chapter(title: &str) -> ChapterDef {
         content_md: format!(
             "## {title}\n\n本章围绕「{title}」展开。\n\n```mermaid\nflowchart TD\n    A --> B\n```\n"
         ),
+        visualizations: Vec::new(),
+        exercises: Vec::new(),
+        done: None,
         status: None,
     }
 }

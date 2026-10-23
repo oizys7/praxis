@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch, type ShallowRef } from "vue";
 import MarkdownContent from "@/components/MarkdownContent.vue";
+import VisualizationPlayer from "@/components/VisualizationPlayer.vue";
+import ExercisePanel from "@/components/ExercisePanel.vue";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -60,9 +62,7 @@ const KIND_LABELS: Record<string, string> = {
   project: "项目",
   review: "复习",
 };
-const kindLabel = computed(
-  () => KIND_LABELS[props.chapter.kind ?? ""] ?? null,
-);
+const kindLabel = computed(() => KIND_LABELS[props.chapter.kind ?? ""] ?? null);
 
 /** 章节级徽标仅 failed/pending：complete 章节照常渲染不额外加标 */
 const statusBadge = computed<{
@@ -312,6 +312,19 @@ function scrollToHeading(index: number) {
       <div ref="contentRoot">
         <MarkdownContent :content-md="props.chapter.contentMd" />
       </div>
+      <!-- 过程动画：只有「执行过程不可见」的章才有，最多一段；没找到合适的
+           形式时宁可不给，也不要塞一个错误的类比 -->
+      <VisualizationPlayer
+        v-if="props.chapter.visualizations?.length"
+        class="mt-3"
+        :visualization="props.chapter.visualizations[0]"
+      />
+      <!-- 结构化自测题：把「知识点 → 题目」的对应摆出来，便于自查有没有漏 -->
+      <ExercisePanel
+        v-if="props.chapter.exercises?.length"
+        class="mt-3"
+        :exercises="props.chapter.exercises"
+      />
     </div>
   </section>
 </template>

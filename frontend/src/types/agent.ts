@@ -63,7 +63,43 @@ export interface Chapter {
   kind?: string;
   /** 本章核心术语（2-4 个）：全计划术语表的来源，不参与渲染判定 */
   keyTerms?: string[];
+  /** 过程动画（至多一段）：只给状态序列，渲染器在前端预置 */
+  visualizations?: Visualization[];
+  /** 结构化自测题：与正文「自检清单」同一批题，带知识点归属 */
+  exercises?: Exercise[];
+  /** 只读派生：该章是否已打卡（由打卡记录聚合，前端不写） */
+  done?: boolean | null;
   status?: PhaseStatus;
+}
+
+/**
+ * 过程动画的一帧：一次状态快照 + 本帧强调的位置。
+ * 只有数据没有「怎么画」——渲染由 VisualizationPlayer 统一负责。
+ */
+export interface VisualizationStep {
+  /** 本帧每个格子的短文本 */
+  state: string[];
+  /** 本帧要高亮的格子下标 */
+  highlight: number[];
+  /** 这一步在做什么 */
+  note: string;
+}
+
+/** 一段过程动画（执行轨迹 / 数据结构操作） */
+export interface Visualization {
+  /** 渲染器类型，当前只有 array */
+  kind: string;
+  title: string;
+  steps: VisualizationStep[];
+}
+
+/** 结构化自测题 */
+export interface Exercise {
+  question: string;
+  /** 本题覆盖的知识点（逐字取自大纲） */
+  targets: string[];
+  /** recall = 有唯一答案的回忆题；scenario = 情景判断题 */
+  kind: string;
 }
 
 /**

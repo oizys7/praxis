@@ -199,6 +199,9 @@ async def test_expand_chapter_real_path_variables(monkeypatch):
             "contentMd": "# 正文",
             "kind": "concept",
             "keyTerms": [],
+            # 新增的两组结构化字段：替身没给内容，序列化出来是空数组
+            "visualizations": [],
+            "exercises": [],
         }
     }
 

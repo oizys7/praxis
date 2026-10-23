@@ -77,6 +77,14 @@ MAX_HOUR_DRIFT = 0.2
 #: 不该触发回炉；但半数以上对不上，说明模型根本没照大纲组织正文。
 COVERAGE_MIN_RATIO = 0.6
 
+# ---- 过程动画 / 结构化自测题 ----
+# 分层的口径：帧数据本身坏了（长度不一致、下标越界）渲染器会崩，必须回炉；
+# 内容偏好（题量、题型配比）不该触发一次几十秒的重生成，只记问题。
+VISUALIZATION_KINDS = ("array",)
+VISUALIZATION_STEPS_MIN = 4
+VISUALIZATION_STEPS_MAX = 32
+VISUALIZATION_CELL_MAX_CHARS = 12
+
 #: 匹配前先剔除的动作词/虚词，避免「理解」「掌握」这类词主导命中判定
 _COVERAGE_STOPWORDS = (
     "理解",
@@ -330,6 +338,10 @@ def _check_chapter(
             "一个意思被铺开写长了，应当压缩到真在讲东西的部分"
         )
 
+    _check_visualization(chapter, label, issues, failed, failed_chapters, index,
+                         chapter_index)
+    _check_exercises(chapter, label, issues, knowledge_points)
+
     if knowledge_points:
         missed = _check_coverage(
             content, knowledge_points, title, label, issues
@@ -342,6 +354,136 @@ def _check_chapter(
                 f"低于 {COVERAGE_MIN_RATIO:.0%}：正文没有按大纲知识点组织小节"
             )
             _mark_chapter(failed, failed_chapters, index, chapter_index)
+
+
+def _check_visualization(
+    chapter: dict,
+    label: str,
+    issues: list[str],
+    failed: set[int],
+    failed_chapters: set[str],
+    index: int,
+    chapter_index: int,
+) -> None:
+    """过程动画的帧数据校验：结构坏了就回炉，因为渲染器会直接崩。"""
+    visualizations = chapter.get("visualizations") or []
+    if not isinstance(visualizations, list):
+        return
+    for viz_index, viz in enumerate(visualizations):
+        if not isinstance(viz, dict):
+            continue
+        tag = f"{label}第 {viz_index + 1} 段动画"
+        kind = str(viz.get("kind") or "array")
+        if kind not in VISUALIZATION_KINDS:
+            issues.append(
+                f"{tag}类型「{kind}」没有对应渲染器（支持 {list(VISUALIZATION_KINDS)}）"
+            )
+            _mark_chapter(failed, failed_chapters, index, chapter_index)
+            continue
+        steps = viz.get("steps") or []
+        if not isinstance(steps, list) or not steps:
+            issues.append(f"{tag}没有任何帧（steps 为空），无法播放")
+            _mark_chapter(failed, failed_chapters, index, chapter_index)
+            continue
+        if not VISUALIZATION_STEPS_MIN <= len(steps) <= VISUALIZATION_STEPS_MAX:
+            issues.append(
+                f"{tag}有 {len(steps)} 帧，超出 {VISUALIZATION_STEPS_MIN}-"
+                f"{VISUALIZATION_STEPS_MAX} 的合理范围（太少看不清过程，"
+                "太多没人看得下去）"
+            )
+        width = None
+        for step_index, step in enumerate(steps):
+            if not isinstance(step, dict):
+                continue
+            state = step.get("state") or []
+            if not isinstance(state, list):
+                state = []
+            if width is None:
+                width = len(state)
+                if width == 0:
+                    issues.append(f"{tag}第 {step_index + 1} 帧没有任何格子")
+                    _mark_chapter(failed, failed_chapters, index, chapter_index)
+                    break
+            elif len(state) != width:
+                issues.append(
+                    f"{tag}第 {step_index + 1} 帧有 {len(state)} 个格子，"
+                    f"与首帧的 {width} 个不一致——帧之间格子数必须相同，"
+                    "否则播放时会跳变"
+                )
+                _mark_chapter(failed, failed_chapters, index, chapter_index)
+                break
+            for cell in state:
+                if len(str(cell)) > VISUALIZATION_CELL_MAX_CHARS:
+                    issues.append(
+                        f"{tag}第 {step_index + 1} 帧有格子文本超过 "
+                        f"{VISUALIZATION_CELL_MAX_CHARS} 字，格子里放不下"
+                    )
+                    _mark_chapter(failed, failed_chapters, index, chapter_index)
+                    break
+            highlights = step.get("highlight") or []
+            if isinstance(highlights, list):
+                bad = [
+                    h
+                    for h in highlights
+                    if not isinstance(h, int) or h < 0 or h >= len(state)
+                ]
+                if bad:
+                    issues.append(
+                        f"{tag}第 {step_index + 1} 帧高亮下标 {bad} 越界"
+                        f"（本帧只有 {len(state)} 个格子）"
+                    )
+                    _mark_chapter(failed, failed_chapters, index, chapter_index)
+
+
+def _check_exercises(
+    chapter: dict,
+    label: str,
+    issues: list[str],
+    knowledge_points: list[str] | None,
+) -> None:
+    """结构化自测题：只在「有题就检查」和「覆盖」上做文章，不判失败。
+
+    题量与题型属于内容偏好，判失败会让每章多烧一次几十秒的重生成，
+    得不偿失——真有问题由 LLM 评审那一环兜。
+    """
+    # 键不存在 = 老数据或调用方没提供这个字段（直接构造 dict 的夹具），跳过；
+    # 键存在但为空数组 = 模型真的没给题，这才是要报的
+    if "exercises" not in chapter:
+        return
+    exercises = chapter.get("exercises") or []
+    if not isinstance(exercises, list):
+        return
+    if not exercises:
+        issues.append(f"{label}没有结构化自测题（exercises 为空）")
+        return
+
+    scenario = [
+        e for e in exercises if isinstance(e, dict) and e.get("kind") == "scenario"
+    ]
+    if not scenario:
+        issues.append(
+            f"{label}自测题全是回忆题：至少需要一道情景判断题，"
+            "否则学到的只是名词定义"
+        )
+
+    if not knowledge_points:
+        return
+    covered: set[str] = set()
+    for exercise in exercises:
+        if not isinstance(exercise, dict):
+            continue
+        for target in exercise.get("targets") or []:
+            text = str(target).strip()
+            if text:
+                covered.add(text)
+    hit = [p for p in knowledge_points if p in covered]
+    ratio = len(hit) / len(knowledge_points)
+    if ratio < COVERAGE_MIN_RATIO:
+        missed = [p for p in knowledge_points if p not in covered]
+        issues.append(
+            f"{label}自测题只覆盖了 {ratio:.0%} 的知识点，"
+            f"低于 {COVERAGE_MIN_RATIO:.0%}；没被考到的：{'、'.join(missed[:3])}"
+        )
 
 
 # 可查证的具体名词：行内代码（API/字段/命令）、版本号、全大写缩写、URL。

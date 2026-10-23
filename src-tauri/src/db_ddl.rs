@@ -177,6 +177,13 @@ pub(crate) const DDL_CHAPTERS_KIND_COL: &str =
     "ALTER TABLE chapters ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'concept'";
 
 /// 章节核心术语列（JSONB 数组）：只用于汇总全计划术语表，不参与生成决策
+/// 过程动画（JSONB 数组）：模型只给状态序列，渲染器在前端
+pub(crate) const DDL_CHAPTERS_VISUALIZATIONS_COL: &str =
+    "ALTER TABLE chapters ADD COLUMN IF NOT EXISTS visualizations JSONB NOT NULL DEFAULT '[]'::jsonb";
+/// 结构化自测题（JSONB 数组）：题目 + 知识点归属 + 题型
+pub(crate) const DDL_CHAPTERS_EXERCISES_COL: &str =
+    "ALTER TABLE chapters ADD COLUMN IF NOT EXISTS exercises JSONB NOT NULL DEFAULT '[]'::jsonb";
+
 pub(crate) const DDL_CHAPTERS_KEY_TERMS_COL: &str =
     "ALTER TABLE chapters ADD COLUMN IF NOT EXISTS key_terms JSONB NOT NULL DEFAULT '[]'::jsonb";
 
@@ -233,6 +240,8 @@ pub(crate) const DDL_CHAPTERS_TABLE: &str = "CREATE TABLE IF NOT EXISTS chapters
           idx INT NOT NULL, title TEXT NOT NULL, summary TEXT NOT NULL DEFAULT '',
           kind TEXT NOT NULL DEFAULT 'concept',
           key_terms JSONB NOT NULL DEFAULT '[]'::jsonb,
+          visualizations JSONB NOT NULL DEFAULT '[]'::jsonb,
+          exercises JSONB NOT NULL DEFAULT '[]'::jsonb,
           created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
           updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
           UNIQUE (phase_id, idx)
@@ -401,6 +410,8 @@ pub(crate) const DDL_STATEMENTS: &[&str] = &[
     DDL_RESOURCES_VERIFICATION_COL,
     DDL_CHAPTERS_KIND_COL,
     DDL_CHAPTERS_KEY_TERMS_COL,
+    DDL_CHAPTERS_VISUALIZATIONS_COL,
+    DDL_CHAPTERS_EXERCISES_COL,
     DDL_DROP_CONCEPTS_TABLE,
     DDL_DROP_KNOWLEDGE_POINTS_TABLE,
     DDL_DROP_DIAGRAMS_TABLE,

@@ -22,8 +22,8 @@ use crate::db::{db_err, fail};
 use crate::error::AgentError;
 use crate::plan_state;
 use crate::protocol::{
-    ChapterDef, GlossaryEntryDef, OutlinePhasePayload, PhaseProject, PlanRequest, StudyPhase,
-    StudyPlan, StudyResource,
+    ChapterDef, ExerciseDef, GlossaryEntryDef, OutlinePhasePayload, PhaseProject, PlanRequest,
+    StudyPhase, StudyPlan, StudyResource, VisualizationDef,
 };
 
 // ---------------------------------------------------------------------------
@@ -1200,15 +1200,18 @@ async fn insert_chapter_row(
     chapter: &ChapterDef,
 ) -> Result<Uuid, AgentError> {
     let chapter_id: Uuid = sqlx::query_scalar(
-        "INSERT INTO chapters (phase_id, idx, title, summary, content_md, status, kind, key_terms)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        "INSERT INTO chapters (phase_id, idx, title, summary, content_md, status, kind,
+                               key_terms, visualizations, exercises)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
          ON CONFLICT (phase_id, idx) DO UPDATE SET
              title = EXCLUDED.title,
              summary = EXCLUDED.summary,
              content_md = EXCLUDED.content_md,
              status = EXCLUDED.status,
              kind = EXCLUDED.kind,
-             key_terms = EXCLUDED.key_terms
+             key_terms = EXCLUDED.key_terms,
+             visualizations = EXCLUDED.visualizations,
+             exercises = EXCLUDED.exercises
          RETURNING id",
     )
     .bind(phase_id)
@@ -1219,6 +1222,8 @@ async fn insert_chapter_row(
     .bind(chapter_row_status(&chapter.content_md))
     .bind(chapter_kind_or_default(&chapter.kind))
     .bind(sqlx::types::Json(&chapter.key_terms))
+    .bind(sqlx::types::Json(&chapter.visualizations))
+    .bind(sqlx::types::Json(&chapter.exercises))
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| fail("写入章节", e))?;
@@ -1260,6 +1265,12 @@ struct ChapterRows {
     kind: String,
     /// 本章核心术语（JSONB 数组，用于汇总术语表）
     key_terms: Vec<String>,
+    /// 过程动画（JSONB 数组）
+    visualizations: Vec<VisualizationDef>,
+    /// 结构化自测题（JSONB 数组）
+    exercises: Vec<ExerciseDef>,
+    /// 只读派生：该章是否有已完成的打卡记录（由 study_schedule 聚合）
+    done: bool,
 }
 
 struct ProjectRow {
@@ -1296,7 +1307,15 @@ pub async fn load_study_plan(
     // 查询达 143s，并出现 statement timeout 与连接获取超阈值告警）。
     let mut chapters_by_phase: HashMap<Uuid, Vec<ChapterRows>> = HashMap::new();
     for crow in sqlx::query(
-        "SELECT c.phase_id, c.title, c.summary, c.status, c.content_md, c.kind, c.key_terms
+        "SELECT c.phase_id, c.title, c.summary, c.status, c.content_md, c.kind, c.key_terms,
+                c.visualizations, c.exercises,
+                EXISTS (
+                    SELECT 1 FROM study_schedule s
+                    WHERE s.plan_id = p.plan_id
+                      AND s.phase_idx = p.idx
+                      AND s.chapter_idx = c.idx
+                      AND s.done
+                ) AS done
          FROM chapters c JOIN phases p ON c.phase_id = p.id
          WHERE p.plan_id = $1
          ORDER BY p.idx ASC, c.idx ASC",
@@ -1319,6 +1338,15 @@ pub async fn load_study_plan(
                     .try_get::<sqlx::types::Json<Vec<String>>, _>("key_terms")
                     .map_err(db_err)?
                     .0,
+                visualizations: crow
+                    .try_get::<sqlx::types::Json<Vec<VisualizationDef>>, _>("visualizations")
+                    .map_err(db_err)?
+                    .0,
+                exercises: crow
+                    .try_get::<sqlx::types::Json<Vec<ExerciseDef>>, _>("exercises")
+                    .map_err(db_err)?
+                    .0,
+                done: crow.try_get("done").map_err(db_err)?,
             });
     }
 
@@ -1472,6 +1500,9 @@ fn reassemble_chapter(row: ChapterRows) -> ChapterDef {
         content_md: row.content_md,
         kind: row.kind,
         key_terms: row.key_terms,
+        visualizations: row.visualizations,
+        exercises: row.exercises,
+        done: Some(row.done),
         status: row.status,
     }
 }
@@ -1502,6 +1533,9 @@ mod tests {
             content_md: format!("## {title}\n\n```mermaid\nflowchart LR\n```"),
             kind: "concept".into(),
             key_terms: vec![title.into()],
+            visualizations: Vec::new(),
+            exercises: Vec::new(),
+            done: false,
         };
         let rows = PlanRows {
             title: "测试计划".into(),
@@ -1586,6 +1620,9 @@ mod tests {
                 content_md: String::new(),
                 kind: "concept".into(),
                 key_terms: Vec::new(),
+                visualizations: Vec::new(),
+                exercises: Vec::new(),
+                done: false,
             }],
         }];
         let empty_plan = reassemble_plan(PlanRows {

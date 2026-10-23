@@ -13,7 +13,7 @@ def test_chapter_markdown_shape():
     from app.schemas import Chapter
 
     c = Chapter(title="t", summary="s", content_md="## 正文").model_dump(by_alias=True)
-    assert set(c) == {"title", "summary", "contentMd", "kind", "keyTerms"}
+    assert set(c) == { "title", "summary", "contentMd", "kind", "keyTerms", "visualizations", "exercises" }
     assert c["kind"] == "concept", "章型缺省为 concept"
     assert c["keyTerms"] == []
     assert c["contentMd"] == "## 正文"

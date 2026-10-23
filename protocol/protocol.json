@@ -34,8 +34,16 @@
     },
     "Chapter": {
       "required": ["title"],
-      "fields": ["title", "summary", "contentMd", "kind", "keyTerms"],
-      "extra": ["status"]
+      "fields": [
+        "title",
+        "summary",
+        "contentMd",
+        "kind",
+        "keyTerms",
+        "visualizations",
+        "exercises"
+      ],
+      "extra": ["status", "done"]
     },
     "StudyPhase": {
       "required": ["name"],

@@ -288,7 +288,69 @@ def _chapter(
         "contentMd": content_md,
         "kind": kind,
         "keyTerms": list(key_terms or []),
+        # mock 产物同样要过真实校验：动画帧结构必须合法（格子数一致、
+        # 高亮不越界），自测题必须覆盖知识点且含一道情景题
+        "visualizations": _mock_visualization(title, knowledge_points),
+        "exercises": _mock_exercises(knowledge_points),
     }
+
+
+def _mock_visualization(
+    title: str, knowledge_points: list[str] | None
+) -> list[dict[str, Any]]:
+    """演示用过程动画：一段冒泡排序的逐帧轨迹（确定性，同输入同输出）。
+
+    真实链路里是否产出动画由章内容决定（只有「执行过程不可见」的章才需要）；
+    mock 统一给一段，让前端播放器在离线模式下也有东西可看。
+    """
+    if not knowledge_points:
+        return []
+    start = ["5", "3", "8", "1"]
+    frames = [
+        (start, [], "初始状态：待处理的序列"),
+        (["5", "3", "8", "1"], [0, 1], "比较 5 与 3，前者更大，需要交换"),
+        (["3", "5", "8", "1"], [0, 1], "交换后 3 就位，指针右移"),
+        (["3", "5", "8", "1"], [1, 2], "比较 5 与 8，顺序正确，不交换"),
+        (["3", "5", "1", "8"], [2, 3], "比较 8 与 1，交换，本轮最大值冒到末尾"),
+        (["3", "1", "5", "8"], [0, 2], "第二轮：5 与 1 交换后归位"),
+        (["1", "3", "5", "8"], [], "全部有序，排序结束"),
+    ]
+    return [
+        {
+            "kind": "array",
+            "title": f"「{title}」的逐帧执行轨迹",
+            "steps": [
+                {"state": list(state), "highlight": list(highlight), "note": note}
+                for state, highlight, note in frames
+            ],
+        }
+    ]
+
+
+def _mock_exercises(knowledge_points: list[str] | None) -> list[dict[str, Any]]:
+    """结构化自测题：每个知识点一道回忆题，再补一道情景判断题。"""
+    points = list(knowledge_points or [])
+    exercises: list[dict[str, Any]] = [
+        {
+            "question": f"不看资料复述「{point}」的定义与适用边界。",
+            "targets": [point],
+            "kind": "recall",
+        }
+        for point in points
+    ]
+    exercises.append(
+        {
+            "question": (
+                f"给定一个需要用到「{points[0]}」的真实场景，"
+                "说明为什么选它而不是相邻方案，并指出一个不适用的情况。"
+                if points
+                else "给定一个真实场景，说明该选哪个方案与原因。"
+            ),
+            "targets": points[:1],
+            "kind": "scenario",
+        }
+    )
+    return exercises
 
 
 # ---------------------------------------------------------------------------

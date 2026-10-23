@@ -252,6 +252,71 @@ class PhaseProject(CamelModel):
         return _coerce_str_list(value)
 
 
+class VisualizationStep(CamelModel):
+    """动画的一帧：一次状态快照 + 本帧要强调的位置。
+
+    刻意只有「数据」没有「怎么画」——渲染器是前端预置的，模型只负责按步骤
+    演进状态。模型写渲染代码的坏处是：数据错了看得见，代码错了直接崩，而崩溃
+    时你分不清是渲染问题还是理解问题。
+    """
+
+    state: list[str] = Field(
+        default_factory=list, description="本帧每个格子的短文本（数组当前形态）"
+    )
+    highlight: list[int] = Field(
+        default_factory=list, description="本帧要高亮的格子下标"
+    )
+    note: str = Field(default="", description="这一步在做什么（一句话）")
+
+    @field_validator("state", mode="before")
+    @classmethod
+    def _state_as_text(cls, value: object) -> object:
+        """数组动画天然会被模型写成数字数组（[5, 3, 8]），统一转成单元格文本。
+
+        与 PhaseProject.steps 同一套容错思路：只归一类型，不臆造内容。
+        """
+        return _coerce_str_list(value)
+
+    @field_validator("highlight", mode="before")
+    @classmethod
+    def _highlight_as_indexes(cls, value: object) -> object:
+        if not isinstance(value, list):
+            return value
+        out: list[int] = []
+        for item in value:
+            try:
+                out.append(int(item))
+            except (TypeError, ValueError):
+                continue
+        return out
+
+
+class Visualization(CamelModel):
+    """一章最多一段的过程动画（执行轨迹 / 数据结构操作）。"""
+
+    kind: str = Field(default="array", description="渲染器类型，第一版只有 array")
+    title: str = Field(default="", description="这段动画演示什么")
+    steps: list[VisualizationStep] = Field(
+        default_factory=list, description="按时间顺序的帧"
+    )
+
+
+class Exercise(CamelModel):
+    """结构化自测题：题目、它考的知识点、题型。
+
+    与正文「自检清单」小节是同一批题的两种形态——正文给人读，这里给程序
+    校验「每个知识点是否真的被考到」，也是前端勾选自测的数据来源。
+    """
+
+    question: str = Field(default="", description="题目正文")
+    targets: list[str] = Field(
+        default_factory=list, description="本题覆盖的知识点（取自大纲本章知识点）"
+    )
+    kind: str = Field(
+        default="recall", description="题型：recall（可判定回忆）/ scenario（情景判断）"
+    )
+
+
 class Chapter(CamelModel):
     """阶段内的学习章节：完整 markdown 正文（图示内联 ```mermaid 码块）。
 
@@ -268,6 +333,14 @@ class Chapter(CamelModel):
     )
     key_terms: list[str] = Field(
         default_factory=list, description="本章核心术语（2-4 个）"
+    )
+    visualizations: list[Visualization] = Field(
+        default_factory=list,
+        description="过程动画（至多一段）：只用于「执行过程不可见」的算法/数据结构章",
+    )
+    exercises: list[Exercise] = Field(
+        default_factory=list,
+        description="结构化自测题：每个知识点至少一题，且至少一题是情景判断题",
     )
 
 

@@ -203,7 +203,7 @@ async def test_plan_event_sequence(monkeypatch):
             "promptTrace",
         }
         chapter = e["chapter"]
-        assert set(chapter) == {"title", "summary", "contentMd", "kind", "keyTerms"}
+        assert set(chapter) == { "title", "summary", "contentMd", "kind", "keyTerms", "visualizations", "exercises" }
         assert "```mermaid" in chapter["contentMd"], "正文必须内联 mermaid 码块"
         assert (
             chapter["title"] in outline["phases"][e["phaseIndex"]]["chapterTitles"]
@@ -289,7 +289,7 @@ async def test_regen_chapter_task(monkeypatch):
     assert [e["type"] for e in events] == ["chapterStart", "chapter", "phase", "done"]
     chapter_event = events[1]
     assert chapter_event["index"] == 1 and chapter_event["phaseIndex"] == 1
-    assert set(chapter_event["chapter"]) == {"title", "summary", "contentMd", "kind", "keyTerms"}
+    assert set(chapter_event["chapter"]) == { "title", "summary", "contentMd", "kind", "keyTerms", "visualizations", "exercises" }
     assert events[-1]["response"]["status"] == "plan"
 
 
