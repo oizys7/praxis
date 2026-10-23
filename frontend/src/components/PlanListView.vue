@@ -83,8 +83,17 @@ watch(search, () => {
  * 实体，而不是计划上的一个标签。
  */
 const groups = ref<PlanGroup[]>([]);
-/** 折叠的分组（本地 UI 状态，不落库） */
-const collapsedGroups = ref<Set<string>>(new Set());
+/**
+ * 折叠的分组（本地 UI 状态，不落库）。
+ * 用普通对象而不是 Set：键的增删都由 reactive 的 Proxy 拦截，v-if 判断能稳定
+ * 触发重渲染；Set 的 has() 在这里追踪不可靠（表现为点了没反应）。
+ */
+const collapsedGroups = ref<Record<string, boolean>>({});
+
+/** 分组是否折叠 */
+function isCollapsed(key: string): boolean {
+  return collapsedGroups.value[key] === true;
+}
 /** 新建分组的内联输入 */
 const creatingGroup = ref(false);
 const newGroupName = ref("");
@@ -208,9 +217,9 @@ async function onDeleteGroup(section: PlanSection) {
 }
 
 function toggleGroup(key: string) {
-  const next = new Set(collapsedGroups.value);
-  if (next.has(key)) next.delete(key);
-  else next.add(key);
+  const next = { ...collapsedGroups.value };
+  if (next[key]) delete next[key];
+  else next[key] = true;
   collapsedGroups.value = next;
 }
 
@@ -393,17 +402,23 @@ function formatTime(iso: string): string {
         <!-- 组标题：吸附在滚动容器顶部，滚动时始终知道当前在哪个分组 -->
         <div
           v-if="showGroupHeaders"
-          class="sticky top-0 z-10 flex items-center gap-2 border-b bg-secondary/70 px-4 py-2 backdrop-blur"
+          class="sticky top-0 z-10 flex items-center gap-2 border-b bg-secondary px-4 py-2"
         >
-          <button
-            type="button"
-            class="flex min-w-0 flex-1 items-center gap-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            :aria-expanded="!collapsedGroups.has(section.key)"
+          <!-- 用 div + role=button 而不是原生 button：index.css 有一条全局的
+               button:active { scale(0.97) } 按压反馈（unlayered，工具类压不住），
+               点组标题时整条标题栏跟着缩放，正是「太浮夸」的来源 -->
+          <div
+            role="button"
+            tabindex="0"
+            class="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            :aria-expanded="!isCollapsed(section.key)"
             @click="toggleGroup(section.key)"
+            @keydown.enter.prevent="toggleGroup(section.key)"
+            @keydown.space.prevent="toggleGroup(section.key)"
           >
             <ChevronDown
               class="h-4 w-4 shrink-0 text-muted-foreground transition-transform"
-              :class="{ '-rotate-90': collapsedGroups.has(section.key) }"
+              :class="{ '-rotate-90': isCollapsed(section.key) }"
               aria-hidden="true"
             />
             <template v-if="renamingId && renamingId === section.groupId">
@@ -432,7 +447,7 @@ function formatTime(iso: string): string {
                 {{ section.plans.length }}
               </span>
             </template>
-          </button>
+          </div>
           <template v-if="section.groupId && !renamingId">
             <Button
               variant="ghost"
@@ -456,167 +471,171 @@ function formatTime(iso: string): string {
             </Button>
           </template>
         </div>
-        <template v-for="(item, ri) in section.plans" :key="item.id">
-          <div
-            v-if="!collapsedGroups.has(section.key)"
-            class="group relative flex cursor-pointer items-center gap-3 px-4 py-3.5 transition-colors hover:bg-secondary/50"
-            :class="ri > 0 ? 'border-t' : ''"
-            role="button"
-            tabindex="0"
-            :aria-label="`查看计划：${item.title}`"
-            @click="onOpen(item)"
-            @keydown.enter="onOpen(item)"
-            @keydown.space.prevent="onOpen(item)"
-          >
-            <!-- 选中指示条：hover/键盘焦点时左缘墨蓝细条淡入（选中感） -->
-            <span
-              class="absolute inset-y-2 left-0 w-0.5 rounded-full bg-primary opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100"
-              aria-hidden="true"
-            />
-            <!-- 收藏星：激活态书页ecessary色（.stub保留 amber 语义） -->
-            <button
-              class="shrink-0 text-muted-foreground/50 transition-colors hover:text-amber-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              :class="
-                item.favorite ? 'text-amber-400 hover:text-amber-500' : ''
-              "
-              v-tip="item.favorite ? '取消收藏' : '收藏'"
-              :aria-label="
-                item.favorite
-                  ? `取消收藏：${item.title}`
-                  : `收藏：${item.title}`
-              "
-              :aria-pressed="item.favorite"
-              @click.stop="onToggleFavorite(item)"
+        <!-- 折叠判断放在循环外层：每段只判一次，结构也更直白 -->
+        <div v-if="!isCollapsed(section.key)">
+          <template v-for="(item, ri) in section.plans" :key="item.id">
+            <div
+              class="group relative flex cursor-pointer items-center gap-3 px-4 py-3.5 transition-colors hover:bg-secondary/50"
+              :class="ri > 0 ? 'border-t' : ''"
+              role="button"
+              tabindex="0"
+              :aria-label="`查看计划：${item.title}`"
+              @click="onOpen(item)"
+              @keydown.enter="onOpen(item)"
+              @keydown.space.prevent="onOpen(item)"
             >
-              <Star
-                class="h-4 w-4"
-                :class="{ 'fill-amber-400': item.favorite }"
+              <!-- 选中指示条：hover/键盘焦点时左缘墨蓝细条淡入（选中感） -->
+              <span
+                class="absolute inset-y-2 left-0 w-0.5 rounded-full bg-primary opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100"
+                aria-hidden="true"
               />
-            </button>
-            <!-- 主列：标题 + 目标 -->
-            <div class="min-w-0 flex-1">
-              <h3
-                class="font-display truncate text-[15px] font-semibold leading-tight"
+              <!-- 收藏星：激活态书页ecessary色（.stub保留 amber 语义） -->
+              <button
+                class="shrink-0 text-muted-foreground/50 transition-colors hover:text-amber-500 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                :class="
+                  item.favorite ? 'text-amber-400 hover:text-amber-500' : ''
+                "
+                v-tip="item.favorite ? '取消收藏' : '收藏'"
+                :aria-label="
+                  item.favorite
+                    ? `取消收藏：${item.title}`
+                    : `收藏：${item.title}`
+                "
+                :aria-pressed="item.favorite"
+                @click.stop="onToggleFavorite(item)"
               >
-                {{ item.title }}
-              </h3>
-              <p class="mt-0.5 truncate text-xs text-muted-foreground">
-                {{ item.goal }}
-              </p>
-            </div>
-            <!-- 元信息列（窄屏隐藏避免挤断行） -->
-            <div class="hidden shrink-0 items-center gap-2 sm:flex">
-              <!-- 异步状态徽标套常驻 live region（display:contents 不动布局），
+                <Star
+                  class="h-4 w-4"
+                  :class="{ 'fill-amber-400': item.favorite }"
+                />
+              </button>
+              <!-- 主列：标题 + 目标 -->
+              <div class="min-w-0 flex-1">
+                <h3
+                  class="font-display truncate text-[15px] font-semibold leading-tight"
+                >
+                  {{ item.title }}
+                </h3>
+                <p class="mt-0.5 truncate text-xs text-muted-foreground">
+                  {{ item.goal }}
+                </p>
+              </div>
+              <!-- 元信息列（窄屏隐藏避免挤断行） -->
+              <div class="hidden shrink-0 items-center gap-2 sm:flex">
+                <!-- 异步状态徽标套常驻 live region（display:contents 不动布局），
                出现/撤除时读屏公告。判据 wire 权威 + store 实时（2026-10-
                16 修复「实际已失败仍显示生成中」）：wire 已出终态时 store
                挂账不再嵭宾夺主，仅 wire 仍 generating 且本会话观测同真
                时才实时显示 -->
-              <div aria-live="polite" class="contents">
+                <div aria-live="polite" class="contents">
+                  <Badge
+                    v-if="
+                      item.status === 'generating' && isPlanGenerating(item.id)
+                    "
+                    variant="secondary"
+                  >
+                    <span
+                      class="mr-1.5 h-2.5 w-2.5 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"
+                    />
+                    生成中
+                  </Badge>
+                  <Badge v-if="item.status === 'failed'" variant="destructive">
+                    生成失败
+                  </Badge>
+                </div>
+                <!-- 列对齐：数字位数不同（8/12 周）会使左右行元信息左缘漂移，
+               固定最小宽 + 居中 + 等宽数字保证同一列恒定 -->
                 <Badge
-                  v-if="
-                    item.status === 'generating' && isPlanGenerating(item.id)
-                  "
+                  v-if="item.level"
                   variant="secondary"
+                  class="min-w-20 justify-center"
+                >
+                  {{ levelLabel(item.level) }}
+                </Badge>
+                <Badge
+                  v-if="item.weeks"
+                  variant="outline"
+                  class="min-w-16 justify-center tabular-nums"
+                  >{{ item.weeks }} 周</Badge
+                >
+                <span
+                  class="w-16 shrink-0 text-right text-xs text-muted-foreground"
+                  >{{ formatTime(item.createdAt) }}</span
+                >
+              </div>
+              <!-- 行尾操作：淡显 + focus-within 全显；删险用窗.confirm 兼容行内 -->
+              <div
+                class="flex shrink-0 items-center gap-0.5 opacity-40 transition-opacity focus-within:opacity-100 group-hover:opacity-100"
+              >
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  class="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
+                  v-tip="`删除：${item.title}`"
+                  :aria-label="`删除：${item.title}`"
+                  @click.stop="onDelete(item)"
+                >
+                  <Trash2 class="h-4 w-4" />
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  class="h-8 w-8 p-0 text-muted-foreground hover:text-primary"
+                  v-tip="`移动到分组：${item.title}`"
+                  :aria-label="`移动到分组：${item.title}`"
+                  :aria-expanded="movingId === item.id"
+                  @click.stop="movingId = movingId === item.id ? null : item.id"
+                >
+                  <FolderInput class="h-4 w-4" />
+                </Button>
+                <span
+                  v-if="openingId === item.id"
+                  class="flex h-8 w-8 items-center justify-center"
+                  aria-live="polite"
                 >
                   <span
-                    class="mr-1.5 h-2.5 w-2.5 shrink-0 animate-spin rounded-full border-2 border-current border-t-transparent"
+                    class="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent"
                   />
-                  生成中
-                </Badge>
-                <Badge v-if="item.status === 'failed'" variant="destructive">
-                  生成失败
-                </Badge>
-              </div>
-              <!-- 列对齐：数字位数不同（8/12 周）会使左右行元信息左缘漂移，
-               固定最小宽 + 居中 + 等宽数字保证同一列恒定 -->
-              <Badge
-                v-if="item.level"
-                variant="secondary"
-                class="min-w-20 justify-center"
-              >
-                {{ levelLabel(item.level) }}
-              </Badge>
-              <Badge
-                v-if="item.weeks"
-                variant="outline"
-                class="min-w-16 justify-center tabular-nums"
-                >{{ item.weeks }} 周</Badge
-              >
-              <span
-                class="w-16 shrink-0 text-right text-xs text-muted-foreground"
-                >{{ formatTime(item.createdAt) }}</span
-              >
-            </div>
-            <!-- 行尾操作：淡显 + focus-within 全显；删险用窗.confirm 兼容行内 -->
-            <div
-              class="flex shrink-0 items-center gap-0.5 opacity-40 transition-opacity focus-within:opacity-100 group-hover:opacity-100"
-            >
-              <Button
-                variant="ghost"
-                size="sm"
-                class="h-8 w-8 p-0 text-muted-foreground hover:text-destructive"
-                v-tip="`删除：${item.title}`"
-                :aria-label="`删除：${item.title}`"
-                @click.stop="onDelete(item)"
-              >
-                <Trash2 class="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                class="h-8 w-8 p-0 text-muted-foreground hover:text-primary"
-                v-tip="`移动到分组：${item.title}`"
-                :aria-label="`移动到分组：${item.title}`"
-                :aria-expanded="movingId === item.id"
-                @click.stop="movingId = movingId === item.id ? null : item.id"
-              >
-                <FolderInput class="h-4 w-4" />
-              </Button>
-              <span
-                v-if="openingId === item.id"
-                class="flex h-8 w-8 items-center justify-center"
-                aria-live="polite"
-              >
-                <span
-                  class="h-4 w-4 animate-spin rounded-full border-2 border-primary border-t-transparent"
+                </span>
+                <ChevronRight
+                  v-else
+                  class="h-5 w-5 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary"
+                  aria-hidden="true"
                 />
-              </span>
-              <ChevronRight
-                v-else
-                class="h-5 w-5 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-primary"
-                aria-hidden="true"
-              />
+              </div>
             </div>
-          </div>
-          <!-- 移组选择条：行内展开而不是下拉/弹窗——不受滚动容器裁剪影响，
+            <!-- 移组选择条：行内展开而不是下拉/弹窗——不受滚动容器裁剪影响，
              也不必为定位再引一个浮层 -->
-          <div
-            v-if="movingId === item.id && !collapsedGroups.has(section.key)"
-            class="flex flex-wrap items-center gap-2 border-t bg-secondary/40 px-4 py-2"
-          >
-            <span class="text-xs text-muted-foreground">移到：</span>
-            <Button
-              v-for="g in groups"
-              :key="g.id"
-              variant="outline"
-              size="sm"
-              class="h-7"
-              :class="{ 'border-primary text-primary': g.id === item.groupId }"
-              @click.stop="moveTo(item, g.id)"
+            <div
+              v-if="movingId === item.id"
+              class="flex flex-wrap items-center gap-2 border-t bg-secondary/40 px-4 py-2"
             >
-              {{ g.name }}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              class="h-7"
-              :class="{ 'border-primary text-primary': !item.groupId }"
-              @click.stop="moveTo(item, null)"
-            >
-              未分组
-            </Button>
-          </div>
-        </template>
+              <span class="text-xs text-muted-foreground">移到：</span>
+              <Button
+                v-for="g in groups"
+                :key="g.id"
+                variant="outline"
+                size="sm"
+                class="h-7"
+                :class="{
+                  'border-primary text-primary': g.id === item.groupId,
+                }"
+                @click.stop="moveTo(item, g.id)"
+              >
+                {{ g.name }}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                class="h-7"
+                :class="{ 'border-primary text-primary': !item.groupId }"
+                @click.stop="moveTo(item, null)"
+              >
+                未分组
+              </Button>
+            </div>
+          </template>
+        </div>
       </section>
     </div>
   </div>
