@@ -29,7 +29,7 @@ let hintSeq = 0;
 </script>
 
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 
 /**
  * MermaidDiagram：渲染 markdown 正文内联 ```mermaid 码块（MarkdownContent 切段后传入）。
@@ -56,6 +56,24 @@ const svg = ref<string | null>(null);
 const failed = ref(false);
 /** 本实例的键盘/缩放提示 id（aria-describedby 目标） */
 const hintId = `mermaid-zoom-hint-${++hintSeq}`;
+
+/** 观测容器（根 figure） */
+const rootEl = ref<HTMLElement | null>(null);
+/**
+ * 是否已进入视口 —— 懒渲染开关。
+ *
+ * 一份 27 章的计划里有 40+ 个 mermaid 图。挂载即渲染时，mermaid 的布局计算
+ * 与 SVG 生成会把主线程占满数秒（单图几十到几百毫秒，逐图串行），而用户
+ * 首屏只看得到 1-3 个。改为进入视口才渲染：首屏只付首屏的钱，滚动到哪渲染
+ * 到哪；mermaid 那个 684KB 的分包也随之延后到真正需要时。
+ */
+const visible = ref(false);
+let observer: IntersectionObserver | null = null;
+
+/** 渲染入口：只有进入视口后才真正开始（脚本/schema 变化时也走这里） */
+function renderIfVisible() {
+  if (visible.value) void render();
+}
 
 async function render(): Promise<void> {
   failed.value = false;
@@ -188,12 +206,42 @@ function onKeydown(event: KeyboardEvent): void {
   }
 }
 
-onMounted(render);
-watch(() => props.code, render);
+onMounted(() => {
+  // 没有 IntersectionObserver（旧 webview）或拿不到容器：降级为立即渲染，
+  // 宁可慢也不能丢内容
+  if (typeof IntersectionObserver === "undefined" || !rootEl.value) {
+    visible.value = true;
+    renderIfVisible();
+    return;
+  }
+  observer = new IntersectionObserver(
+    (entries) => {
+      if (!entries.some((entry) => entry.isIntersecting)) return;
+      visible.value = true;
+      // 一次性：渲染过后不再需要观察，断开避免滚动时反复回调
+      observer?.disconnect();
+      observer = null;
+      renderIfVisible();
+    },
+    // 提前 200px 触发：滚到位时图基本已渲染完，不会看到空洞
+    { rootMargin: "200px 0px" },
+  );
+  observer.observe(rootEl.value);
+});
+
+onBeforeUnmount(() => {
+  observer?.disconnect();
+  observer = null;
+});
+
+watch(() => props.code, renderIfVisible);
 </script>
 
 <template>
-  <figure class="group relative rounded-lg border bg-muted/30 p-3">
+  <figure
+    ref="rootEl"
+    class="group relative rounded-lg border bg-muted/30 p-3"
+  >
     <!-- 工具条：悬停或键盘聚焦时出现（focus-within 保证键盘用户也能到达） -->
     <div
       v-if="svg"
@@ -264,8 +312,10 @@ watch(() => props.code, render);
     >
 图示渲染失败，显示原始源码：
 {{ props.code }}</pre>
+    <!-- 占位：未进视口（懒渲染）或渲染中。min-h 固定住版式高度，
+         避免滚动到位、图渲染出来时把下方内容顶下去 -->
     <div v-else class="min-h-40 py-6 text-center text-xs text-muted-foreground">
-      图示渲染中…
+      图示
     </div>
     <figcaption
       v-if="props.caption"
