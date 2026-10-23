@@ -237,8 +237,16 @@ function scrollToHeading(index: number) {
           <path d="m6 9 6 6 6-6" />
         </svg>
         <div class="min-w-0">
-          <h4 class="text-sm font-semibold">
-            {{ props.chapter.title }}
+          <h4 class="flex flex-wrap items-baseline gap-2 text-sm font-semibold">
+            <span>{{ props.chapter.title }}</span>
+            <!-- 打卡态是只读派生（由打卡记录聚合），这里只负责显示，不提供写入 -->
+            <Badge
+              v-if="props.chapter.done"
+              variant="success"
+              class="text-[10px] font-normal"
+            >
+              已学
+            </Badge>
             <span
               v-if="kindLabel"
               class="ml-2 align-middle text-xs font-normal text-muted-foreground"
