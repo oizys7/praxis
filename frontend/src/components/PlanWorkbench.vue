@@ -63,6 +63,15 @@ const planView = ref<"list" | "create">("list");
 const historyMode = ref(false);
 /** 整计划重生成提交中（命令本身很快返回，仅用于按钮防连点） */
 const replayingPlan = ref(false);
+/**
+ * 结果里已有的阶段数：整计划重生成按钮的显示判据。
+ * 只有**大纲都没生成出来**（零阶段）才给这个入口——有阶段说明大纲已成功，
+ * 该走阶段级/章节级重生成；正在生成（generating）更不该给，否则会把
+ * 进行中的任务清空重来。
+ */
+const resultPhaseCount = computed(() =>
+  result.value?.status === "plan" ? result.value.plan.phases.length : 0,
+);
 /** 历史详情滚动宿主（App 的 <main>，回顶与目录跳转共用） */
 const planScrollHost = inject<ShallowRef<HTMLElement | null>>(
   "planScrollHost",
@@ -451,7 +460,7 @@ function onPlanRefreshed(plan: StudyPlan) {
     <div v-else class="mx-auto w-full max-w-6xl px-6 py-8 2xl:max-w-7xl">
       <!-- 返回列表：跨两栏顶部（反馈⑥改位，grid 外层）；sticky 不随滚动；
            反馈⑤：加大字号与圆角胶囊、叠压时阴影/描边/毛玻璃更明显 -->
-      <div v-if="planView === 'create'" class="sticky top-0 z-20 -mt-2 mb-3">
+      <div v-if="planView === 'create'" class="-mt-2 mb-3">
         <Button
           variant="outline"
           class="rounded-full border-border/70 bg-background/90 text-sm shadow-md backdrop-blur transition-colors hover:border-primary/40 hover:bg-muted hover:text-primary"
@@ -461,15 +470,14 @@ function onPlanRefreshed(plan: StudyPlan) {
           返回列表
         </Button>
       </div>
-      <!-- 整计划重生成：failed / 卡在 generating 的计划没有可点的阶段与章 -->
+      <!-- 整计划重生成：仅「大纲未产出」（failed 且零阶段）时提供入口 -->
       <div
-        v-if="historyMode && resultRowStatus && resultRowStatus !== 'complete'"
+        v-if="historyMode && resultRowStatus === 'failed' && resultPhaseCount === 0"
         class="mx-auto mb-4 w-full max-w-3xl rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3"
       >
         <p class="text-sm text-muted-foreground">
-          这份计划没有完整生成（当前状态：{{
-            resultRowStatus === "failed" ? "生成失败" : "生成中"
-          }}）。整计划重生成会连大纲一起重做，现有阶段与章节会被清空。
+          这份计划在第一步（生成大纲）就失败了，库里没有任何阶段与章节，
+          所以没有可点的阶段级重生成按钮。整计划重生成会从头编排整份路线。
         </p>
         <Button
           variant="outline"
@@ -690,7 +698,7 @@ function onPlanRefreshed(plan: StudyPlan) {
           </Card>
 
           <!-- 大纲骨架树（渐进式渲染，骨架是过程态：终态后由 PlanResult 接管） -->
-          <Card v-if="outlineReady" aria-live="polite">
+          <Card v-if="outlineReady && !result" aria-live="polite">
             <!-- task-C: p-6 使首内边距与左 PlanForm 卡 CardHeader 的 p-6 对齐
                  （默认 CardContent 是 p-6 pt-0，首元素贴卡顶，曾导致两栏顶部不齐） -->
             <CardContent class="space-y-4 p-6">

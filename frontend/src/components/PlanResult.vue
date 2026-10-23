@@ -191,14 +191,16 @@ const resourceTypeLabels: Record<string, string> = {
         <CardTitle class="text-base">🔤 术语表</CardTitle>
       </CardHeader>
       <CardContent>
-        <dl class="grid gap-x-8 gap-y-2 sm:grid-cols-2">
+        <!-- 术语与出处分两行：同一行 + truncate 时，长术语会把出处挤没、
+             长出处会被截断，两列布局下几乎必然看不全 -->
+        <dl class="grid gap-x-8 gap-y-3 sm:grid-cols-2">
           <div
             v-for="entry in plan.glossary"
             :key="entry.term"
-            class="flex items-baseline gap-2 text-sm"
+            class="min-w-0 text-sm"
           >
-            <dt class="shrink-0 font-medium">{{ entry.term }}</dt>
-            <dd class="truncate text-muted-foreground">
+            <dt class="break-words font-medium">{{ entry.term }}</dt>
+            <dd class="mt-0.5 break-words text-xs text-muted-foreground">
               —— {{ entry.chapterTitle }}
             </dd>
           </div>
