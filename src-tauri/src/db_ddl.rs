@@ -119,6 +119,24 @@ pub(crate) const DDL_GENERATION_ARTIFACTS_TABLE: &str =
 
 /// 保留期清理按 created_at 扫描（清理条件最终由 plans.status/updated_at 决定，
 /// 这个索引只为 DELETE 的候选扫描服务）
+/// 用户自定义计划分组（列表页分组展示用；空组也要能保留，所以必须是独立表
+/// 而不是 plans 上的一个字符串标签）
+pub(crate) const DDL_PLAN_GROUPS_TABLE: &str = "CREATE TABLE IF NOT EXISTS plan_groups (
+            id         UUID PRIMARY KEY,
+            name       TEXT NOT NULL,
+            sort_order INT  NOT NULL DEFAULT 0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )";
+
+/// 分组展示顺序索引
+pub(crate) const DDL_PLAN_GROUPS_SORT_IDX: &str =
+    "CREATE INDEX IF NOT EXISTS idx_plan_groups_sort ON plan_groups (sort_order, created_at)";
+
+/// 计划归属分组：一个计划最多属于一个组。删组用 SET NULL，组内计划回到
+/// 「未分组」而不是被连带删除——分组只是视图，不该有删数据的副作用。
+pub(crate) const DDL_PLANS_GROUP_ID_COL: &str =
+    "ALTER TABLE plans ADD COLUMN IF NOT EXISTS group_id UUID REFERENCES plan_groups(id) ON DELETE SET NULL";
+
 pub(crate) const DDL_GENERATION_ARTIFACTS_CREATED_IDX: &str =
     "CREATE INDEX IF NOT EXISTS idx_generation_artifacts_created ON generation_artifacts (created_at)";
 
@@ -371,6 +389,10 @@ pub(crate) const DDL_STATEMENTS: &[&str] = &[
     DDL_PLANS_LEARNING_STATUS_COL,
     DDL_STUDY_SCHEDULE_TABLE,
     DDL_STUDY_SCHEDULE_DATE_IDX,
+    // 4.7 计划分组：表要早于 plans.group_id 外键列
+    DDL_PLAN_GROUPS_TABLE,
+    DDL_PLANS_GROUP_ID_COL,
+    DDL_PLAN_GROUPS_SORT_IDX,
     DDL_GENERATION_ARTIFACTS_CREATED_IDX,
     // 5. 任务 18 演进：chapters 正文列 + 退役子表 DROP（统一收尾，
     //    历史 DB 与全新 DB 都收敛到同一终态）

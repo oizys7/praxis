@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { normalizeError } from "./useAgent";
 import type {
   MonthCalendarDay,
+  PlanGroup,
   PlanRecord,
   PlanSummary,
   YearHeatmapDay,
@@ -27,6 +28,57 @@ export async function fetchPlanSummaries(query = ""): Promise<PlanSummary[]> {
 }
 
 /** 读取完整计划记录（含整份计划；学习计划详情页用，日历页不用） */
+/**
+ * 计划分组（用户自定义）：分组只是「组织视图的方式」，删组不删计划——
+ * 后端外键 ON DELETE SET NULL 让组内计划回到未分组。
+ */
+export async function fetchPlanGroups(): Promise<PlanGroup[]> {
+  try {
+    return await invoke<PlanGroup[]>("list_plan_groups");
+  } catch (e) {
+    throw normalizeError(e);
+  }
+}
+
+/** 新建分组（后端拒绝空名称） */
+export async function createPlanGroup(name: string): Promise<PlanGroup> {
+  try {
+    return await invoke<PlanGroup>("create_plan_group", { name });
+  } catch (e) {
+    throw normalizeError(e);
+  }
+}
+
+/** 重命名分组 */
+export async function renamePlanGroup(id: string, name: string): Promise<void> {
+  try {
+    await invoke("rename_plan_group", { id, name });
+  } catch (e) {
+    throw normalizeError(e);
+  }
+}
+
+/** 删除分组（组内计划回到未分组，不会被删除） */
+export async function removePlanGroup(id: string): Promise<void> {
+  try {
+    await invoke("delete_plan_group", { id });
+  } catch (e) {
+    throw normalizeError(e);
+  }
+}
+
+/** 调整计划归属分组（groupId 为 null 表示移出到未分组） */
+export async function setPlanGroup(
+  id: string,
+  groupId: string | null,
+): Promise<void> {
+  try {
+    await invoke("set_plan_group", { id, groupId });
+  } catch (e) {
+    throw normalizeError(e);
+  }
+}
+
 export async function fetchPlanRecord(id: string): Promise<PlanRecord> {
   try {
     return await invoke<PlanRecord>("get_plan", { id });

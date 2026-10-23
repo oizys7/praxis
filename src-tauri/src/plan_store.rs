@@ -534,6 +534,102 @@ impl SweepReport {
         self.healed_plans == 0 && self.healed_children == 0
     }
 }
+// ---------------------------------------------------------------------------
+// 计划分组（用户自定义）
+//
+// 分组只是「组织视图的方式」：一个计划最多属于一个组，删组不删计划（外键
+// ON DELETE SET NULL 让组内计划回到未分组）。空组必须能保留，所以是独立表
+// 而不是 plans 上的一个字符串标签——否则最后一个计划移走后组名就丢了。
+// ---------------------------------------------------------------------------
+
+/// 分组列表（含组内计划数），按用户排序位、再按创建时间
+pub(crate) async fn list_plan_groups(
+    pool: &PgPool,
+) -> Result<Vec<crate::protocol::PlanGroup>, AgentError> {
+    let rows = sqlx::query(
+        "SELECT g.id, g.name, COUNT(p.id) AS plan_count          FROM plan_groups g LEFT JOIN plans p ON p.group_id = g.id          GROUP BY g.id, g.name, g.sort_order, g.created_at          ORDER BY g.sort_order, g.created_at",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| fail("查询计划分组", e))?;
+
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let id: Uuid = row.try_get("id").map_err(db_err)?;
+        let name: String = row.try_get("name").map_err(db_err)?;
+        let plan_count: i64 = row.try_get("plan_count").map_err(db_err)?;
+        out.push(crate::protocol::PlanGroup {
+            id: id.to_string(),
+            name,
+            plan_count,
+        });
+    }
+    Ok(out)
+}
+
+/// 新建分组：排序位追加到末尾（「新建的在最后」符合预期）
+pub(crate) async fn create_plan_group(
+    pool: &PgPool,
+    name: &str,
+) -> Result<crate::protocol::PlanGroup, AgentError> {
+    let row = sqlx::query(
+        "INSERT INTO plan_groups (id, name, sort_order)          VALUES ($1, $2, COALESCE((SELECT MAX(sort_order) + 1 FROM plan_groups), 0))          RETURNING id, name",
+    )
+    .bind(Uuid::new_v4())
+    .bind(name.trim())
+    .fetch_one(pool)
+    .await
+    .map_err(|e| fail("新建计划分组", e))?;
+
+    let id: Uuid = row.try_get("id").map_err(db_err)?;
+    let name: String = row.try_get("name").map_err(db_err)?;
+    Ok(crate::protocol::PlanGroup {
+        id: id.to_string(),
+        name,
+        plan_count: 0,
+    })
+}
+
+/// 重命名分组
+pub(crate) async fn rename_plan_group(
+    pool: &PgPool,
+    id: Uuid,
+    name: &str,
+) -> Result<(), AgentError> {
+    sqlx::query("UPDATE plan_groups SET name = $2 WHERE id = $1")
+        .bind(id)
+        .bind(name.trim())
+        .execute(pool)
+        .await
+        .map_err(|e| fail("重命名计划分组", e))?;
+    Ok(())
+}
+
+/// 删除分组（组内计划因外键 ON DELETE SET NULL 自动回到未分组，不删计划）
+pub(crate) async fn delete_plan_group(pool: &PgPool, id: Uuid) -> Result<(), AgentError> {
+    sqlx::query("DELETE FROM plan_groups WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(|e| fail("删除计划分组", e))?;
+    Ok(())
+}
+
+/// 把计划移入分组（None = 移出到未分组）
+pub(crate) async fn set_plan_group(
+    pool: &PgPool,
+    plan_id: Uuid,
+    group_id: Option<Uuid>,
+) -> Result<(), AgentError> {
+    // 刻意不动 updated_at：调整分组是视图操作，不该让计划看起来「刚更新过」
+    sqlx::query("UPDATE plans SET group_id = $2 WHERE id = $1")
+        .bind(plan_id)
+        .bind(group_id)
+        .execute(pool)
+        .await
+        .map_err(|e| fail("调整计划分组", e))?;
+    Ok(())
+}
 
 /// 启动自愈（任务 22 + 2026-10-22 改为「自下而上反推」）。
 ///

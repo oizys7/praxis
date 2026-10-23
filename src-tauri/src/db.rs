@@ -163,7 +163,7 @@ pub(crate) async fn list_plans_by_pool(
 ) -> Result<Vec<PlanSummary>, AgentError> {
     let pattern = format!("%{}%", query.trim());
     let rows = sqlx::query(
-        "SELECT p.id, p.title, p.goal, p.overview, p.level, p.weeks, p.favorite, p.created_at, p.status, p.study_days,
+        "SELECT p.id, p.title, p.goal, p.overview, p.level, p.weeks, p.favorite, p.created_at, p.status, p.group_id, p.study_days,
                 p.learning_status, p.learning_started_at, p.study_total, p.study_done,
                 COALESCE((SELECT COUNT(*) FROM chapters c JOIN phases ph ON c.phase_id = ph.id
                           WHERE ph.plan_id = p.id), 0) AS chapter_total,
@@ -186,6 +186,8 @@ pub(crate) async fn list_plans_by_pool(
         let created: chrono::DateTime<chrono::Utc> = row.try_get("created_at").map_err(db_err)?;
         let weeks: i32 = row.try_get("weeks").map_err(db_err)?;
         // 每周学习日（Task E）：列默认全周，读回恒为数组
+        // 所属分组（null = 未分组）
+        let group_id: Option<uuid::Uuid> = row.try_get("group_id").map_err(db_err)?;
         let study_days: sqlx::types::Json<Vec<u8>> = row.try_get("study_days").map_err(db_err)?;
         // 学习状态（not_started | active | completed）+ 开始日期（null = 未开始）
         let learning_status: String = row.try_get("learning_status").map_err(db_err)?;
@@ -198,6 +200,7 @@ pub(crate) async fn list_plans_by_pool(
         let study_done: i32 = row.try_get("study_done").map_err(db_err)?;
         result.push(PlanSummary {
             id: id.to_string(),
+            group_id: group_id.map(|g| g.to_string()),
             title: row.try_get("title").map_err(db_err)?,
             goal: row.try_get("goal").map_err(db_err)?,
             // 行级生成状态（generating | complete | failed）随列表回传，

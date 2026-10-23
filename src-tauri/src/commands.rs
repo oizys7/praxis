@@ -2102,6 +2102,60 @@ pub fn startup_status() -> crate::startup::StartupStatus {
     crate::startup::status()
 }
 
+// ---------------------------------------------------------------------------
+// 计划分组（用户自定义）：列出 / 新建 / 重命名 / 删除 / 调整归属
+// ---------------------------------------------------------------------------
+
+/// 分组列表（含组内计划数）
+#[tauri::command]
+pub async fn list_plan_groups() -> Result<Vec<crate::protocol::PlanGroup>, AgentError> {
+    let config = load_db_config();
+    let pool = db::pool(&config).await?;
+    plan_store::list_plan_groups(&pool).await
+}
+
+/// 新建分组（名称去空白后为空会被拒绝）
+#[tauri::command]
+pub async fn create_plan_group(name: String) -> Result<crate::protocol::PlanGroup, AgentError> {
+    if name.trim().is_empty() {
+        return Err(AgentError::Config("分组名称不能为空".into()));
+    }
+    let config = load_db_config();
+    let pool = db::pool(&config).await?;
+    plan_store::create_plan_group(&pool, &name).await
+}
+
+/// 重命名分组
+#[tauri::command]
+pub async fn rename_plan_group(id: String, name: String) -> Result<(), AgentError> {
+    if name.trim().is_empty() {
+        return Err(AgentError::Config("分组名称不能为空".into()));
+    }
+    let config = load_db_config();
+    let pool = db::pool(&config).await?;
+    plan_store::rename_plan_group(&pool, db::parse_id(&id)?, &name).await
+}
+
+/// 删除分组（组内计划回到未分组，不会被删除）
+#[tauri::command]
+pub async fn delete_plan_group(id: String) -> Result<(), AgentError> {
+    let config = load_db_config();
+    let pool = db::pool(&config).await?;
+    plan_store::delete_plan_group(&pool, db::parse_id(&id)?).await
+}
+
+/// 调整计划归属分组（group_id 为 None 或空串表示移出到未分组）
+#[tauri::command]
+pub async fn set_plan_group(id: String, group_id: Option<String>) -> Result<(), AgentError> {
+    let config = load_db_config();
+    let pool = db::pool(&config).await?;
+    let gid = match group_id {
+        Some(raw) if !raw.trim().is_empty() => Some(db::parse_id(&raw)?),
+        _ => None,
+    };
+    plan_store::set_plan_group(&pool, db::parse_id(&id)?, gid).await
+}
+
 #[cfg(test)]
 mod tests_db_config_from_url {
     use super::*;

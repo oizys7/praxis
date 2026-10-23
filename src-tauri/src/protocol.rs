@@ -303,6 +303,17 @@ pub struct PlanRecord {
     pub plan: StudyPlan,
 }
 
+/// 用户自定义计划分组（列表页分区展示；plan_count 为组内计划数）
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PlanGroup {
+    pub id: String,
+    pub name: String,
+    /// 组内计划数（列表页标题上直接显示，省一次前端汇总）
+    #[serde(default)]
+    pub plan_count: i64,
+}
+
 /// 计划列表行（不含整份计划，列表页轻量加载）
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -319,6 +330,9 @@ pub struct PlanSummary {
     pub level: String,
     #[serde(default)]
     pub weeks: u32,
+    /// 所属自定义分组 id（null = 未分组）
+    #[serde(default)]
+    pub group_id: Option<String>,
     /// 每周学习日（1=周一..7=周日；Task E，同 PlanRecord.study_days）
     #[serde(default)]
     pub study_days: Vec<u8>,
@@ -1141,6 +1155,7 @@ mod tests {
             overview: "O".into(),
             level: "beginner".into(),
             weeks: 8,
+            group_id: None,
             study_days: vec![2, 4, 6],
             learning_status: "not_started".into(),
             learning_started_at: None,

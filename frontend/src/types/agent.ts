@@ -345,6 +345,14 @@ export interface PlanRecord {
 }
 
 /** 计划列表行（不含整份计划，列表页轻量加载） */
+/** 用户自定义计划分组（列表页分区展示） */
+export interface PlanGroup {
+  id: string;
+  name: string;
+  /** 组内计划数 */
+  planCount: number;
+}
+
 export interface PlanSummary {
   id: string;
   title: string;
@@ -354,6 +362,8 @@ export interface PlanSummary {
   overview: string;
   level: string;
   weeks: number;
+  /** 所属自定义分组 id（null = 未分组） */
+  groupId: string | null;
   /** 每周学习日（1=周一..7=周日，Task E，同 PlanRecord.studyDays） */
   studyDays: number[];
   /** 学习状态三分类：not_started | active | completed（与 Rust 常量逐字对齐） */
