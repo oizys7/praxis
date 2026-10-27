@@ -374,7 +374,7 @@ pub struct PlanSubmitResult {
 ///   全部章芄生成成功（至少一章且无失败/滞留）→ complete；存在任一
 ///   失败章或生成中滞留章 → failed（含 finalize_failed 的 pending 子行
 ///   翻牌；complete 子行不动，失败部件可从详情页重生成）；零章行
-///   （纯骨架/未扩）→ failed。见 plan_store::all_chapters_complete。
+///   （纯骨架/未扩）→ failed；部分可用 → partial。见 plan_store::plan_status_of_chapters。
 /// - estimated_total_hours 为 Some 时随收尾覆写学时终值（done 包络携带的
 ///   plan.estimatedTotalHours 与 outline 期粗估差异修正，见 done 分派；
 ///   finalize_plan COALESCE 语义，None 保持原值）。
@@ -388,16 +388,13 @@ pub(crate) async fn settle_terminal_with_hours(
     if status == "clarification" {
         return plan_store::delete_plan_full(pool, plan_id).await;
     }
-    if status != "plan" && status != "error" {
+    if status != "plan" && status != "partial" && status != "error" {
         warn!(status, "未知 done 终态状态，按内容语义收尾");
     }
-    // 终态口径仍是章级（all_chapters_complete = plan_state::plan_of_chapters 的
-    // SQL 版），但收尾参数已类型化，不再有字符串传错的可能。
-    let plan_status = if plan_store::all_chapters_complete(pool, plan_id).await? {
-        plan_state::PlanStatus::Complete
-    } else {
-        plan_state::PlanStatus::Failed
-    };
+    // 终态口径以库里的章内容为准（不信包络自称的结果）：一份被标成 plan 但
+    // 八章全空的计划，在这里会算出 failed。三值让「7 章可用 + 1 章空缺」
+    // 落成 partial，而不是被压成 failed 让用户以为全部白跑。
+    let plan_status = plan_store::plan_status_of_chapters(pool, plan_id).await?;
     plan_store::finalize_plan(pool, plan_id, plan_status, None, estimated_total_hours).await
 }
 
@@ -696,9 +693,8 @@ impl GenerationConsumer {
         let Some(s) = &self.storage else {
             return;
         };
-        let semantic_status = match plan_store::all_chapters_complete(&s.pool, s.plan_id).await {
-            Ok(true) => plan_state::PlanStatus::Complete,
-            Ok(false) => plan_state::PlanStatus::Failed,
+        let semantic_status = match plan_store::plan_status_of_chapters(&s.pool, s.plan_id).await {
+            Ok(status) => status,
             Err(e) => {
                 warn!(req_id = %self.req_id, error = %e, "章脈完成状态查询失败，按 failed 收尾");
                 plan_state::PlanStatus::Failed

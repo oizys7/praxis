@@ -159,10 +159,14 @@ async def test_regen_service_error_yields_error_done(monkeypatch):
         },
     )
 
-    # 章生成失败在图内静默（与首次生成的单章容错同源），不再炸成 done(error)：
+    # 章生成失败在图内静默（与首次生成的单章容错同源），不炸断流：
     # 本用例请求的是全阶段（两章并行）→ 两个 chapterStart；两章都没产出正文，
-    # 故无 chapter 事件，assemble 用空占位拼出阶段并判失败 → 回炉再拼一轮 →
-    # done(plan)。落库后这两章正文为空，Rust 收口为 failed，用户可再次重生成。
+    # 故无 chapter 事件，assemble 用空占位拼出阶段并判失败 → 回炉再拼一轮 → done。
+    #
+    # 关键：done 的 status 是 error 而不是 plan。旧实现在这里报 "plan"，
+    # 理由写的是「单章失败不再中止整条流」——把「流没断」当成了「结果成功」，
+    # 于是八章全空的计划对外自称生成成功。现在按章内容判成色：
+    # 一章都没成 → error（带骨架），部分成 → partial，全成 → plan。
     assert [event["type"] for event in events] == [
         "chapterStart",
         "chapterStart",
@@ -171,7 +175,10 @@ async def test_regen_service_error_yields_error_done(monkeypatch):
         "done",
     ]
     response = events[-1]["response"]
-    assert response["status"] == "plan", "单章失败不再中止整条流"
+    assert response["status"] == "error", "一章都没成不能报成功"
+    assert response["error"]["code"] == "all_chapters_failed"
+    # regen 契约不变：done 包络不带 plan，数据由前置 phase/chapter 事件携带
+    assert response["plan"] is None
     phase_event = next(event for event in events if event["type"] == "phase")
     placeholder = phase_event["phase"]["chapters"][0]
     assert not (placeholder.get("contentMd") or "").strip(), "失败章正文应为空"

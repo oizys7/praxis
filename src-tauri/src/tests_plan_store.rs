@@ -987,9 +987,12 @@ async fn test_settle_terminal_error_with_phase_rows_completes(pool: PgPool) {
     plan_store::upsert_phase(&pool, plan_id, 0, &sample_phase("阶段甲", &["甲章"]))
         .await
         .unwrap();
-    assert!(plan_store::all_chapters_complete(&pool, plan_id)
-        .await
-        .unwrap());
+    assert_eq!(
+        plan_store::plan_status_of_chapters(&pool, plan_id)
+            .await
+            .unwrap(),
+        plan_state::PlanStatus::Complete
+    );
 
     commands::settle_terminal_with_hours(&pool, plan_id, "error", None)
         .await
@@ -1002,12 +1005,12 @@ async fn test_settle_terminal_error_with_phase_rows_completes(pool: PgPool) {
         status, "complete",
         "有阶段内容的 error 终态应翻 complete（可重生成/重看）"
     );
-    assert!(
-        matches!(
-            plan_store::all_chapters_complete(&pool, plan_id).await,
-            Ok(true)
-        ),
-        "全章成功应保留成立（存在性为真，非仅查询成功）"
+    assert_eq!(
+        plan_store::plan_status_of_chapters(&pool, plan_id)
+            .await
+            .unwrap(),
+        plan_state::PlanStatus::Complete,
+        "全章成功应判定为 complete（不是 partial）"
     );
 }
 
@@ -1709,16 +1712,16 @@ async fn sql_phase_status_matches_pure_function(pool: PgPool) {
             "第 {case_index} 组（{statuses:?}）：SQL 与 phase_of_chapters 不一致"
         );
 
-        // 计划级配对：all_chapters_complete 已走纯函数，这里锁住它与
-        // plan_of_chapters 的等价关系（防止将来有人改回 SQL 而口径漂移）
-        let all_complete = plan_store::all_chapters_complete(&pool, plan_id)
+        // 计划级配对：库侧读回的三值必须与纯函数逐组相等。这里锁的是三态
+        // （complete / partial / failed），不只是「是否 complete」——二值口径
+        // 正是「部分可用被压成失败」的来源。
+        let from_db = plan_store::plan_status_of_chapters(&pool, plan_id)
             .await
             .unwrap();
-        let expected_plan_complete =
-            plan_state::plan_of_chapters(statuses) == plan_state::PlanStatus::Complete;
+        let expected_plan = plan_state::plan_of_chapters(statuses);
         assert_eq!(
-            all_complete, expected_plan_complete,
-            "第 {case_index} 组（{statuses:?}）：all_chapters_complete 与 plan_of_chapters 不一致"
+            from_db, expected_plan,
+            "第 {case_index} 组（{statuses:?}）：库侧三值与 plan_of_chapters 不一致"
         );
     }
 }

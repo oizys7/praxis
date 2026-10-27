@@ -539,6 +539,16 @@ function formatTime(iso: string): string {
                     />
                     生成中
                   </Badge>
+                  <!-- 三态：generating / partial / failed。
+                       partial 不是"失败的近似"——它有可用内容，只是缺了几章，
+                       所以用中性色而不是警示色，措辞也直说"部分完成" -->
+                  <Badge
+                    v-if="item.status === 'partial'"
+                    variant="outline"
+                    class="text-muted-foreground"
+                  >
+                    部分完成
+                  </Badge>
                   <Badge v-if="item.status === 'failed'" variant="destructive">
                     生成失败
                   </Badge>

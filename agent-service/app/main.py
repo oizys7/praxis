@@ -34,6 +34,7 @@ from app.llm import probe_llm, reset_chat_model_cache
 from app.logging_config import setup_logging, uvicorn_log_config
 from app.schemas import (
     AgentSettingsModel,
+    ErrorDetail,
     GenerationSubmit,
     HealthResponse,
     PlanResponse,
@@ -96,13 +97,35 @@ async def _log_requests(request: Request, call_next):
 # ---------------------------------------------------------------------------
 
 
+def _plan_result_status(plan: StudyPlan) -> str:
+    """按章节正文判定这次生成的成色（章级口径）。
+
+    与 Rust 侧 `plan_state::plan_of_chapters` 同义，只是表达在不同语言里：
+    全有正文 → plan；一部分有 → partial；一章都没有 → error。
+
+    为什么不能只看「图跑完了没有」：自愈链跑完之后，图一定会给出 plan 键——
+    哪怕八章全空。那是「已经放弃自愈」的状态，再用「成功」这个词描述它，
+    就把最贵的一格信息（哪几章得重来）丢掉了。
+    """
+    chapters = [chapter for phase in plan.phases for chapter in phase.chapters]
+    filled = [chapter for chapter in chapters if (chapter.content_md or "").strip()]
+    if filled and len(filled) == len(chapters):
+        return "plan"
+    if filled:
+        return "partial"
+    return "error"
+
+
 def build_response(final_state: dict[str, Any]) -> PlanResponse:
     """把图终态组装成统一响应包络（后台生成任务使用的纯函数）。
 
     路径一：clarify 节点判定信息不完整，返回澄清问题；
-    路径二：正常产出计划。
+    路径二：按章节内容给出 plan / partial / error 三态之一。
     业务异常不在此处理：可预期异常已由 llm 层翻译为 AgentServiceError，
     事件管道生成器捕获后转成 status=error 的 done 终态。
+
+    一章都没成时仍然带上 plan（骨架）：大纲、阶段目标、项目要求本身有价值，
+    用户能据此看到「本来要讲什么」并直接逐章重试，而不是拿到一个空响应。
     """
     # 路径一：澄清问题非空即 clarification 终态
     if final_state.get("clarifications"):
@@ -111,9 +134,19 @@ def build_response(final_state: dict[str, Any]) -> PlanResponse:
             clarifications=list(final_state["clarifications"]),
         )
 
-    # 路径二：正常产出计划
+    # 路径二：产出计划，并按正文判定成色
     plan = StudyPlan.model_validate(final_state["plan"])
-    return PlanResponse(status="plan", plan=plan)
+    status = _plan_result_status(plan)
+    if status == "error":
+        return PlanResponse(
+            status="error",
+            plan=plan,
+            error=ErrorDetail(
+                code="all_chapters_failed",
+                message="所有章节都未能生成，已保留大纲骨架，可逐章重新生成",
+            ),
+        )
+    return PlanResponse(status=status, plan=plan)
 
 
 @app.post("/api/regenerate/stream")

@@ -460,7 +460,9 @@ function onPlanRefreshed(plan: StudyPlan) {
     <div v-else class="mx-auto w-full max-w-6xl px-6 py-8 2xl:max-w-7xl">
       <!-- 整计划重生成：仅「大纲未产出」（failed 且零阶段）时提供入口 -->
       <div
-        v-if="historyMode && resultRowStatus === 'failed' && resultPhaseCount === 0"
+        v-if="
+          historyMode && resultRowStatus === 'failed' && resultPhaseCount === 0
+        "
         class="mx-auto mb-4 w-full max-w-3xl rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3"
       >
         <p class="text-sm text-muted-foreground">
@@ -477,6 +479,18 @@ function onPlanRefreshed(plan: StudyPlan) {
           <RotateCcw class="h-4 w-4" aria-hidden="true" />
           {{ replayingPlan ? "正在提交…" : "重新生成整个计划" }}
         </Button>
+      </div>
+      <!-- 部分完成：有内容可用，只是缺了几章。刻意与上面的"整计划失败"分开：
+           那种情况没有任何内容可看，这里恰恰相反——所以给人的动作是
+           "把缺的补上"，而不是"从头再来" -->
+      <div
+        v-if="historyMode && resultRowStatus === 'partial'"
+        class="mx-auto mb-4 w-full max-w-3xl rounded-lg border border-border bg-muted/40 px-4 py-3"
+      >
+        <p class="text-sm text-muted-foreground">
+          这份计划有一部分章节没能生成，已生成的章节都保留着。
+          翻到空白的章节点「重新生成」即可单独补齐，不必重做整份计划。
+        </p>
       </div>
       <!-- 返回列表：位置与样式不变，只是滚动时不跟着走。
            用 sticky 而不是 fixed：sticky 留在内容流原位（自动对齐内容区左缘，

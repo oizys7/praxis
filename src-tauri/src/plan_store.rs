@@ -487,19 +487,24 @@ pub async fn set_chapter_generating(
     Ok(())
 }
 
-/// 全章脈完成判定（2026-10-16 用户定案，终态收尾唯一口径）：总计划在完成
-/// 时校验所有章脈状态——存在至少一章 且 全部章脈 complete → true（总状态
-/// complete）；存在任一失败章/未完成的滞留章（骨架 pending）或零章行
-/// → false（总状态 failed，finalize_failed 将 pending 子行翻 failed）。
-/// 骨架行均为 pending，不充当内容证据；章三态 pending（生成中）/
-/// complete（生成成功）/ failed（生成失败）。消费方：commands 终态收尾
-/// （done 终态与断线耗尽收尾）。
-pub async fn all_chapters_complete(pool: &PgPool, plan_id: Uuid) -> Result<bool, AgentError> {
+/// 计划状态的章级三值判定（`Complete` / `Partial` / `Failed`）。
+///
+/// 收尾结算的唯一入口。`Partial` 存在的理由：自愈链跑完之后，一份 7 章可用、
+/// 1 章空缺的计划既不该报成功（用户在别处会读到空章），也不该报失败
+/// （7 章真内容被一句话抹掉）。二值口径只能在这两种谎之间二选一。
+///
+/// 仍是「读全部章状态 + 纯函数」的低频路径（收尾/清扫各一次），与热路径上
+/// `upsert_chapter` 的 SQL 常量不冲突：热路径只判「能否翻 complete」，
+/// 生成进行中翻 partial 没有意义（其余章只是还没轮到）。
+pub async fn plan_status_of_chapters(
+    pool: &PgPool,
+    plan_id: Uuid,
+) -> Result<plan_state::PlanStatus, AgentError> {
     // 判定口径唯一来源：plan_state::plan_of_chapters（纯函数）。
     // 这是低频路径——终态收尾与启动清扫各调一次，不在「每章写入」的热路径上，
     // 因此用「读全部章状态 + 纯函数」换取可测的单一语义；热路径上的状态推进
     // 仍走 SQL 常量（SQL_PHASE_STATUS_CASE），两者由配对测试锁死。
-    // 未知状态兜底 Pending：plan_of_chapters 视其为「非 complete」→ 保守判 failed。
+    // 未知状态兜底 Pending：plan_of_chapters 视其为「非 complete」→ 不放宽判定。
     let statuses: Vec<String> = sqlx::query_scalar(
         "SELECT c.status FROM chapters c JOIN phases p ON c.phase_id = p.id
          WHERE p.plan_id = $1",
@@ -514,7 +519,7 @@ pub async fn all_chapters_complete(pool: &PgPool, plan_id: Uuid) -> Result<bool,
             plan_state::ChapterStatus::parse(raw).unwrap_or(plan_state::ChapterStatus::Pending)
         })
         .collect();
-    Ok(plan_state::plan_of_chapters(&parsed) == plan_state::PlanStatus::Complete)
+    Ok(plan_state::plan_of_chapters(&parsed))
 }
 
 /// 启动自愈报告（幂等；每次启动执行一次）。
@@ -788,13 +793,14 @@ pub async fn finalize_plan(
     Ok(())
 }
 
-/// regenerate 成功收尾（章级口径，2026-10-16 修复）：done(plan) 后按
-/// all_chapters_complete 判定——全部章节 complete（至少一章存在且零非
-/// complete）时把计划行翻 complete，**含 failed 行**。旧守卫语义
-/// （WHERE status <> 'failed'）导致重生成补齐全部失败章节后计划行永久
-/// 卡 failed、内容却完好（2026-10-16 计划 68c1aee0 实锤）。
-/// 尚有非 complete 章（如其余 pending）时不动行状态，计划级语义仍由
-/// 后续重生成推进。消费方：commands regenerate 双命令的 done(plan) 路径。
+/// regenerate 收尾（章级三值口径）：done(plan) 后先收掉本次没产出的子行
+/// （图内静默失败的章不会发事件，不收口就永远停在 generating、前端一直转圈），
+/// 再按章内容算出 complete / partial / failed 并无条件写回。
+///
+/// 历史两版都是二值思维：更早的 `WHERE status <> 'failed'` 守卫让补齐失败的
+/// 计划行永久卡 failed（2026-10-16 计划 68c1aee0 实锤）；随后改成「只在全章
+/// complete 时写回」，部分成功时又停在原状态。三值口径消除了这两个死角。
+/// 消费方：commands regenerate 双命令的 done(plan) 路径。
 /// 整计划重生成前的重置：清空旧的派生内容与生成上下文，把计划行拉回
 /// generating。请求参数（目标/水平/时长/周数/偏好/学习日）沿用库中原值。
 ///
@@ -854,17 +860,16 @@ pub async fn finalize_regen_complete(pool: &PgPool, plan_id: Uuid) -> Result<(),
     // 转圈。finalize_failed 只动 pending|generating，complete 章不受影响，
     // 因此对「部分成功的重生成」也只是把没产出的部分标成失败。
     finalize_failed(pool, plan_id).await?;
-    if !all_chapters_complete(pool, plan_id).await? {
-        info!(%plan_id, "重生成收口：尚有非 complete 章节，计划行状态保持");
-        return Ok(());
-    }
+    // 三值落地：原来只有「全 complete」才写回，部分成功时会停在旧状态
+    // （典型是停在 failed 永不翻身）。现在按章级口径无条件重算。
+    let status = plan_status_of_chapters(pool, plan_id).await?;
     sqlx::query("UPDATE plans SET status = $2, updated_at = now() WHERE id = $1")
         .bind(plan_id)
-        .bind(plan_state::PlanStatus::Complete.as_str())
+        .bind(status.as_str())
         .execute(pool)
         .await
         .map_err(|e| fail("收尾重生成计划状态", e))?;
-    info!(%plan_id, "重生成收口：全章节 complete，计划行已置 complete");
+    info!(%plan_id, status = status.as_str(), "重生成收口：计划行状态已按章级口径更新");
     Ok(())
 }
 

@@ -501,12 +501,17 @@ class PlanResponse(CamelModel):
     """三端统一响应包络。
 
     status 取值：
-    - "plan"：生成成功，plan 非空
+    - "plan"：全部章节都有正文
+    - "partial"：一部分章节有正文、一部分没有（自愈链已跑完但没救回来）
     - "clarification"：输入信息不完整，clarifications 为澄清问题列表
-    - "error"：失败，error 非空
+    - "error"：一章都没成（仍会带 plan 骨架，见 build_response 说明）
+
+    "partial" 不是"plana 的近似"，而是与 plan / error 并列的第四种事实：七章真内容
+    值得留下，第八章的空缺必须让用户知道。把两者压成同一个值，等于让响应
+    对结果质量撒谎。
     """
 
-    status: Literal["plan", "clarification", "error"]
+    status: Literal["plan", "partial", "clarification", "error"]
     plan: StudyPlan | None = None
     clarifications: list[str] | None = None
     error: ErrorDetail | None = None

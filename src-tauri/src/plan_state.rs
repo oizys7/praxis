@@ -39,11 +39,16 @@ pub enum ChapterStatus {
 /// 阶段状态：取值域与章节相同，语义由 `phase_of_chapters` 汇总得出。
 pub type PhaseStatus = ChapterStatus;
 
-/// 计划状态：generate 期间 generating，收尾后 complete / failed。
+/// 计划状态：generate 期间 generating，收尾后 complete / partial / failed。
+///
+/// `Partial` 是「部分可用」这一格的正式名字：至少一章有正文、至少一章没有。
+/// 它既不是成功也不是失败——把 7 章可用与 8 章全废压成同一个值，等于让响应
+/// 对结果质量撒谎（HTTP 有 206 也是同一个道理）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PlanStatus {
     Generating,
     Complete,
+    Partial,
     Failed,
 }
 
@@ -97,6 +102,7 @@ status_str!(ChapterStatus, {
 status_str!(PlanStatus, {
     Generating => "generating",
     Complete => "complete",
+    Partial => "partial",
     Failed => "failed",
 });
 
@@ -154,16 +160,26 @@ pub fn phase_of_chapters(statuses: &[ChapterStatus]) -> PhaseStatus {
     }
 }
 
-/// 计划终态：**章级口径**——至少一章存在且全部 `Complete` → `Complete`，
-/// 否则 `Failed`（含零章：纯骨架/生成中断）。
+/// 计划终态：**章级三值口径**。
 ///
-/// 这条口径取代了历史上三版判定（any-phase-rows → has_substantive_phase_rows →
-/// all_chapters_complete），现在只有这一个定义。
+/// - 零章，或没有任何一章 `Complete` → `Failed`（纯骨架 / 全程失败）
+/// - 全部 `Complete` → `Complete`
+/// - 其余（有可用的、也有不可用的）→ `Partial`
+///
+/// 这条口径取代了历史上三版二值判定（any-phase-rows → has_substantive_phase_rows
+/// → all_chapters_complete）。二值的问题是：自愈链跑完之后，一份 7 章可用、
+/// 1 章空缺的计划会被标成 failed，用户看到「全部失败」，而数据库里躺着 7 章真内容。
 pub fn plan_of_chapters(statuses: &[ChapterStatus]) -> PlanStatus {
-    if !statuses.is_empty() && statuses.iter().all(|s| *s == ChapterStatus::Complete) {
+    let complete = statuses
+        .iter()
+        .filter(|status| **status == ChapterStatus::Complete)
+        .count();
+    if complete == 0 {
+        PlanStatus::Failed
+    } else if complete == statuses.len() {
         PlanStatus::Complete
     } else {
-        PlanStatus::Failed
+        PlanStatus::Partial
     }
 }
 
@@ -257,11 +273,20 @@ mod tests {
         use ChapterStatus::*;
         assert_eq!(plan_of_chapters(&[]), PlanStatus::Failed, "零章 → failed");
         assert_eq!(plan_of_chapters(&[Pending, Pending]), PlanStatus::Failed);
-        assert_eq!(plan_of_chapters(&[Complete, Failed]), PlanStatus::Failed);
+        assert_eq!(
+            plan_of_chapters(&[Failed, Failed]),
+            PlanStatus::Failed,
+            "一章都没成 → failed，不是 partial"
+        );
+        // 部分可用：至少一章有正文、至少一章没有——这是 partial 唯一的定义
+        assert_eq!(plan_of_chapters(&[Complete, Failed]), PlanStatus::Partial);
+        assert_eq!(plan_of_chapters(&[Failed, Complete]), PlanStatus::Partial);
         assert_eq!(
             plan_of_chapters(&[Complete, Generating]),
-            PlanStatus::Failed
+            PlanStatus::Partial,
+            "重生成中的章算不可用"
         );
+        assert_eq!(plan_of_chapters(&[Complete]), PlanStatus::Complete);
         assert_eq!(
             plan_of_chapters(&[Complete, Complete]),
             PlanStatus::Complete
@@ -281,6 +306,7 @@ mod tests {
         for status in [
             PlanStatus::Generating,
             PlanStatus::Complete,
+            PlanStatus::Partial,
             PlanStatus::Failed,
         ] {
             assert_eq!(PlanStatus::parse(status.as_str()), Some(status));
