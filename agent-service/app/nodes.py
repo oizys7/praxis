@@ -714,7 +714,7 @@ async def regenerate_chapter(
     outline: dict[str, Any],
     phase_index: int,
     chapter_index: int,
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], dict[str, Any]]:
     """单章重生成（regen 端点 chapterIndex 指定路径）。
 
     返回 ``(Chapter camelCase dict, 生成留档 trace)``，与图内章节扩展同形。
