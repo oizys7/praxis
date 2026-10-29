@@ -2,14 +2,14 @@
 
 仓库级自动化脚本，统一从**仓库根目录**通过 npm scripts 调用（Windows / macOS / Linux 通用）。
 
-首次使用前：在仓库根执行一次 `npm run setup`（等价于分别跑根目录与 `frontend/`
+首次使用前：在仓库根执行一次 `npm run init`（等价于分别跑根目录与 `frontend/`
 的 `npm install`、`agent-service` 的 `uv sync`，并预取 Rust 依赖、生成 config.json）。
 
 ## 总览
 
 | 文件 | 调用方式 | 职责 |
 | --- | --- | --- |
-| `setup.mjs` | `npm run setup` | 一次性初始化三端依赖：根 / frontend 的 npm、agent-service 的 uv sync、cargo fetch |
+| `init.mjs` | `npm run init` | 一次性初始化三端依赖：根 / frontend 的 npm、agent-service 的 uv sync、cargo fetch |
 | `dev.mjs` | `npm run dev` | 一键启动开发环境：uvicorn + tauri dev（自动带起 Vite） |
 | `check.mjs` | `npm run check` | 三端自检：Python（语法 + ruff lint）→ YAML → Rust（check + clippy）→ 前端（vue-tsc） |
 | `format.mjs` | `npm run format` | 三端格式化：ruff（Python）+ cargo fmt（Rust）+ Prettier（前端 / 脚本 / Markdown） |
@@ -19,7 +19,7 @@
 
 ## 用法说明
 
-### `npm run setup` — setup.mjs
+### `npm run init` — init.mjs
 
 三端依赖一次性装好，幂等可重复执行：
 

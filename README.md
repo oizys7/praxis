@@ -215,7 +215,7 @@ Rust 端与 Python 端共享的启动配置文件（模板见仓库根 `config.e
 
 ```bash
 # 一条命令装好三端依赖（幂等，可重复执行）
-npm run setup
+npm run init
 ```
 
 它依次做四件事：`frontend/` 与根目录的 `npm install`、`agent-service/` 的

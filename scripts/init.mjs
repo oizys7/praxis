@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * scripts/setup.mjs —— 一次性初始化三端依赖
+ * scripts/init.mjs —— 一次性初始化三端依赖
  *
  * 为什么要有这个脚本：仓库的依赖分散在四个地方（根目录的 Prettier、
  * frontend/ 的 Vue 工具链、agent-service/ 的 uv 虚拟环境、src-tauri/ 的
@@ -11,7 +11,10 @@
  *
  * 幂等：可重复执行，已装好的依赖走缓存（npm/uv 都不会重复下载）。
  *
- * 用法：在仓库根目录执行 `npm run setup`。
+ * 用法：在仓库根目录执行 `npm run init`。
+ *
+ * 注意区分：`npm init`（不带 run）是 npm 内置命令，会去创建 package.json，
+ * 与本脚本无关。
  */
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync } from "node:fs";
@@ -21,7 +24,7 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 function log(message) {
-  console.log(`[setup] ${message}`);
+  console.log(`[init] ${message}`);
 }
 
 /**
@@ -55,7 +58,7 @@ function runStep(name, command, args, cwd) {
     shell: true,
   });
   if (result.status !== 0) {
-    console.error(`\n[setup] ✗ ${name} 失败（退出码 ${result.status}）`);
+    console.error(`\n[init] ✗ ${name} 失败（退出码 ${result.status}）`);
     process.exit(result.status ?? 1);
   }
 }
@@ -71,7 +74,7 @@ const REQUIRED_TOOLS = [
 
 const missing = REQUIRED_TOOLS.filter(([command]) => !hasCommand(command));
 if (missing.length > 0) {
-  console.error("[setup] ✗ 缺少前置工具，请先安装：\n");
+  console.error("[init] ✗ 缺少前置工具，请先安装：\n");
   for (const [command, hint] of missing) {
     console.error(`  · ${command} —— ${hint}`);
   }
@@ -84,7 +87,7 @@ if (missing.length > 0) {
 const hasCargo = hasCommand("cargo");
 if (!hasCargo) {
   console.warn(
-    "[setup] ! 未检测到 cargo（Rust）。前端与 Python 部分照常安装，但\n" +
+    "[init] ! 未检测到 cargo（Rust）。前端与 Python 部分照常安装，但\n" +
       "         `npm run dev` / `npm run build` 会在编译桌面端时失败。\n" +
       "         安装：https://rustup.rs/",
   );
@@ -118,7 +121,7 @@ if (hasCargo) {
   });
   if (fetched.status !== 0) {
     console.warn(
-      "[setup] ! cargo fetch 未成功，跳过（不影响后续编译，只是首次会慢）",
+      "[init] ! cargo fetch 未成功，跳过（不影响后续编译，只是首次会慢）",
     );
   }
 }
@@ -138,9 +141,10 @@ if (!existsSync(configPath) && existsSync(templatePath)) {
 // 4. 收尾
 // ---------------------------------------------------------------------------
 log("");
-log("✓ 初始化完成。下一步：npm run dev");
+log("✓ 初始化完成（脚本可重复执行：依赖已就绪时第二次运行不会有任何改变）");
+log("  下一步：npm run dev");
 if (!hasCargo) {
   log(
-    "  注意：桌面端需要 Rust，装好 cargo 后再跑一次 npm run setup（或直接 npm run dev）。",
+    "  注意：桌面端需要 Rust，装好 cargo 后再跑一次 npm run init（或直接 npm run dev）。",
   );
 }
