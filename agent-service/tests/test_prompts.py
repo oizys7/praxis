@@ -1,4 +1,4 @@
-"""prompts 渲染 smoke：outline / phase / chapter 三份提示词全占位符渲染成功。
+"""prompts 渲染 smoke：outline / chapter 等提示词全占位符渲染成功。
 
 随任务 19（叙事化重写 + level 注入）引入：
 - 渲染后不得残留 {{ var }} 占位符（漏传变量会静默渲染为空串，破坏受众/学时注入）；
@@ -14,8 +14,10 @@ import pytest
 from app import prompts, validators
 
 # 叙事化提示词（章级扇出拓扑：chapter 为主链 + 重生成共用；
-# phase_extras 为 wrap 轻量收尾；phase 仅发掘于 regen 全阶段路径）
-_STORY_PROMPTS = ("outline", "phase", "phase_extras", "chapter")
+# phase_extras 为 wrap 轻量收尾。
+# 注：phase.yaml（整阶段一次生成）已随「逐章扇出」与「regen 并入统一图」下线，
+# 它的唯一消费者 _expand_phase_draft 已删除。
+_STORY_PROMPTS = ("outline", "phase_extras", "chapter")
 
 # 与各提示词 human 模板占位符一一对应的填充值（无默认、全覆盖）
 _FULL_VARIABLES: dict[str, str] = {
@@ -65,7 +67,7 @@ def test_story_prompt_fully_rendered(name):
     )
 
 
-@pytest.mark.parametrize("name", ("phase", "chapter"))
+@pytest.mark.parametrize("name", ("chapter",))
 def test_mermaid_whitelist_matches_validators(name):
     """正文规格里的图类型白名单与 validators.MERMAID_DIAGRAM_TYPES 词级逐字一致。
 
@@ -87,14 +89,6 @@ def test_mermaid_whitelist_matches_validators(name):
 # 两端同时校验才能抓到「模板要了没给」与「给了模板没用」两类漂移。
 _PROMPT_VARIABLES: dict[str, set[str]] = {
     "outline": {"goal", "level", "weekly_hours", "weeks", "interests", "background"},
-    "phase": {
-        "level",
-        "phase_outline",
-        "plan_context",
-        "review_notes",
-        "weekly_hours",
-        "weeks",
-    },
     "phase_extras": {
         "goal",
         "level",

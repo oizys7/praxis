@@ -43,7 +43,6 @@ from app.mock import (
     build_mock_chapter,
     build_mock_extras,
     build_mock_outline,
-    build_mock_phase,
 )
 from app.resource_check import verify_resources
 from app.schemas import (
@@ -54,7 +53,6 @@ from app.schemas import (
     PlanOutline,
     PlanRequest,
     ReviewOutput,
-    StudyPhase,
 )
 from app.search import current_provider
 from app.version_check import detect_versions
@@ -458,43 +456,6 @@ def _plan_summary(plan: dict[str, Any], phase_offset: int = 0) -> str:
     return chr(10).join(lines)
 
 
-async def _expand_phase_draft(
-    request: dict[str, Any],
-    phase_outline: dict[str, Any],
-    phase_index: int,
-    *,
-    plan_context: str,
-    review_notes: str,
-) -> dict[str, Any]:
-    """整阶段重生成（regen_phase 端点专用路径），返回 StudyPhase camelCase dict。
-
-    图内主线已改为章级扇出后，本函数仅供 POST /api/regenerate/stream
-    chapterIndex 缺省路径；同用 _EXPAND_SEMAPHORE 并发闸与解析重试。
-    """
-    if settings.allow_mock_llm:
-        return build_mock_phase(request, phase_outline, phase_index)
-    if not has_llm_config():
-        raise AgentServiceError(_NO_KEY_HINT)
-
-    # 受众与学时注入：level 映射为受众描述，weekly_hours/weeks 供
-    # estimatedHours 相称性表述使用（request 为 camelCase dict）
-    req = PlanRequest.model_validate(request)
-    async with _EXPAND_SEMAPHORE:
-        phase = await invoke_structured(
-            StudyPhase,
-            "phase",
-            {
-                "plan_context": plan_context,
-                "phase_outline": json.dumps(phase_outline, ensure_ascii=False),
-                "review_notes": review_notes,
-                "level": _level_audience(req),
-                "weekly_hours": str(req.weekly_hours),
-                "weeks": str(req.weeks),
-            },
-        )
-    return phase.model_dump(mode="json", by_alias=True)
-
-
 def _chapter_research_snippets(
     phase_outline: dict[str, Any], chapter_index: int
 ) -> list[dict[str, Any]]:
@@ -648,26 +609,6 @@ async def _expand_phase_extras(
     return extras_dump
 
 
-async def regenerate_phase_extras(
-    request: dict[str, Any],
-    outline: dict[str, Any],
-    phase_index: int,
-) -> dict[str, Any]:
-    """重生成端点专用：阶段轻装（practice / assignments / project）。
-
-    串行逐章重生成（tasks._regen_event_dicts）收尾时调用，与图内
-    expand_phase_wrap_node 同源上下文注入；评审意见注入占位文案。
-    """
-    phase_outline = _phase_outline_at(outline, phase_index)
-    return await _expand_phase_extras(
-        request,
-        phase_outline,
-        phase_index,
-        plan_context=build_plan_context(outline, phase_index),
-        review_notes=_FIRST_EXPAND_REVIEW_NOTES,
-    )
-
-
 def _chapter_failed(chapter: dict[str, Any]) -> bool:
     """章级软校验：contentMd trim 空或不足 validators 硬底线 → 失败可重扩。
 
@@ -682,53 +623,6 @@ def _chapter_failed(chapter: dict[str, Any]) -> bool:
 # 端点级重生成封装：POST /api/regenerate/stream 两条路径直接复用本节函数
 # （build_plan_context / Semaphore / 解析错误反馈重试与图内扩展完全同源）
 # ---------------------------------------------------------------------------
-
-
-def _phase_outline_at(outline: dict[str, Any], phase_index: int) -> dict[str, Any]:
-    """取指定阶段的大纲 dict（越界与空大纲由端点层先行校验，这里纯取值）。"""
-    return (outline.get("phases") or [])[phase_index]
-
-
-async def regenerate_phase(
-    request: dict[str, Any],
-    outline: dict[str, Any],
-    phase_index: int,
-) -> dict[str, Any]:
-    """全阶段重生成（regen 端点 chapterIndex 缺省路径）：返回 StudyPhase camelCase dict。
-
-    复用 _expand_phase_draft：同用 _EXPAND_SEMAPHORE 并发闸与解析重试；
-    评审意见注入占位文案（重生成无评审误会，phase.yaml 据此跳过意见落实）。
-    """
-    phase_outline = _phase_outline_at(outline, phase_index)
-    return await _expand_phase_draft(
-        request,
-        phase_outline,
-        phase_index,
-        plan_context=build_plan_context(outline, phase_index),
-        review_notes=_FIRST_EXPAND_REVIEW_NOTES,
-    )
-
-
-async def regenerate_chapter(
-    request: dict[str, Any],
-    outline: dict[str, Any],
-    phase_index: int,
-    chapter_index: int,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """单章重生成（regen 端点 chapterIndex 指定路径）。
-
-    返回 ``(Chapter camelCase dict, 生成留档 trace)``，与图内章节扩展同形。
-    结构合法性由 Pydantic Chapter 模型兜底；整阶段范围的校验/评审由编排层负责。
-    """
-    phase_outline = _phase_outline_at(outline, phase_index)
-    return await _expand_chapter_draft(
-        request,
-        phase_outline,
-        phase_index,
-        chapter_index,
-        plan_context=build_plan_context(outline, phase_index),
-        review_notes=_FIRST_EXPAND_REVIEW_NOTES,
-    )
 
 
 # ---------------------------------------------------------------------------
