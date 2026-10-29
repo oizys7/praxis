@@ -214,22 +214,25 @@ Rust 端与 Python 端共享的启动配置文件（模板见仓库根 `config.e
 前置依赖：[Rust](https://rustup.rs/)（含 `cargo`）、Node.js ≥ 18、Python ≥ 3.11、[uv](https://docs.astral.sh/uv/)（推荐，用于 Python 虚拟环境）。
 
 ```bash
-# 1) 前端依赖
-cd frontend
-npm install
-
-# 2) 根目录脚本依赖（Prettier）
-cd ..
-npm install
-
-# 3) Python Agent 服务（uv sync：自动创建 .venv 并按 pyproject.toml 安装依赖）
-cd agent-service
-uv sync
-
-# 4) 配置：LLM 五家提供商在应用内置「设置」页配置（保存即热加载，无需改文件）；
-#    服务监听 / 日志 / 离线演示开关等运维项在仓库根 config.json
-#    （首次 npm run dev 时自动从 config.example.json 复制模板，可直接用默认值）
+# 一条命令装好三端依赖（幂等，可重复执行）
+npm run setup
 ```
+
+它依次做四件事：`frontend/` 与根目录的 `npm install`、`agent-service/` 的
+`uv sync`（自动创建 `.venv`）、`cargo fetch` 预取 Rust 依赖；并在仓库根没有
+`config.json` 时从 `config.example.json` 复制模板（默认值可直接运行）。
+缺少 `node` / `npm` / `uv` 时会先停下来提示安装地址，而不是装到一半报错。
+
+也可以手工分步执行：
+
+```bash
+cd frontend && npm install      # 前端依赖
+cd .. && npm install            # 根目录脚本依赖（Prettier）
+cd agent-service && uv sync     # Python Agent（创建 .venv 并安装依赖）
+```
+
+配置说明：LLM 五家提供商在应用内置「设置」页配置（保存即热加载，无需改文件）；
+服务监听 / 日志 / 离线演示开关等运维项在仓库根 `config.json`。
 
 > Tauri 在 Windows 上还需要 WebView2（Win10/11 一般自带）与 Visual Studio C++ 构建工具。
 

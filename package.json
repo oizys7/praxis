@@ -5,6 +5,7 @@
   "license": "MIT",
   "description": "Praxis 学习路线规划 Agent 桌面应用",
   "scripts": {
+    "setup": "node scripts/setup.mjs",
     "dev": "node scripts/dev.mjs",
     "check": "node scripts/check.mjs",
     "format": "node scripts/format.mjs",
