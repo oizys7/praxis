@@ -8,11 +8,11 @@ export const badgeVariants = cva(
   {
     variants: {
       variant: {
-        default: "border-transparent bg-primary text-primary-foreground shadow",
-        secondary: "border-transparent bg-secondary text-secondary-foreground",
-        outline: "text-foreground",
-        success:
-          "border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+        /* 语义归拢三色：书绿成长 / 墨蓝进行 / 朱批警示，其余一律沙框中性 */
+        default: "border-border bg-secondary text-secondary-foreground",
+        secondary: "border-border bg-secondary text-secondary-foreground",
+        outline: "border-border text-foreground",
+        success: "border-transparent bg-success/15 text-success",
         destructive: "border-transparent bg-destructive/15 text-destructive",
       },
     },

@@ -1,0 +1,22 @@
+{
+  "_comment": "Praxis 应用配置模板：复制为 config.json（已入 .gitignore）并填写。装载查找顺序：① --config <路径> 命令行参数（sidecar 模式）② 开发模式仓库根 config.json（检测到 src-tauri 工作区标记时）③ 应用数据目录 config.json（如 %APPDATA%/com.praxis.desktop/config.json）。未知字段忽略；缺省段落/字段/显式 null 回退内置默认值。逐字段说明见 README「配置文件 config.json」表格。",
+  "database": {
+    "url": "",
+    "testUrl": ""
+  },
+  "logging": {
+    "level": "info",
+    "dir": ""
+  },
+  "service": {
+    "host": "127.0.0.1",
+    "port": 8000
+  },
+  "agent": {
+    "mockMode": false
+  },
+  "secrets": {
+    "keyDir": "",
+    "sealPassword": ""
+  }
+}

@@ -1,15 +1,16 @@
 <script setup lang="ts">
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 
 /**
  * ClarificationPanel：Agent 判定输入信息不完整时，
  * 展示 clarify 节点返回的澄清问题列表，提示用户补充后再试。
  */
-defineProps<{ questions: string[] }>()
+defineProps<{ questions: string[] }>();
 </script>
 
 <template>
-  <Card class="animate-fade-in-up border-amber-300/60 bg-amber-50/50 dark:bg-amber-950/20">
+  <!-- 语义归拢：澄清不是警示（amber 双硬编码弃用），而是主流程的补充邀约，用墨蓝 -->
+  <Card class="border-primary/30 bg-primary/5">
     <CardHeader>
       <CardTitle class="flex items-center gap-2 text-base">
         <span>🤔</span>

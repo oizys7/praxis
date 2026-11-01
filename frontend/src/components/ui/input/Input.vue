@@ -1,21 +1,21 @@
 <script setup lang="ts">
-import type { HTMLAttributes } from 'vue'
-import { cn } from '@/lib/utils'
+import type { HTMLAttributes } from "vue";
+import { cn } from "@/lib/utils";
 
 /**
  * Input 组件（shadcn-vue 风格）。
  * 注意：type="number" 时 Vue 的 v-model 会自动做数字转换。
  */
 const props = defineProps<{
-  class?: HTMLAttributes['class']
-  type?: string
-  placeholder?: string
-  disabled?: boolean
-  min?: number
-  max?: number
-}>()
+  class?: HTMLAttributes["class"];
+  type?: string;
+  placeholder?: string;
+  disabled?: boolean;
+  min?: number;
+  max?: number;
+}>();
 
-const model = defineModel<string | number>({ default: '' })
+const model = defineModel<string | number>({ default: "" });
 </script>
 
 <template>

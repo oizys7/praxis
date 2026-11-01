@@ -34,7 +34,7 @@ def load_prompt(name: str) -> dict[str, Any]:
         raise FileNotFoundError(f"提示词文件不存在：{path}")
     data = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
-        raise ValueError(f"提示词文件 {path} 的根节点必须是映射（dict）")
+        raise TypeError(f"提示词文件 {path} 的根节点必须是映射（dict）")
     return data
 
 

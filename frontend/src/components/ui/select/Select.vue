@@ -1,18 +1,18 @@
 <script setup lang="ts">
-import type { HTMLAttributes } from 'vue'
-import { cn } from '@/lib/utils'
+import type { HTMLAttributes } from "vue";
+import { cn } from "@/lib/utils";
 
 /**
  * Select 组件：基于原生 <select> 的样式化封装。
  * 相比 reka-ui 的复合 Select 组件更轻量，够用且无焦点管理复杂度。
  */
 const props = defineProps<{
-  class?: HTMLAttributes['class']
-  options: Array<{ value: string; label: string }>
-  disabled?: boolean
-}>()
+  class?: HTMLAttributes["class"];
+  options: Array<{ value: string; label: string }>;
+  disabled?: boolean;
+}>();
 
-const model = defineModel<string>({ required: true })
+const model = defineModel<string>({ required: true });
 </script>
 
 <template>

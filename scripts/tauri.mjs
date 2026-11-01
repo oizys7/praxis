@@ -19,18 +19,18 @@ import { fileURLToPath } from "node:url";
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 const bin = path.join(
- ROOT,
- "frontend",
- "node_modules",
- ".bin",
- process.platform === "win32" ? "tauri.cmd" : "tauri",
+  ROOT,
+  "frontend",
+  "node_modules",
+  ".bin",
+  process.platform === "win32" ? "tauri.cmd" : "tauri",
 );
 
 // 引号包裹：路径可能含空格；shell:true 让 cmd/sh 负责 .cmd 解析
 const result = spawnSync(`"${bin}"`, process.argv.slice(2), {
- cwd: ROOT,
- stdio: "inherit",
- shell: true,
+  cwd: ROOT,
+  stdio: "inherit",
+  shell: true,
 });
 
 process.exit(result.status ?? 1);

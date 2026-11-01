@@ -6,5 +6,5 @@ import { twMerge } from "tailwind-merge";
  * clsx 处理条件类名，twMerge 去除冲突类名（后者优先）。
  */
 export function cn(...inputs: ClassValue[]) {
- return twMerge(clsx(inputs));
+  return twMerge(clsx(inputs));
 }
