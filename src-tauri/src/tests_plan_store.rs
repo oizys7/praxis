@@ -1039,21 +1039,25 @@ async fn test_settle_terminal_skeleton_only_fails(pool: PgPool) {
     );
 }
 
-/// 含失败章收尾：任一章生成失败 → 总状态 failed（部分成功不算成功，
-/// 失败部件保留内容可从详情页重生成）
+/// 含失败章收尾：一章 complete、一章 failed → 总状态 partial，保留已生成内容。
 #[sqlx::test]
 #[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
-async fn test_settle_terminal_failed_chapter_fails_total(pool: PgPool) {
+async fn test_settle_terminal_failed_chapter_sets_partial(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
-    plan_store::seed_outline(&pool, plan_id, &sample_outline(&["阶段甲"], &[1]), &[])
+    plan_store::seed_outline(&pool, plan_id, &sample_outline(&["阶段甲"], &[2]), &[])
         .await
         .unwrap();
-    plan_store::upsert_phase(&pool, plan_id, 0, &sample_phase("阶段甲", &["甲章"]))
-        .await
-        .unwrap();
-    // 模拟一醒章生成失败（其余章仍 complete）
-    sqlx::query("UPDATE chapters SET status = 'failed' WHERE idx = 0")
+    plan_store::upsert_phase(
+        &pool,
+        plan_id,
+        0,
+        &sample_phase("阶段甲", &["完整章", "失败章"]),
+    )
+    .await
+    .unwrap();
+    // 一章 complete、一章 failed，验证部分内容保留为 partial
+    sqlx::query("UPDATE chapters SET status = 'failed' WHERE idx = 1")
         .execute(&pool)
         .await
         .unwrap();
@@ -1065,10 +1069,7 @@ async fn test_settle_terminal_failed_chapter_fails_total(pool: PgPool) {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(
-        status, "failed",
-        "存在失败章时总状态必须为 failed（部分成功不算成功）"
-    );
+    assert_eq!(status, "partial", "有可用章节也有失败章时应保留为 partial");
 }
 
 /// 零内容收尾：未播种也未扩展任何阶段 → plans 置 failed（plan/error 终态同口径；
@@ -1161,11 +1162,127 @@ async fn test_sweep_stale_generating_only_touches_generating(pool: PgPool) {
     );
 }
 
-/// regen 收口（章级口径，2026-10-16 修复回归）：failed 行 + 全章节 complete
-/// → finalize_regen_complete 翻回 complete（旧守卫语义会永久卡 failed）
+/// 启动自愈沿用同一三值状态函数：一章正文可用、一章为空时必须是 partial，
+/// 不可把所有非 complete 情形都压成 failed。
 #[sqlx::test]
 #[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
-async fn test_finalize_regen_complete_heals_failed_row(pool: PgPool) {
+async fn test_sweep_preserves_partial_plan_status(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+    plan_store::seed_outline(&pool, plan_id, &sample_outline(&["阶段甲"], &[2]), &[])
+        .await
+        .unwrap();
+    plan_store::upsert_phase(
+        &pool,
+        plan_id,
+        0,
+        &sample_phase("阶段甲", &["可用章", "空缺章"]),
+    )
+    .await
+    .unwrap();
+    sqlx::query("UPDATE chapters SET status = 'failed', content_md = '' WHERE idx = 1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE plans SET status = 'failed' WHERE id = $1")
+        .bind(plan_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let report = plan_store::sweep_stale_generating(&pool).await.unwrap();
+    assert_eq!(report.scanned_plans, 1);
+    assert_eq!(report.healed_plans, 1, "failed → partial 属于计划状态修复");
+    assert_eq!(
+        plan_status(&pool, plan_id).await.as_deref(),
+        Some("partial")
+    );
+}
+
+/// 重生成启动时先把父计划置 generating，确保崩溃后进入启动清扫候选；
+/// 子章内容仍完整时，清扫应按内容将其恢复为 complete。
+#[sqlx::test]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
+async fn test_regen_start_marks_parent_and_sweep_recovers_plan(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+    plan_store::seed_outline(&pool, plan_id, &sample_outline(&["阶段甲"], &[1]), &[])
+        .await
+        .unwrap();
+    plan_store::upsert_phase(&pool, plan_id, 0, &sample_phase("阶段甲", &["可用章"]))
+        .await
+        .unwrap();
+    sqlx::query("UPDATE plans SET status = 'complete' WHERE id = $1")
+        .bind(plan_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    plan_store::mark_phase_generating(&pool, plan_id, 0)
+        .await
+        .unwrap();
+    assert_eq!(
+        plan_status(&pool, plan_id).await.as_deref(),
+        Some("generating")
+    );
+    sqlx::query("UPDATE plans SET status = 'complete' WHERE id = $1")
+        .bind(plan_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    plan_store::mark_chapter_generating(&pool, plan_id, 0, 0)
+        .await
+        .unwrap();
+    assert_eq!(
+        plan_status(&pool, plan_id).await.as_deref(),
+        Some("generating")
+    );
+
+    plan_store::sweep_stale_generating(&pool).await.unwrap();
+    assert_eq!(
+        plan_status(&pool, plan_id).await.as_deref(),
+        Some("complete")
+    );
+}
+
+/// regen 收口统一按章节状态写入三值终态：failed 行补齐部分章节后应变成 partial，
+/// 而不是因 done(partial) 走失败分支而永久停在 failed。
+#[sqlx::test]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
+async fn test_settle_regen_partial_status(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+    plan_store::seed_outline(&pool, plan_id, &sample_outline(&["阶段甲"], &[2]), &[])
+        .await
+        .unwrap();
+    sqlx::query("UPDATE chapters SET status = 'complete', content_md = '有效正文' WHERE idx = 0")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE chapters SET status = 'generating' WHERE idx = 1")
+        .execute(&pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE plans SET status = 'failed' WHERE id = $1")
+        .bind(plan_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    plan_store::settle_regeneration(&pool, plan_id)
+        .await
+        .unwrap();
+    assert_eq!(
+        plan_status(&pool, plan_id).await.as_deref(),
+        Some("partial")
+    );
+}
+
+/// regen 收口（章级口径，2026-10-16 修复回归）：failed 行 + 全章节 complete
+/// → settle_regeneration 翻回 complete（旧守卫语义会永久卡 failed）
+#[sqlx::test]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
+async fn test_settle_regeneration_heals_failed_row(pool: PgPool) {
     prepare_schema(&pool).await;
     let id = new_generating_plan(&pool).await;
     plan_store::seed_outline(&pool, id, &sample_outline(&["阶段甲"], &[1]), &[])
@@ -1186,9 +1303,7 @@ async fn test_finalize_regen_complete_heals_failed_row(pool: PgPool) {
     .await
     .unwrap();
 
-    plan_store::finalize_regen_complete(&pool, id)
-        .await
-        .unwrap();
+    plan_store::settle_regeneration(&pool, id).await.unwrap();
 
     let status: String = sqlx::query_scalar("SELECT status FROM plans WHERE id = $1")
         .bind(id)
@@ -1201,10 +1316,10 @@ async fn test_finalize_regen_complete_heals_failed_row(pool: PgPool) {
     );
 }
 
-/// regen 收口（章级口径）：尚有非 complete 章（pending）时保持 failed 不动
+/// regen 收口（章级三值口径）：有 complete 章且有未产出章时落 partial
 #[sqlx::test]
 #[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
-async fn test_finalize_regen_complete_keeps_failed_with_pending(pool: PgPool) {
+async fn test_settle_regeneration_marks_partial_with_missing_chapter(pool: PgPool) {
     prepare_schema(&pool).await;
     let id = new_generating_plan(&pool).await;
     plan_store::seed_outline(&pool, id, &sample_outline(&["阶段甲"], &[2]), &[])
@@ -1226,20 +1341,18 @@ async fn test_finalize_regen_complete_keeps_failed_with_pending(pool: PgPool) {
     .await
     .unwrap();
 
-    plan_store::finalize_regen_complete(&pool, id)
-        .await
-        .unwrap();
+    plan_store::settle_regeneration(&pool, id).await.unwrap();
 
     let status: String = sqlx::query_scalar("SELECT status FROM plans WHERE id = $1")
         .bind(id)
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(status, "failed", "尚有 pending 章时收口不应翻转");
+    assert_eq!(status, "partial", "已有正文且空缺章收口后应为 partial");
 }
 
-/// 启动自愈（2026-10-16 裁定）：failed 且全章节 complete 的行翻 complete；
-/// 真 failed 行（章未齐）保持 failed；complete/generating 对照不受影响
+/// 启动自愈：failed 且全章节 complete 的行翻 complete；真失败仍 failed；
+/// 部分可用的行翻 partial。
 #[sqlx::test]
 #[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
 async fn test_sweep_heals_failed_with_all_chapters_complete(pool: PgPool) {
@@ -1296,17 +1409,11 @@ async fn test_sweep_heals_failed_with_all_chapters_complete(pool: PgPool) {
     assert_eq!(keep_status, "failed", "真失败行应保持 failed");
 }
 
-/// 崩溃自愈（2026-10-22）：重生成开始时 `mark_phase_generating` /
-/// `mark_chapter_generating` 会把阶段与章节置成 generating，但**不改
-/// `plans.status`**（计划整体仍是 failed / complete）。进程崩溃后这些子行再也
-/// 无人收尾，前端按 `chapter.status='generating'` 一直显示「生成中」。
-///
-/// 自愈口径是「候选计划 + 自下而上反推」：该计划 status=failed 进入候选集，
-/// 然后 chapters 按正文反推（有正文 → complete，空 → failed），phases 由子章
-/// 聚合，plans 由全章聚合。二次执行应完全幂等。
+/// 历史崩溃残留回归：旧版本可能只把章节/阶段置 generating，计划行已是 failed；
+/// 清扫仍须按叶子正文反推，混合结果应归入 partial，重复执行幂等。
 #[sqlx::test]
 #[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
-async fn test_sweep_heals_generating_children_when_plan_not_generating(pool: PgPool) {
+async fn test_sweep_reconciles_failed_plan_with_generating_children(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
     plan_store::seed_outline(&pool, plan_id, &sample_outline(&["阶段甲"], &[2]), &[])
@@ -1379,7 +1486,7 @@ async fn test_sweep_heals_generating_children_when_plan_not_generating(pool: PgP
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(plan_status, "failed", "仍有空章，计划保持 failed");
+    assert_eq!(plan_status, "partial", "保留已完成章节，计划收口为 partial");
 
     let again = plan_store::sweep_stale_generating(&pool).await.unwrap();
     assert_eq!(again.healed_children, 0, "二次自愈不应再有修复量");

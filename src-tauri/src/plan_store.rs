@@ -5,7 +5,7 @@
 //! - 本模块：流式生成链路（任务 10）的存储层——create_generating_plan /
 //!   update_outline_meta / seed_outline / upsert_phase / upsert_chapter /
 //!   mark_phase_generating / mark_chapter_generating / set_chapter_generating /
-//!   finalize_plan / finalize_failed /
+//!   finalize_plan / finalize_failed / settle_regeneration /
 //!   delete_plan_full，以及 get_plan 新路径的多表重组读取（load_study_plan +
 //!   纯函数 reassemble_plan）与重生成上下文读取（load_plan_request_meta / load_plan_outline）
 //!
@@ -410,8 +410,8 @@ pub async fn upsert_chapter(
     Ok(())
 }
 
-/// 阶段置 generating（regenerate_phase 开始时调用，前端即时转「生成中」；
-/// 落库持久——退出再进入仍显示生成中，2026-10-16 反馈①）；
+/// 阶段置 generating（重生成开始时调用，前端即时转「生成中」；
+/// 阶段与计划行同事务置位，崩溃后能进入启动清扫候选）；
 /// 阶段内容（chapters）不动，各章由 chapterStart 事件逐章点亮；
 /// 重生成成功后由 upsert_phase 整体替换。消费方：regenerate_phase。
 pub async fn mark_phase_generating(
@@ -419,20 +419,32 @@ pub async fn mark_phase_generating(
     plan_id: Uuid,
     phase_index: u32,
 ) -> Result<(), AgentError> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| fail("开启阶段重生成状态事务", e))?;
     sqlx::query("UPDATE phases SET status = $3 WHERE plan_id = $1 AND idx = $2")
         .bind(plan_id)
         .bind(i32::try_from(phase_index).unwrap_or(0))
         .bind(plan_state::PhaseStatus::Generating.as_str())
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| fail("置阶段生成中", e))?;
-    info!(%plan_id, phase_index, "阶段已置 generating");
+    sqlx::query("UPDATE plans SET status = $2, updated_at = now() WHERE id = $1")
+        .bind(plan_id)
+        .bind(plan_state::PlanStatus::Generating.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| fail("置计划生成中", e))?;
+    tx.commit()
+        .await
+        .map_err(|e| fail("提交阶段重生成状态事务", e))?;
+    info!(%plan_id, phase_index, "阶段与计划已置 generating");
     Ok(())
 }
 
-/// 章节置 generating（regenerate_chapter 开始时调用）；注意同时把所属阶段置
-/// generating——单章重生成会让阶段显示「生成中」，完成后由 upsert_chapter
-/// 阶段联动翻牌。状态落库持久（2026-10-16 反馈①）。消费方：regenerate_chapter。
+/// 章节置 generating（单章重生成开始时调用）；章节、所属阶段与计划行同事务置位。
+/// 完成后由 upsert_chapter 按子章重新推导阶段，终态由 settle_regeneration 推导计划。
 pub async fn mark_chapter_generating(
     pool: &PgPool,
     plan_id: Uuid,
@@ -441,6 +453,10 @@ pub async fn mark_chapter_generating(
 ) -> Result<(), AgentError> {
     let phase_i32 = i32::try_from(phase_index).unwrap_or(0);
     let chapter_i32 = i32::try_from(chapter_index).unwrap_or(0);
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| fail("开启章节重生成状态事务", e))?;
     sqlx::query(
         "UPDATE chapters c SET status = $4
          FROM phases p WHERE c.phase_id = p.id AND p.plan_id = $1 AND p.idx = $2 AND c.idx = $3",
@@ -449,17 +465,26 @@ pub async fn mark_chapter_generating(
     .bind(phase_i32)
     .bind(chapter_i32)
     .bind(plan_state::ChapterStatus::Generating.as_str())
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .map_err(|e| fail("置章节生成中", e))?;
     sqlx::query("UPDATE phases SET status = $3 WHERE plan_id = $1 AND idx = $2")
         .bind(plan_id)
         .bind(phase_i32)
         .bind(plan_state::PhaseStatus::Generating.as_str())
-        .execute(pool)
+        .execute(&mut *tx)
         .await
         .map_err(|e| fail("置所属阶段生成中", e))?;
-    info!(%plan_id, phase_index, chapter_index, "章节及所属阶段已置 generating");
+    sqlx::query("UPDATE plans SET status = $2, updated_at = now() WHERE id = $1")
+        .bind(plan_id)
+        .bind(plan_state::PlanStatus::Generating.as_str())
+        .execute(&mut *tx)
+        .await
+        .map_err(|e| fail("置计划生成中", e))?;
+    tx.commit()
+        .await
+        .map_err(|e| fail("提交章节重生成状态事务", e))?;
+    info!(%plan_id, phase_index, chapter_index, "章节、阶段与计划已置 generating");
     Ok(())
 }
 
@@ -527,7 +552,7 @@ pub async fn plan_status_of_chapters(
 pub struct SweepReport {
     /// 扫过的可疑计划数（`status` 为 failed 或 generating）
     pub scanned_plans: u64,
-    /// 反推后由非 complete 变为 complete 的计划数
+    /// 反推后计划状态发生变化的计划数（含 partial）
     pub healed_plans: u64,
     /// 反推修正的章节 / 阶段行数
     pub healed_children: u64,
@@ -648,7 +673,7 @@ pub(crate) async fn set_plan_group(
 /// 2. 对每个计划，从最下层往上反推整棵状态树：
 ///    - chapters ← `content_md`（有正文 → complete，无正文 → failed）；
 ///    - phases ← 子章聚合（`SQL_PHASE_STATUS_CASE`，与在线写入同一条 SQL 常量）；
-///    - plans ← 全部章聚合（`SQL_PLAN_ALL_CHAPTERS_COMPLETE`）。
+///    - plans ← 全部章聚合（`plan_status_of_chapters` + `plan_of_chapters` 三值口径）。
 ///
 /// 这样一次覆盖全部不一致形态：崩溃留下的 generating、骨架期的 pending、正文已
 /// 写但状态没跟上、状态与正文矛盾（complete 却无正文）都收敛到同一个正确答案。
@@ -699,21 +724,19 @@ pub async fn sweep_stale_generating(pool: &PgPool) -> Result<SweepReport, AgentE
         .map_err(|e| fail("按子章反推阶段状态", e))?;
         report.healed_children += fixed_phases.len() as u64;
 
-        // ③ 计划层：由全部章聚合（$2 = complete、$3 = failed）
-        let healed: Option<String> = sqlx::query_scalar(&format!(
-            "UPDATE plans
-             SET status = CASE WHEN {all_done} THEN $2 ELSE $3 END, updated_at = now()
-             WHERE id = $1 AND status IS DISTINCT FROM (CASE WHEN {all_done} THEN $2 ELSE $3 END)
-             RETURNING status",
-            all_done = plan_state::SQL_PLAN_ALL_CHAPTERS_COMPLETE
-        ))
+        // ③ 计划层：复用唯一三值算法，不能把「非全 complete」都压成 failed。
+        let status = plan_status_of_chapters(pool, plan_id).await?;
+        let changed: Option<Uuid> = sqlx::query_scalar(
+            "UPDATE plans SET status = $2, updated_at = now()
+             WHERE id = $1 AND status IS DISTINCT FROM $2
+             RETURNING id",
+        )
         .bind(plan_id)
-        .bind(plan_state::PlanStatus::Complete.as_str())
-        .bind(plan_state::PlanStatus::Failed.as_str())
+        .bind(status.as_str())
         .fetch_optional(pool)
         .await
         .map_err(|e| fail("按章节反推计划状态", e))?;
-        if healed.as_deref() == Some(plan_state::PlanStatus::Complete.as_str()) {
+        if changed.is_some() {
             report.healed_plans += 1;
         }
     }
@@ -793,14 +816,6 @@ pub async fn finalize_plan(
     Ok(())
 }
 
-/// regenerate 收尾（章级三值口径）：done(plan) 后先收掉本次没产出的子行
-/// （图内静默失败的章不会发事件，不收口就永远停在 generating、前端一直转圈），
-/// 再按章内容算出 complete / partial / failed 并无条件写回。
-///
-/// 历史两版都是二值思维：更早的 `WHERE status <> 'failed'` 守卫让补齐失败的
-/// 计划行永久卡 failed（2026-10-16 计划 68c1aee0 实锤）；随后改成「只在全章
-/// complete 时写回」，部分成功时又停在原状态。三值口径消除了这两个死角。
-/// 消费方：commands regenerate 双命令的 done(plan) 路径。
 /// 整计划重生成前的重置：清空旧的派生内容与生成上下文，把计划行拉回
 /// generating。请求参数（目标/水平/时长/周数/偏好/学习日）沿用库中原值。
 ///
@@ -854,7 +869,13 @@ pub async fn reset_plan_for_regeneration(pool: &PgPool, plan_id: Uuid) -> Result
     Ok(())
 }
 
-pub async fn finalize_regen_complete(pool: &PgPool, plan_id: Uuid) -> Result<(), AgentError> {
+/// 重生成统一收尾：无论收到 done(plan/partial/error) 还是流传输失败，调用方都
+/// 走此入口。先把未产出的 pending/generating 子行收为 failed，再按章状态唯一
+/// 算法写回计划终态；因此任何结束路径都不会留下旧的 plans.status。
+pub async fn settle_regeneration(
+    pool: &PgPool,
+    plan_id: Uuid,
+) -> Result<plan_state::PlanStatus, AgentError> {
     // 先把本次没产出的子行收口：单章生成失败在图内是静默的（不炸整条流，
     // 也不发 chapter 事件），若不清理，那一章会永远停在 generating、前端一直
     // 转圈。finalize_failed 只动 pending|generating，complete 章不受影响，
@@ -870,7 +891,7 @@ pub async fn finalize_regen_complete(pool: &PgPool, plan_id: Uuid) -> Result<(),
         .await
         .map_err(|e| fail("收尾重生成计划状态", e))?;
     info!(%plan_id, status = status.as_str(), "重生成收口：计划行状态已按章级口径更新");
-    Ok(())
+    Ok(status)
 }
 
 /// 删除整份计划（硬删除）：子表全部经外键 ON DELETE CASCADE 级联清空；

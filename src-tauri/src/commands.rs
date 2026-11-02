@@ -420,6 +420,21 @@ pub(crate) fn chapter_progress_from_outcome(
     }
 }
 
+/// 阶段事件的入库结局 → 进度事件：只有 upsert 成功才宣布 PhaseDone。
+/// 生成与重生成共用，避免一条链路因写库失败仍误报阶段完成。
+pub(crate) fn phase_progress_from_outcome(
+    outcome: Result<(), AgentError>,
+    index: u32,
+    total: u32,
+) -> PlanProgressEvent {
+    match outcome {
+        Ok(()) => PlanProgressEvent::PhaseDone { index, total },
+        Err(error) => PlanProgressEvent::StorageIssue {
+            message: format!("第 {} 阶段未能自动保存：{error}", index.saturating_add(1)),
+        },
+    }
+}
+
 // ---------------------------------------------------------------------------
 // 共享流消费骨架（generate_plan / regenerate 双命令同源，防双份漂移）
 // ---------------------------------------------------------------------------
@@ -781,48 +796,22 @@ impl StreamEventSink for GenerationConsumer {
                     Ok(None)
                 }
                 StreamEvent::Phase { index, phase } => {
-                    if let Some(s) = &self.storage {
-                        // Python 端 index 为小非负整数；防御性越界按 0 处理（实际不可达）
+                    let outcome = if let Some(storage) = &self.storage {
+                        // Python 端阶段索引受大纲规模约束；重生成阶段索引以入口校验值为准。
                         let idx = i32::try_from(index).unwrap_or(0);
-                        match plan_store::upsert_phase(&s.pool, s.plan_id, idx, &phase).await {
-                            Ok(()) => {
-                                // 审查 Finding-4（任务 24）：阶段行确已落库才推
-                                // PhaseDone，避免前端假完成 + 回读缺行
-                                emit_progress(
-                                    &self.app,
-                                    self.plan_id,
-                                    PlanProgressEvent::PhaseDone {
-                                        index,
-                                        total: self.phase_count,
-                                    },
-                                );
-                            }
-                            Err(e) => {
-                                warn!(req_id = %self.req_id, seq, index, error = %e, "阶段入库失败，不中断生成");
-                                emit_progress(
-                                    &self.app,
-                                    self.plan_id,
-                                    PlanProgressEvent::StorageIssue {
-                                        message: format!(
-                                            "第 {} 阶段未能自动保存：{e}",
-                                            index.saturating_add(1)
-                                        ),
-                                    },
-                                );
-                            }
-                        }
+                        plan_store::upsert_phase(&storage.pool, storage.plan_id, idx, &phase).await
                     } else {
-                        // 无云端入库句柄（库不可用降级）：无落库语义可判，进度
-                        // 推送照常（观测与入库解耦，前端仍有终态对账兑底）
-                        emit_progress(
-                            &self.app,
-                            self.plan_id,
-                            PlanProgressEvent::PhaseDone {
-                                index,
-                                total: self.phase_count,
-                            },
-                        );
+                        // 无云端库时无法判断持久化结果，进度观测仍继续。
+                        Ok(())
+                    };
+                    if let Err(error) = &outcome {
+                        warn!(req_id = %self.req_id, seq, index, error = %error, "阶段入库失败，不中断生成");
                     }
+                    emit_progress(
+                        &self.app,
+                        self.plan_id,
+                        phase_progress_from_outcome(outcome, index, self.phase_count),
+                    );
                     Ok(None)
                 }
                 // D1 章级扇出：初生链路每章完成产一条 chapter 事件（此前仅
@@ -1031,25 +1020,16 @@ impl StreamEventSink for RegenSink<'_> {
         Box::pin(async move {
             match event {
                 StreamEvent::Phase { index, phase } if self.chapter_index.is_none() => {
-                    // 槽位以入口校验后的目标值为准（事件回显仅作显示），与单章路径防御口径一致
+                    // 槽位以入口校验后的目标值为准；事件回显只用于进度展示。
                     let idx = i32::try_from(self.phase_index).unwrap_or(0);
-                    if let Err(e) =
-                        plan_store::upsert_phase(self.pool, self.plan_id, idx, &phase).await
-                    {
-                        warn!(%self.req_id, index, error = %e, "重生成阶段入库失败，不中断流");
-                        notify(
-                            self.progress,
-                            PlanProgressEvent::StorageIssue {
-                                message: format!("重生成阶段未能自动保存：{e}"),
-                            },
-                        );
+                    let outcome =
+                        plan_store::upsert_phase(self.pool, self.plan_id, idx, &phase).await;
+                    if let Err(error) = &outcome {
+                        warn!(%self.req_id, index, error = %error, "重生成阶段入库失败，不中断流");
                     }
                     notify(
                         self.progress,
-                        PlanProgressEvent::PhaseDone {
-                            index,
-                            total: self.total,
-                        },
+                        phase_progress_from_outcome(outcome, index, self.total),
                     );
                     Ok(None)
                 }
@@ -1304,31 +1284,19 @@ async fn run_regen(
         }
         Err(e) => Err(e),
     };
-    match &result {
-        // done(plan)：计划行章级收尾（全章 complete 才翻 complete，含 failed 行）
-        Ok(envelope) if envelope.status == "plan" => {
-            if let Err(e) = plan_store::finalize_regen_complete(&pool, plan_id).await {
-                warn!(%req_id, error = %e, "重生成计划行收尾失败");
-                notify(
-                    progress,
-                    PlanProgressEvent::StorageIssue {
-                        message: format!("重生成结果收尾未能保存：{e}"),
-                    },
-                );
-            }
-        }
-        // done(error)（及防御性其他状态）/ 传输 Err：pending 行翻 failed
-        // （complete 不动），前端按钮恢复可点、详情刷新显示失败态
-        _ => {
-            if let Err(e) = plan_store::finalize_failed(&pool, plan_id).await {
-                warn!(%req_id, error = %e, "重生成失败态收尾失败");
-                notify(
-                    progress,
-                    PlanProgressEvent::StorageIssue {
-                        message: format!("重生成失败态收尾未成功：{e}"),
-                    },
-                );
-            }
+    // done(plan/partial/error) 与传输失败统一走同一收口：先关掉未产出子行，
+    // 再从章节状态重算 complete/partial/failed。不能用包络状态分支决定计划行，
+    // 否则 done(partial) 会继续留在旧的 failed/complete 状态。
+    match plan_store::settle_regeneration(&pool, plan_id).await {
+        Ok(status) => info!(%req_id, %status, "重生成按章节状态完成收尾"),
+        Err(error) => {
+            warn!(%req_id, error = %error, "重生成终态收尾失败");
+            notify(
+                progress,
+                PlanProgressEvent::StorageIssue {
+                    message: format!("重生成结果收尾未能保存：{error}"),
+                },
+            );
         }
     }
     result
@@ -1892,6 +1860,25 @@ mod tests {
                 .expect("send");
         }
         let _ = ws.close(None).await;
+    }
+
+    /// 生成与重生成共用阶段入库结果映射：只有 upsert 成功才算 PhaseDone。
+    #[test]
+    fn phase_progress_from_outcome_snapshots() {
+        let event = phase_progress_from_outcome(Ok(()), 2, 5);
+        assert!(matches!(
+            event,
+            PlanProgressEvent::PhaseDone { index: 2, total: 5 }
+        ));
+
+        let event = phase_progress_from_outcome(Err(AgentError::Db("写入失败".into())), 2, 5);
+        match event {
+            PlanProgressEvent::StorageIssue { message } => {
+                assert!(message.contains("第 3 阶段"));
+                assert!(message.contains("写入失败"));
+            }
+            other => panic!("入库失败不得报告阶段完成：{other:?}"),
+        }
     }
 
     /// 章级真处理决策快照（R4）：upsert Ok → ChapterDone wire 形态；
