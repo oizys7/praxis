@@ -218,7 +218,9 @@ def _coerce_str_list(value: Any) -> Any:
                     if raw is None or str(raw).strip() == "":
                         continue
                     rendered = (
-                        raw if isinstance(raw, str) else json.dumps(raw, ensure_ascii=False)
+                        raw
+                        if isinstance(raw, str)
+                        else json.dumps(raw, ensure_ascii=False)
                     )
                     parts.append(f"{key}：{rendered}")
                 text = "；".join(parts)
@@ -426,6 +428,14 @@ class PhaseOutline(CamelModel):
         一章一个字符串仍然是有效信息，包成单元素列表即可。
         """
         return _coerce_points_matrix(value)
+
+    # Rust 从 generation_artifacts 回填的每章检索素材。该字段只用于图内
+    # 重生成上下文传递，不属于 StudyPlan wire；缺失会被 Pydantic 静默丢弃，
+    # 让重生成再次搜索并产生额外费用。
+    chapter_research_snippets: list[list[dict[str, Any]]] = Field(
+        default_factory=list,
+        description="与 chapterTitles 等长的每章联网检索素材（重生成复用）",
+    )
     chapter_kinds: list[str] = Field(
         default_factory=list, description="与 chapterTitles 等长的章型列表"
     )
@@ -478,7 +488,9 @@ class PlanOutline(CamelModel):
     title: str = Field(..., description="计划标题")
     overview: str = Field(default="", description="整体概述")
     estimated_total_hours: int = Field(default=0, description="预计总学时")
-    phases: list[PhaseOutline] = Field(default_factory=list, description="阶段大纲列表")
+    phases: list[PhaseOutline] = Field(
+        ..., min_length=1, description="阶段大纲列表（至少一个阶段，避免空扇出）"
+    )
     resources: list[Resource] = Field(default_factory=list, description="推荐资源")
     tech_stack: list[TechRef] = Field(
         default_factory=list, description="本计划涉及的核心技术栈（用于探测当前版本）"

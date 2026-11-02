@@ -173,20 +173,6 @@ def _detect_issues(req: PlanRequest) -> list[tuple[str, str]]:
                 f"学习目标「{req.goal}」较为宽泛，难以据此安排有针对性的内容",
             )
         )
-    if not 1 <= req.weekly_hours <= 80:
-        issues.append(
-            (
-                "weekly_hours_out_of_range",
-                f"每周可用小时数 {req.weekly_hours} 超出合理范围（1-80）",
-            )
-        )
-    if not 1 <= req.weeks <= 52:
-        issues.append(
-            (
-                "weeks_out_of_range",
-                f"期望周数 {req.weeks} 超出合理范围（1-52）",
-            )
-        )
     if not req.background.strip():
         issues.append(("background_missing", "未描述已有基础，无法校准学习起点"))
 
@@ -433,9 +419,7 @@ def _plan_summary(plan: dict[str, Any], phase_offset: int = 0) -> str:
             lines.append(f"  阶段项目：{project.get('name', '')}")
         for chapter_index, chapter in enumerate(phase.get("chapters") or []):
             content = str(chapter.get("contentMd") or "")
-            present = [
-                name for name in _SUMMARY_SECTION_KEYWORDS if name in content
-            ]
+            present = [name for name in _SUMMARY_SECTION_KEYWORDS if name in content]
             lines.append(
                 f"  - 第 {chapter_index + 1} 章「{chapter.get('title', '')}」"
                 f"[{chapter.get('kind', _DEFAULT_CHAPTER_KIND)}]"
@@ -517,15 +501,12 @@ async def _expand_chapter_draft(
         "phase_name": phase_outline.get("name", ""),
         "phase_week_range": phase_outline.get("weekRange", ""),
         "phase_objectives": (
-            "\n".join(
-                f"- {obj}" for obj in phase_outline.get("objectives") or []
-            )
+            "\n".join(f"- {obj}" for obj in phase_outline.get("objectives") or [])
             or "（无）"
         ),
         "chapter_title": chapter_title,
         "sibling_chapter_titles": "\n".join(
-            f"- {t}"
-            for t in _sibling_chapter_titles(phase_outline, chapter_index)
+            f"- {t}" for t in _sibling_chapter_titles(phase_outline, chapter_index)
         ),
         "project_brief": phase_outline.get("projectBrief", "") or "（无）",
         "plan_context": plan_context,
@@ -545,8 +526,7 @@ async def _expand_chapter_draft(
         )
         or "（未探测到版本信息：不确定的版本号不要写具体数字）",
         "research_snippets": chr(10).join(
-            f"- {item.get('title', '')}：{item.get('snippet', '')}"
-            for item in snippets
+            f"- {item.get('title', '')}：{item.get('snippet', '')}" for item in snippets
         )
         or "（未启用联网检索，按你的知识范围组织内容）",
     }
@@ -908,7 +888,9 @@ async def assemble_node(state: AgentState) -> dict[str, Any]:
     phases: list[dict[str, Any]] = []
     failed_keys: list[str] = []
     for index in target_indexes:
-        phase_outline = outline_phases[index] if 0 <= index < len(outline_phases) else {}
+        phase_outline = (
+            outline_phases[index] if 0 <= index < len(outline_phases) else {}
+        )
         titles = phase_outline.get("chapterTitles") or []
         chapters: list[dict[str, Any]] = []
         if scope_chapters is None:
@@ -959,7 +941,9 @@ async def assemble_node(state: AgentState) -> dict[str, Any]:
     duplicates: list[str] = []
     for phase_index in target_indexes:
         phase_outline = (
-            outline_phases[phase_index] if 0 <= phase_index < len(outline_phases) else {}
+            outline_phases[phase_index]
+            if 0 <= phase_index < len(outline_phases)
+            else {}
         )
         titles = phase_outline.get("chapterTitles") or []
         for chapter_index, points in enumerate(
@@ -968,9 +952,7 @@ async def assemble_node(state: AgentState) -> dict[str, Any]:
             cleaned = [str(p).strip() for p in (points or []) if str(p).strip()]
             if cleaned:
                 knowledge_points[(phase_index, chapter_index)] = cleaned
-            chapter_title = (
-                titles[chapter_index] if chapter_index < len(titles) else ""
-            )
+            chapter_title = titles[chapter_index] if chapter_index < len(titles) else ""
             where = f"第 {phase_index + 1} 阶段「{chapter_title}」"
             for point in cleaned:
                 # 跨章重复是「啰嗦」的主要来源之一：同一概念在多章各讲一遍。

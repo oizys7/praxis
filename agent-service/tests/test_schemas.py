@@ -13,7 +13,15 @@ def test_chapter_markdown_shape():
     from app.schemas import Chapter
 
     c = Chapter(title="t", summary="s", content_md="## 正文").model_dump(by_alias=True)
-    assert set(c) == { "title", "summary", "contentMd", "kind", "keyTerms", "visualizations", "exercises" }
+    assert set(c) == {
+        "title",
+        "summary",
+        "contentMd",
+        "kind",
+        "keyTerms",
+        "visualizations",
+        "exercises",
+    }
     assert c["kind"] == "concept", "章型缺省为 concept"
     assert c["keyTerms"] == []
     assert c["contentMd"] == "## 正文"
@@ -35,6 +43,22 @@ def test_plan_request_study_days_defaults_full_week():
     assert req.study_days == [1, 2, 3, 4, 5, 6, 7]
     wire = req.model_dump(by_alias=True)
     assert wire["studyDays"] == [1, 2, 3, 4, 5, 6, 7]
+
+
+def test_plan_request_numeric_ranges_are_enforced_at_schema_boundary() -> None:
+    """不可达的澄清分支由入口模型统一拒绝，而不是在节点里重复判定。"""
+    import pytest
+    from app.schemas import PlanRequest
+    from pydantic import ValidationError
+
+    for field, value in (
+        ("weekly_hours", 0),
+        ("weekly_hours", 81),
+        ("weeks", 0),
+        ("weeks", 53),
+    ):
+        with pytest.raises(ValidationError):
+            PlanRequest.model_validate({"goal": "学 Rust", field: value})
 
 
 def test_plan_request_study_days_dedupes_and_sorts():
@@ -72,6 +96,7 @@ def test_plan_request_study_days_accepts_null_as_default():
 
     req = PlanRequest.model_validate({"goal": "学 Rust", "studyDays": None})
     assert req.study_days == [1, 2, 3, 4, 5, 6, 7]
+
 
 def test_chapter_knowledge_points_tolerates_flattened_output() -> None:
     """GLM 把嵌套数组退化成扁平 list[str] 时不得判废整份大纲。
@@ -122,3 +147,47 @@ def test_chapter_knowledge_points_accepts_objects_and_preserves_nested() -> None
         }
     )
     assert nested.chapter_knowledge_points == [["机制", "细节"]]
+
+
+def test_regen_request_preserves_chapter_research_snippets() -> None:
+    """重生成大纲模型往返必须保留 Rust 回填的检索素材。"""
+    from app.schemas import RegenRequest
+
+    snippets = [
+        [
+            {
+                "title": "官方文档",
+                "url": "https://example.test",
+                "snippet": "真实 API 细节",
+            }
+        ]
+    ]
+    payload = RegenRequest.model_validate(
+        {
+            "request": {"goal": "学习 Rust"},
+            "outline": {
+                "title": "Rust 路线",
+                "phases": [
+                    {
+                        "name": "阶段一",
+                        "chapterTitles": ["所有权"],
+                        "chapterResearchSnippets": snippets,
+                    }
+                ],
+            },
+            "phaseIndex": 0,
+        }
+    )
+
+    dumped = payload.model_dump(mode="json", by_alias=True)
+    assert dumped["outline"]["phases"][0]["chapterResearchSnippets"] == snippets
+
+
+def test_plan_outline_rejects_empty_phase_list() -> None:
+    """空大纲不得进入扇出图后才以 KeyError('plan') 结束。"""
+    import pytest
+    from app.schemas import PlanOutline
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="at least 1 item"):
+        PlanOutline.model_validate({"title": "空大纲", "phases": []})

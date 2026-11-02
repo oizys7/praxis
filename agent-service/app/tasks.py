@@ -26,6 +26,7 @@ from time import monotonic
 from typing import Any, cast
 
 from app.errors import AgentServiceError
+from app.responses import build_response
 from app.schemas import ErrorDetail, PlanRequest, PlanResponse, RegenRequest
 
 logger = logging.getLogger("praxis.tasks")
@@ -341,11 +342,11 @@ async def _plan_event_dicts(
     保证任何路径 done 都是事件日志最后一项。
     """
     from app.graph import agent_graph
-    from app.main import build_response
+    from app.nodes import AgentState
 
     # langgraph v1 astream 的 Sequence stream_mode 重载未建模 (mode, chunk)
     # 元组返回形状，cast 对齐运行时实际产出（与 main.py 同理）
-    initial_state: dict[str, Any] = {"request": request.model_dump(by_alias=True)}
+    initial_state: AgentState = {"request": request.model_dump(by_alias=True)}
     if outline is not None:
         initial_state["outline"] = outline
     if regen_scope is not None:
@@ -371,26 +372,28 @@ async def _plan_event_dicts(
                     if not isinstance(update, dict):
                         continue
                     if node == "outline" and "outline" in update:
-                        outline = update["outline"]
+                        outline_data = update["outline"]
+                        if not isinstance(outline_data, dict):
+                            continue
                         yield {
                             "type": "outline",
-                            "phaseCount": len(outline.get("phases") or []),
-                            "title": outline.get("title", ""),
-                            "overview": outline.get("overview", ""),
+                            "phaseCount": len(outline_data.get("phases") or []),
+                            "title": outline_data.get("title", ""),
+                            "overview": outline_data.get("overview", ""),
                             "phases": [
                                 {
                                     "name": phase.get("name", ""),
                                     "weekRange": phase.get("weekRange", ""),
                                     "chapterTitles": phase.get("chapterTitles") or [],
                                 }
-                                for phase in outline.get("phases") or []
+                                for phase in outline_data.get("phases") or []
                             ],
                             # 完整大纲（含章型 / 知识点 / 阶段目标 / 版本事实 /
                             # 项目简介）：骨架字段之外的重生成上下文由 Rust 原样
                             # 存进 plans.outline_json，regen 时读回。缺了它，重生成
                             # 只能拿章标题当唯一检索词、章型兜底成 concept、版本事实
                             # 丢失——正文质量会明显低于首次生成。
-                            "outline": outline,
+                            "outline": outline_data,
                         }
                     elif node in ("expand_chapter", "expand_revision") and (
                         "chapter_drafts" in update
@@ -438,7 +441,7 @@ async def _plan_event_dicts(
     else:
         response = build_response(final_state)
 
-    # 终态包络：mode="json" 先落成 JSON 安全标量；plan / clarification / error
+    # 终态包络：mode="json" 先落成 JSON 安全标量；plan / partial / clarification / error
     # 三种终态统一走 done 收尾
     yield {
         "type": "done",

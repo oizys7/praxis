@@ -27,6 +27,8 @@ def _template_vars(name: str) -> set[str]:
     return prompts.template_variables(
         template.get("system") or ""
     ) | prompts.template_variables(template.get("human") or "")
+
+
 from app.mock import (
     build_mock_chapter,
     build_mock_extras,
@@ -204,6 +206,54 @@ async def test_expand_chapter_real_path_variables(monkeypatch):
             "exercises": [],
         }
     }
+
+
+@pytest.mark.asyncio
+async def test_expand_chapter_reuses_saved_research_snippets(monkeypatch):
+    """重生成已有留档时复用素材，不再次调用外部搜索。"""
+    monkeypatch.setattr(settings, "allow_mock_llm", False)
+    monkeypatch.setattr(nodes, "has_llm_config", lambda: True)
+    from app.schemas import RegenRequest
+
+    snippets = [
+        {"title": "官方文档", "url": "https://example.test", "snippet": "真实 API 细节"}
+    ]
+    outline = build_mock_outline(REQUEST)
+    outline["phases"][0]["chapterResearchSnippets"] = [snippets] + [
+        [] for _ in outline["phases"][0]["chapterTitles"][1:]
+    ]
+    payload = RegenRequest.model_validate(
+        {"request": REQUEST, "outline": outline, "phaseIndex": 0, "chapterIndex": 0}
+    ).model_dump(mode="json", by_alias=True)
+    phase_outline = payload["outline"]["phases"][0]
+    search_calls = 0
+    captured: dict[str, Any] = {}
+
+    async def _search(_query: str) -> list[dict[str, Any]]:
+        nonlocal search_calls
+        search_calls += 1
+        return []
+
+    async def _invoke(_model_cls, _prompt_key, variables):
+        captured.update(variables)
+        return Chapter(title="所有权", summary="摘要", content_md="# 正文")
+
+    monkeypatch.setattr(nodes, "_research_snippets", _search)
+    monkeypatch.setattr(nodes, "invoke_structured", _invoke)
+
+    chapter, trace = await nodes._expand_chapter_draft(
+        REQUEST,
+        phase_outline,
+        0,
+        0,
+        plan_context="计划上下文",
+        review_notes="（首次生成，无评审意见）",
+    )
+
+    assert search_calls == 0
+    assert trace["researchSnippets"] == snippets
+    assert "真实 API 细节" in captured["research_snippets"]
+    assert chapter["title"] == "所有权"
 
 
 @pytest.mark.asyncio
@@ -826,7 +876,9 @@ def test_build_glossary_dedupes_and_keeps_first_chapter():
 
 def test_build_glossary_respects_limit():
     """术语表上限防止超长计划把响应体撑爆。"""
-    phases = [{"chapters": [{"title": "章", "keyTerms": [f"术语{i}" for i in range(100)]}]}]
+    phases = [
+        {"chapters": [{"title": "章", "keyTerms": [f"术语{i}" for i in range(100)]}]}
+    ]
     assert len(nodes._build_glossary(phases, limit=10)) == 10
 
 
