@@ -45,7 +45,9 @@ def test_object_steps_are_flattened_to_strings():
 def test_object_without_known_text_key_falls_back_to_flattened_pairs():
     """没有 action/description 等键时按「键：值」展平，信息不丢。"""
     model = PhaseExtrasOutput.model_validate(
-        _extras(project={"name": "项目乙", "steps": [{"阶段": "准备", "产出": "设计稿"}]})
+        _extras(
+            project={"name": "项目乙", "steps": [{"阶段": "准备", "产出": "设计稿"}]}
+        )
     )
     assert model.project.steps == ["阶段：准备；产出：设计稿"]
 
@@ -58,7 +60,10 @@ def test_acceptance_criteria_and_practice_tolerate_objects():
             assignments=[{"description": "整理笔记"}],
             project={
                 "name": "项目丙",
-                "acceptanceCriteria": [{"text": "检索结果可复现"}, "冷启动 10 秒内完成"],
+                "acceptanceCriteria": [
+                    {"text": "检索结果可复现"},
+                    "冷启动 10 秒内完成",
+                ],
             },
         )
     )
@@ -86,7 +91,9 @@ def test_missing_name_defaults_to_empty_string():
 def test_non_list_value_is_left_to_pydantic():
     """非列表原样返回，不掩盖真正的类型错误。"""
     try:
-        PhaseExtrasOutput.model_validate(_extras(project={"name": "x", "steps": "只有一步"}))
+        PhaseExtrasOutput.model_validate(
+            _extras(project={"name": "x", "steps": "只有一步"})
+        )
     except ValueError:
         return
     raise AssertionError("steps 为字符串时应由 Pydantic 报错")

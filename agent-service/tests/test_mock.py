@@ -56,7 +56,15 @@ def test_mock_outline_shape():
 
 def _assert_markdown_chapter(chapter: dict, phase_outline: dict) -> None:
     """单章 markdown 形状断言：唯一三字段 + 字数 + 码块 + 深入剖析节。"""
-    assert set(chapter) == { "title", "summary", "contentMd", "kind", "keyTerms", "visualizations", "exercises" }, (
+    assert set(chapter) == {
+        "title",
+        "summary",
+        "contentMd",
+        "kind",
+        "keyTerms",
+        "visualizations",
+        "exercises",
+    }, (
         f"Chapter 键集 {{title, summary, contentMd, kind, keyTerms, visualizations, exercises}}，实际：{set(chapter)}"
     )
     assert chapter["kind"] in {"concept", "practice", "project", "review"}

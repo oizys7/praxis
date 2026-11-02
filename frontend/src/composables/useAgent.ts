@@ -98,7 +98,9 @@ export async function regeneratePhase(
  * 可点的重生成按钮，只能整份重来。进度走全局 'plan-progress' 事件，
  * 因此不需要 Channel 参数（与 generate_plan 同一条观测通道）。
  */
-export async function regeneratePlan(planId: string): Promise<{ planId: string }> {
+export async function regeneratePlan(
+  planId: string,
+): Promise<{ planId: string }> {
   return await invoke<{ planId: string }>("regenerate_plan", { planId });
 }
 

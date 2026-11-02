@@ -117,7 +117,15 @@ async def test_result_without_content_is_skipped(
 ) -> None:
     """没有正文片段的条目对「注入素材」无用，跳过。"""
     client = _FakeClient(
-        _Resp(200, {"results": [{"title": "空", "url": "https://a"}, {"title": "T", "url": "https://b", "content": "正文"}]})
+        _Resp(
+            200,
+            {
+                "results": [
+                    {"title": "空", "url": "https://a"},
+                    {"title": "T", "url": "https://b", "content": "正文"},
+                ]
+            },
+        )
     )
     _patch(monkeypatch, client)
 

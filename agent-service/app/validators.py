@@ -45,7 +45,9 @@ DEFAULT_CHAPTER_KIND = "concept"
 # 所有章型必需小节的并集（供文档与 mock 模板注释引用，不参与逐章判定）
 REQUIRED_CHAPTER_SECTIONS = tuple(
     dict.fromkeys(
-        section for sections in REQUIRED_SECTIONS_BY_KIND.values() for section in sections
+        section
+        for sections in REQUIRED_SECTIONS_BY_KIND.values()
+        for section in sections
     )
 )
 # 概念章必须有的深入剖析小节：关键词 + 最小字数。
@@ -338,14 +340,13 @@ def _check_chapter(
             "一个意思被铺开写长了，应当压缩到真在讲东西的部分"
         )
 
-    _check_visualization(chapter, label, issues, failed, failed_chapters, index,
-                         chapter_index)
+    _check_visualization(
+        chapter, label, issues, failed, failed_chapters, index, chapter_index
+    )
     _check_exercises(chapter, label, issues, knowledge_points)
 
     if knowledge_points:
-        missed = _check_coverage(
-            content, knowledge_points, title, label, issues
-        )
+        missed = _check_coverage(content, knowledge_points, title, label, issues)
         hit_ratio = 1 - len(missed) / len(knowledge_points)
         if hit_ratio < COVERAGE_MIN_RATIO:
             issues.append(
@@ -462,8 +463,7 @@ def _check_exercises(
     ]
     if not scenario:
         issues.append(
-            f"{label}自测题全是回忆题：至少需要一道情景判断题，"
-            "否则学到的只是名词定义"
+            f"{label}自测题全是回忆题：至少需要一道情景判断题，否则学到的只是名词定义"
         )
 
     if not knowledge_points:

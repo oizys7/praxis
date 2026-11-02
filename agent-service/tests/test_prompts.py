@@ -166,7 +166,9 @@ def test_render_with_exact_variables_emits_no_warning(name, section, caplog):
 def test_render_warns_on_missing_and_unused_variables(caplog):
     """两个方向都要有告警：缺失（按空串渲染）与多余（注入未使用）。"""
     with caplog.at_level("WARNING", logger="app.prompts"):
-        rendered = prompts.render("你好 {{ name }}，{{ missing }}", name="世界", extra="多余")
+        rendered = prompts.render(
+            "你好 {{ name }}，{{ missing }}", name="世界", extra="多余"
+        )
     assert rendered.startswith("你好 世界，")
     text = " ".join(caplog.messages)
     assert "missing" in text, "缺失变量应告警"

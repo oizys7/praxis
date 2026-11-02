@@ -15,7 +15,10 @@ def _content(sections: list[str]) -> str:
         "## 章标题",
         # 带两个具体名词（接口名 + 版本号）：具体名词密度是硬校验，
         # 全是「内容」重复的正文会被判泛泛而谈，那样测的就不是覆盖率了
-        "### 学习目标" + NL + NL + "能独立完成一个最小示例（`Client.run` 配 `max_retries`，v1.2.3，日志看 RUST_LOG）。",
+        "### 学习目标"
+        + NL
+        + NL
+        + "能独立完成一个最小示例（`Client.run` 配 `max_retries`，v1.2.3，日志看 RUST_LOG）。",
         "### 前置知识" + NL + NL + "无。",
     ]
     parts.extend("## " + name + NL + NL + "内容" * 200 for name in sections)
@@ -24,10 +27,7 @@ def _content(sections: list[str]) -> str:
         parts.append("## 基础内容" + NL + NL + "内容" * 600)
     parts.append("### 动手练习" + NL + NL + "照做一遍并记录结果。")
     parts.append(
-        "### 自检清单"
-        + NL
-        + NL
-        + "1. 能复述主线。2. 能解释每一步。3. 能指出一个误用。"
+        "### 自检清单" + NL + NL + "1. 能复述主线。2. 能解释每一步。3. 能指出一个误用。"
     )
     return NL.join(parts)
 

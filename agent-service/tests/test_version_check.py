@@ -82,9 +82,11 @@ async def test_detect_versions_reads_each_ecosystem(
 async def test_unknown_packages_are_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
     """查不到的库一律丢弃——这就是幻觉过滤器，编造的库名没有版本。"""
     client = _FakeClient(
-        {"https://crates.io/api/v1/crates/serde": _Resp(
-            200, {"crate": {"max_stable_version": "1.0.215"}}
-        )}
+        {
+            "https://crates.io/api/v1/crates/serde": _Resp(
+                200, {"crate": {"max_stable_version": "1.0.215"}}
+            )
+        }
     )
     _patch(monkeypatch, client)
 
@@ -127,5 +129,3 @@ async def test_all_failures_degrade_silently(monkeypatch: pytest.MonkeyPatch) ->
     """全失败只返回空列表，不抛异常（生成链路照常继续）。"""
     _patch(monkeypatch, _FakeClient({}))
     assert await detect_versions([{"name": "a", "ecosystem": "npm"}]) == []
-
-

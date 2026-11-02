@@ -55,7 +55,9 @@ async def verify_resources(resources: list[dict[str, Any]]) -> list[dict[str, An
             )
         except (TimeoutError, asyncio.TimeoutError):
             # 整体超预算：全部退回 unverified，不阻塞生成
-            logger.info("资源可达性检查整体超时 %.0fs，全部标记未核实", _TOTAL_BUDGET_SECONDS)
+            logger.info(
+                "资源可达性检查整体超时 %.0fs，全部标记未核实", _TOTAL_BUDGET_SECONDS
+            )
             return checked
 
     for item, ok in zip(targets, results, strict=True):

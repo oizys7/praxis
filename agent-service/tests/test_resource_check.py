@@ -71,7 +71,9 @@ async def test_broken_and_missing_urls_stay_unverified(
         {"title": "boom", "url": "https://ok.example/boom"},
         {"title": "no-url", "url": ""},
     ]
-    client = _FakeClient({"https://ok.example/gone": 404}, boom={"https://ok.example/boom"})
+    client = _FakeClient(
+        {"https://ok.example/gone": 404}, boom={"https://ok.example/boom"}
+    )
     _patch(monkeypatch, client)
 
     out = await verify_resources(resources)
@@ -94,7 +96,9 @@ async def test_empty_url_short_circuits_without_request(
 
 
 @pytest.mark.asyncio
-async def test_head_unsupported_falls_back_to_get(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_head_unsupported_falls_back_to_get(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """405/501 退回一次 GET：有些站点不支持 HEAD，不能因此误判不可达。"""
     resources = [{"title": "A", "url": "https://ok.example/headless"}]
     client = _FakeClient({"https://ok.example/headless": 405})

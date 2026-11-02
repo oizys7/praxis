@@ -182,14 +182,17 @@ function applyProgressEvent(
     case "chapterStart": {
       // 2026-10-16 反馈④逐章动画：章开始生成即点亮（regen 链路经
       // applyRegenChapterEvent 到此，generate 链路无此事件）
-      obs.chapterGenerating[`${payload.phaseIndex}:${payload.chapterIndex}`] = true;
+      obs.chapterGenerating[`${payload.phaseIndex}:${payload.chapterIndex}`] =
+        true;
       break;
     }
     case "chapterDone": {
       // D1 章级扇出：初生链路逐章产 chapterDone。仅点亮骨架树章级打点，
       // 不触碰 phaseStatuses（PhaseDone 计数时序与终态判定保持不变）；
       // 同时撤销 chapterStart 的生成中点亮（章已完成）
-      delete obs.chapterGenerating[`${payload.phaseIndex}:${payload.chapterIndex}`];
+      delete obs.chapterGenerating[
+        `${payload.phaseIndex}:${payload.chapterIndex}`
+      ];
       obs.chapterDone[`${payload.phaseIndex}:${payload.chapterIndex}`] = true;
       break;
     }
@@ -236,7 +239,9 @@ export function isChapterGenerating(
   if (!planId || phaseIndex === undefined || chapterIndex === undefined) {
     return false;
   }
-  return !!observations.value[planId]?.chapterGenerating[`${phaseIndex}:${chapterIndex}`];
+  return !!observations.value[planId]?.chapterGenerating[
+    `${phaseIndex}:${chapterIndex}`
+  ];
 }
 
 /** 模块级一次性注册：resolve 后 UnlistenFn 存 module 局部（dispose 用） */

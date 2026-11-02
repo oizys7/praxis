@@ -397,9 +397,7 @@ def build_mock_outline(request: dict[str, Any]) -> dict[str, Any]:
             "weekRange": ranges[index],
             "objectives": [obj.format(goal=goal) for obj in stage["objectives"]],
             "chapterTitles": list(stage["chapterTitles"]),
-            "chapterKinds": [
-                _kind_for(i) for i in range(len(stage["chapterTitles"]))
-            ],
+            "chapterKinds": [_kind_for(i) for i in range(len(stage["chapterTitles"]))],
             "chapterKnowledgePoints": [
                 _mock_knowledge_points(title) for title in stage["chapterTitles"]
             ],
@@ -460,7 +458,9 @@ def build_mock_chapter(
     chapter_titles: list[str] = phase_outline.get("chapterTitles") or []
     title = chapter_titles[chapter_index] if chapter_titles else "未命名章节"
     kinds: list[str] = phase_outline.get("chapterKinds") or []
-    kind = kinds[chapter_index] if chapter_index < len(kinds) else _kind_for(chapter_index)
+    kind = (
+        kinds[chapter_index] if chapter_index < len(kinds) else _kind_for(chapter_index)
+    )
     points_map = phase_outline.get("chapterKnowledgePoints") or []
     points = points_map[chapter_index] if chapter_index < len(points_map) else []
     return _chapter(

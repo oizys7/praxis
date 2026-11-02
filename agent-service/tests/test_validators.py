@@ -347,7 +347,9 @@ def test_practice_chapter_without_deep_dive_passes():
     """实操章不要求 800 字深入剖析：它的价值在步骤与预期输出。"""
     chapter = _make_chapter("实操", kind="practice")
     # 显式删掉深入小节（模拟模型没写）
-    chapter["contentMd"] = chapter["contentMd"].replace("### 深入：机制", "### 关键实现")
+    chapter["contentMd"] = chapter["contentMd"].replace(
+        "### 深入：机制", "### 关键实现"
+    )
     plan = _make_plan(phases=2)
     plan["phases"][0]["chapters"] = [chapter]
     issues, _failed, failed_chapters = validate_plan(plan, 10, 12)
@@ -374,6 +376,7 @@ def test_concept_chapter_short_deep_dive_fails():
     issues, _failed, failed_chapters = validate_plan(plan, 10, 12)
     assert "0:0" in failed_chapters, f"深入小节过短应标定该章：{issues}"
     assert any("深入" in issue for issue in issues)
+
 
 # ---------------- 信息密度（治「又长又空」） ----------------
 
@@ -427,13 +430,13 @@ def test_concrete_entities_pass_density_check() -> None:
     content = _long_vague(1200)
     content = content.replace(
         "### 概念入门" + NL,
-        "### 概念入门" + NL
+        "### 概念入门"
+        + NL
         + "关键接口 `Client.run`、配置项 `max_retries`、环境变量 RUST_LOG、"
-        + "以及 v1.2.3 之后的改名都要留意。" + NL,
+        + "以及 v1.2.3 之后的改名都要留意。"
+        + NL,
     )
-    issues, _failed, failed_chapters = validate_plan(
-        _density_plan(content), 10, 12
-    )
+    issues, _failed, failed_chapters = validate_plan(_density_plan(content), 10, 12)
     assert not [i for i in issues if "具体内容偏少" in i], issues
     assert "0:0" not in failed_chapters
 
@@ -443,7 +446,7 @@ def test_long_but_thin_chapter_only_flagged() -> None:
     # 9000 字、6 个具体名词 → 每千字约 0.67，低于「长而稀」的 5.0 但也低于硬底线，
     # 这里刻意只看「长而稀」这条是否存在、且是否为 issue-only
     content = _long_vague(9000)
-    issues, _failed, _failed_chapters = validate_plan(
-        _density_plan(content), 10, 12
+    issues, _failed, _failed_chapters = validate_plan(_density_plan(content), 10, 12)
+    assert not [i for i in issues if "铺开写长了" in i], (
+        "密度低于硬底线时不该再报长而稀"
     )
-    assert not [i for i in issues if "铺开写长了" in i], "密度低于硬底线时不该再报长而稀"
