@@ -534,7 +534,7 @@ class HealthResponse(CamelModel):
 
     status: str = "ok"
     service: str = "praxis-agent"
-    version: str = "0.1.1"
+    version: str = "0.1.2"
 
 
 class AgentSettingsModel(CamelModel):
