@@ -271,6 +271,10 @@ function createBridge({
         return clone(record);
       }
       if (cmd === "get_settings") return clone(settings);
+      // 研读新读命令：真实库不做只读导出，一律空值（不触库）
+      if (cmd === "list_chat_messages") return [];
+      if (cmd === "list_annotations") return [];
+      if (cmd === "get_chapter_note") return null;
       if (cmd === "query_month_calendar") {
         const days = (calendar.month ?? []).filter((day) => {
           const [y, m] = String(day.date).split("-").map(Number);
@@ -406,6 +410,72 @@ function createBridge({
       simulateGeneration(record, 220);
       return { planId: record.id };
     }
+    if (cmd === "generate_chapter_content") {
+      const record = records.find((r) => r.id === args.planId);
+      if (!record)
+        throw { code: "not_found", message: "预览数据中找不到这份计划" };
+      const chapter =
+        record.plan.phases[args.phaseIndex]?.chapters?.[args.chapterIndex];
+      if (!chapter)
+        throw { code: "not_found", message: "预览数据中找不到这一章" };
+      return streamChapterContent(record, chapter, args);
+    }
+    if (cmd === "chat_stream") {
+      const record = records.find((r) => r.id === args.planId);
+      if (!record)
+        throw { code: "not_found", message: "预览数据中找不到这份计划" };
+      const question = String(args.question ?? "").trim();
+      if (!question) throw { code: "validation", message: "提问内容不能为空" };
+      return streamChatReply(record, args, question);
+    }
+    if (cmd === "list_chat_messages") {
+      return clone(chatStore.get(chapterKey(args)) ?? []);
+    }
+    if (cmd === "save_annotation") {
+      const list = annotationStore.get(args.planId) ?? [];
+      const incoming = { ...(args.annotation ?? {}) };
+      const index = list.findIndex((a) => a.id === incoming.id);
+      if (index >= 0) list[index] = incoming;
+      else list.push(incoming);
+      annotationStore.set(args.planId, list);
+      return;
+    }
+    if (cmd === "list_annotations") {
+      return clone(
+        (annotationStore.get(args.planId) ?? [])
+          .filter(
+            (a) =>
+              a.phaseIndex === args.phaseIndex &&
+              a.chapterIndex === args.chapterIndex,
+          )
+          .sort((a, b) =>
+            String(a.createdAt ?? "").localeCompare(String(b.createdAt ?? "")),
+          ),
+      );
+    }
+    if (cmd === "delete_annotation") {
+      const list = annotationStore.get(args.planId) ?? [];
+      annotationStore.set(
+        args.planId,
+        list.filter((a) => a.id !== args.annotationId),
+      );
+      return;
+    }
+    if (cmd === "get_chapter_note") {
+      return clone(noteStore.get(chapterKey(args)) ?? null);
+    }
+    if (cmd === "save_chapter_note") {
+      const key = chapterKey(args);
+      const content = String(args.contentMd ?? "");
+      if (!content) noteStore.delete(key);
+      else
+        noteStore.set(key, {
+          contentMd: content,
+          updatedAt: new Date().toISOString(),
+        });
+      return;
+    }
+    if (cmd === "plugin:event|unlisten") return;
     if (cmd === "regenerate_phase") {
       const record = records.find((r) => r.id === args.planId);
       if (!record)
@@ -435,14 +505,111 @@ function createBridge({
       }
       return planEnvelope(record);
     }
-    if (cmd === "plugin:event|unlisten") return;
 
     throw { code: "preview", message: `预览尚未模拟此操作：${cmd}` };
   }
 
   // ---------------- mock 动态行为 ----------------
 
+  /** 章节正文按需生成的分片流：chapter-delta 增量 + 完成后写回内存记录 */
+  function streamChapterContent(record, chapter, args) {
+    const full = [
+      `## ${chapter.title}`,
+      "",
+      "这一章是 Mock 预览里按需生成的正文：先明确这一章要回答的问题，再把答案拆成可以逐条验证的小步骤。",
+      "",
+      "> 生成过程是分片到达的：研读页应当以打字机方式渐进揭示，而不是等全文一次性闪现。",
+      "",
+      "1. 复述本章摘要，确认能用自己的话讲清楚。",
+      "2. 对照自检清单逐条自查，标出还没有把握的条目。",
+      "3. 把疑问发给伴学聊天，带着章节上下文提问。",
+      "",
+      "```python",
+      'def check(understanding: str) -> bool:',
+      '    return "能讲清楚" in understanding',
+      "```",
+    ].join("\n");
+    return new Promise((resolve) => {
+      const CHUNK = 42;
+      const INTERVAL = 45;
+      let offset = 0;
+      const tick = () => {
+        const next = Math.min(full.length, offset + CHUNK);
+        emitEvent("chapter-delta", {
+          planId: record.id,
+          phaseIndex: args.phaseIndex,
+          chapterIndex: args.chapterIndex,
+          text: full.slice(offset, next),
+        });
+        offset = next;
+        if (offset < full.length) {
+          window.setTimeout(tick, INTERVAL);
+          return;
+        }
+        chapter.contentMd = full;
+        chapter.status = "complete";
+        resolve(planEnvelope(record));
+      };
+      window.setTimeout(tick, 200);
+    });
+  }
+
+  /** 研读聊天回复的分片流：chat-delta 增量 → chat-done 终态（问答落内存） */
+  function streamChatReply(record, args, question) {
+    const reply =
+      `关于「${question.slice(0, 24)}」：这一章的核心是把问题拆成输入、处理、输出三段，` +
+      "每一段只回答一个问题。建议先复述章节摘要，再对照自检清单逐条确认；" +
+      "卡住的地方回到正文对应小节重读一遍，也可以把具体疑问继续发给我。";
+    const answer = {
+      role: "assistant",
+      content: reply,
+      id: `preview-chat-${chatSeq}`,
+      createdAt: new Date().toISOString(),
+    };
+    chatSeq += 1;
+    return new Promise((resolve) => {
+      const CHUNK = 26;
+      const INTERVAL = 60;
+      let offset = 0;
+      const tick = () => {
+        const next = Math.min(reply.length, offset + CHUNK);
+        emitEvent("chat-delta", {
+          planId: record.id,
+          phaseIndex: args.phaseIndex,
+          chapterIndex: args.chapterIndex,
+          text: reply.slice(offset, next),
+        });
+        offset = next;
+        if (offset < reply.length) {
+          window.setTimeout(tick, INTERVAL);
+          return;
+        }
+        const key = chapterKey(args);
+        const list = chatStore.get(key) ?? [];
+        list.push({ role: "user", content: question }, answer);
+        chatStore.set(key, list);
+        emitEvent("chat-done", {
+          planId: record.id,
+          phaseIndex: args.phaseIndex,
+          chapterIndex: args.chapterIndex,
+          message: clone(answer),
+        });
+        resolve();
+      };
+      window.setTimeout(tick, 250);
+    });
+  }
+
   const scheduleState = new Map();
+  // 研读（2026-11 功能包）内存态：聊天 / 标注 / 笔记，按计划+章节键隔离
+  const chatStore = new Map();
+  const annotationStore = new Map();
+  const noteStore = new Map();
+  let chatSeq = 1;
+
+  function chapterKey(args) {
+    return `${args.planId}:${args.phaseIndex}:${args.chapterIndex}`;
+  }
 
   function planEnvelope(record) {
     return {
@@ -460,11 +627,13 @@ function createBridge({
 
   function resetForGeneration(record) {
     record.status = "generating";
+    // 大纲-only 语义：重生成清掉旧正文，章节回到待研读骨架态
     record.plan.phases = record.plan.phases.map((phase) => ({
       ...phase,
       status: "pending",
       chapters: (phase.chapters ?? []).map((chapter) => ({
         ...chapter,
+        contentMd: "",
         status: "pending",
       })),
     }));
@@ -488,6 +657,11 @@ function createBridge({
       learningStartedAt: null,
       studyDays: request?.studyDays ?? [1, 2, 3, 4, 5, 6, 7],
       createdAt: new Date().toISOString(),
+      // 大纲-only：首展只产骨架+周次/学时，正文留白到研读页按需生成
+      phases: makePhases(
+        ["建立编程思维", "探索数据与结构"],
+        { outlineOnly: true },
+      ),
     });
     records.unshift(record);
     resetForGeneration(record);
@@ -495,6 +669,11 @@ function createBridge({
     return { planId: id };
   }
 
+  /**
+   * 生成流模拟（大纲-only 语义）：outline 一次性携带章节级并行数组
+   * （chapterSummaries/chapterWeeks/chapterEstimatedHours 等），随后逐阶段
+   * phaseDone 收口；不再有章节级生成事件——正文留白属正常态，研读页按需生成。
+   */
   function simulateGeneration(record, firstDelay) {
     const phases = record.plan.phases;
     window.setTimeout(() => {
@@ -512,6 +691,22 @@ function createBridge({
             chapterTitles: (phase.chapters ?? []).map(
               (chapter) => chapter.title,
             ),
+            objectives: phase.objectives ?? [],
+            chapterKinds: (phase.chapters ?? []).map(
+              (chapter) => chapter.kind ?? "concept",
+            ),
+            chapterSummaries: (phase.chapters ?? []).map(
+              (chapter) => chapter.summary ?? "",
+            ),
+            chapterKeyTerms: (phase.chapters ?? []).map(
+              (chapter) => chapter.keyTerms ?? [],
+            ),
+            chapterWeeks: (phase.chapters ?? []).map(
+              (chapter) => chapter.week ?? null,
+            ),
+            chapterEstimatedHours: (phase.chapters ?? []).map(
+              (chapter) => chapter.estimatedHours ?? null,
+            ),
           })),
         },
       });
@@ -519,31 +714,9 @@ function createBridge({
 
     let elapsed = firstDelay;
     phases.forEach((phase, phaseIndex) => {
-      (phase.chapters ?? []).forEach((_, chapterIndex) => {
-        elapsed += 260;
-        window.setTimeout(() => {
-          emitEvent("plan-progress", {
-            planId: record.id,
-            kind: "plan",
-            payload: { type: "chapterStart", phaseIndex, chapterIndex },
-          });
-        }, elapsed);
-        elapsed += 180;
-        window.setTimeout(() => {
-          emitEvent("plan-progress", {
-            planId: record.id,
-            kind: "plan",
-            payload: { type: "chapterDone", phaseIndex, chapterIndex },
-          });
-        }, elapsed);
-      });
-      elapsed += 240;
+      elapsed += 420;
       window.setTimeout(() => {
         phase.status = "complete";
-        (phase.chapters ?? []).forEach((chapter) => {
-          chapter.status = "complete";
-          if (!chapter.contentMd) chapter.contentMd = CONTENT_SHORT;
-        });
         emitEvent("plan-progress", {
           planId: record.id,
           kind: "plan",
@@ -670,7 +843,7 @@ function todayKey() {
   return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
 }
 
-function makeChapters(prefix) {
+function makeChapters(prefix, weekBase = 1) {
   return [
     {
       title: `${prefix}：先让程序跑起来`,
@@ -678,6 +851,8 @@ function makeChapters(prefix) {
       contentMd: CONTENT_MAIN,
       kind: "concept",
       keyTerms: ["输入", "处理", "输出"],
+      week: weekBase,
+      estimatedHours: 4,
       visualizations: [],
       exercises: [],
       done: true,
@@ -689,6 +864,8 @@ function makeChapters(prefix) {
       contentMd: CONTENT_SHORT,
       kind: "practice",
       keyTerms: ["反馈", "复盘"],
+      week: weekBase + 1,
+      estimatedHours: 3,
       visualizations: [],
       exercises: [],
       done: false,
@@ -712,37 +889,55 @@ function makeProject(name) {
   };
 }
 
-function makePhases(names, { withEmptyChapter = false } = {}) {
-  return names.map((name, index) => ({
-    name,
-    weekRange: `第 ${index * 2 + 1}–${index * 2 + 2} 周`,
-    objectives: [
-      "理解核心概念，并能用自己的话解释",
-      "通过小项目建立可迁移的学习方法",
-    ],
-    chapters:
+function makePhases(
+  names,
+  { withEmptyChapter = false, outlineOnly = false } = {},
+) {
+  return names.map((name, index) => {
+    const weekBase = index * 2 + 1;
+    let chapters =
       withEmptyChapter && index === 1
         ? [
-            ...makeChapters(name),
+            ...makeChapters(name, weekBase),
             {
               title: `${name}：待补齐的一章`,
               summary: "这一章保留为空正文，用于验证空章提示与重新生成入口。",
               contentMd: "",
               kind: "concept",
               keyTerms: [],
+              week: weekBase + 1,
+              estimatedHours: 2,
               visualizations: [],
               exercises: [],
               done: false,
               status: "pending",
             },
           ]
-        : makeChapters(name),
-    theory: [],
-    practice: ["完成本章的动手练习"],
-    assignments: ["提交一段可以运行的小程序"],
-    project: makeProject(`${name} · 收尾项目`),
-    status: "complete",
-  }));
+        : makeChapters(name, weekBase);
+    if (outlineOnly) {
+      // 大纲-only 新链路：首展只有骨架+周次/学时，正文留白待研读
+      chapters = chapters.map((chapter) => ({
+        ...chapter,
+        contentMd: "",
+        done: false,
+        status: "pending",
+      }));
+    }
+    return {
+      name,
+      weekRange: `第 ${weekBase}–${weekBase + 1} 周`,
+      objectives: [
+        "理解核心概念，并能用自己的话解释",
+        "通过小项目建立可迁移的学习方法",
+      ],
+      chapters,
+      theory: [],
+      practice: ["完成本章的动手练习"],
+      assignments: ["提交一段可以运行的小程序"],
+      project: makeProject(`${name} · 收尾项目`),
+      status: outlineOnly ? "pending" : "complete",
+    };
+  });
 }
 
 function makeRecord(input) {
@@ -845,6 +1040,8 @@ function buildMockRecords() {
               contentMd: "",
               kind: "concept",
               keyTerms: [],
+              week: 1,
+              estimatedHours: 2,
               visualizations: [],
               exercises: [],
               done: false,

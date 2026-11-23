@@ -149,6 +149,8 @@ function toSegments(contentMd: string): ContentSegment[] {
 const props = defineProps<{
   /** 章节 markdown 正文全文（空串 = 有意义的空正文，渲染空态提示） */
   contentMd: string;
+  /** 空正文提示文案（研读改版后章节语境可覆盖默认文案） */
+  emptyHint?: string;
 }>();
 
 const segments = computed<ContentSegment[]>(() =>
@@ -271,6 +273,6 @@ async function onContentClick(event: MouseEvent) {
     </template>
   </div>
   <p v-else class="text-sm text-muted-foreground">
-    正文尚未生成（可重新生成此章）。
+    {{ props.emptyHint ?? "正文尚未生成（可重新生成此章）。" }}
   </p>
 </template>

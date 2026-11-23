@@ -87,6 +87,7 @@ function pageLabel(page) {
   return (
     {
       plan: "学习计划",
+      study: "研读",
       calendar: "打卡日历",
       notes: "笔记生成",
       settings: "设置",

@@ -39,8 +39,47 @@ const props = defineProps<{
   rowStatus?: string;
 }>();
 
-/** 子组件（PhaseCard → ChapterSection）重生成完成：刷新后的计划整体上抛供调用方替换 */
-const emit = defineEmits<{ refreshed: [plan: StudyPlan] }>();
+/** 子组件（PhaseCard → ChapterSection）重生成完成：刷新后的计划整体上抛供调用方替换；
+ * 周时间线章节 chip 点击：请求父级把对应章节滚入视口并展开 */
+const emit = defineEmits<{
+  refreshed: [plan: StudyPlan];
+  locateChapter: [target: { phaseIndex: number; chapterIndex: number }];
+}>();
+
+/** 周时间线条带（研读改版）：按 chapter.week 分组的纯前端派生视图，不新增协议字段。
+ * 旧计划（无 week）整条隐藏，阅读行为不变。 */
+interface WeekBucketChapter {
+  title: string;
+  phaseIndex: number;
+  chapterIndex: number;
+}
+interface WeekBucket {
+  week: number;
+  chapters: WeekBucketChapter[];
+  /** 学时合计（仅累计已分配学时的章；全 null 时隐藏合计） */
+  hours: number;
+  hasHours: boolean;
+}
+
+const weekBuckets = computed<WeekBucket[]>(() => {
+  const map = new Map<number, WeekBucket>();
+  props.plan.phases.forEach((phase, phaseIndex) => {
+    (phase.chapters ?? []).forEach((chapter, chapterIndex) => {
+      if (chapter.week == null) return;
+      let bucket = map.get(chapter.week);
+      if (!bucket) {
+        bucket = { week: chapter.week, chapters: [], hours: 0, hasHours: false };
+        map.set(chapter.week, bucket);
+      }
+      bucket.chapters.push({ title: chapter.title, phaseIndex, chapterIndex });
+      if (chapter.estimatedHours != null) {
+        bucket.hours += chapter.estimatedHours;
+        bucket.hasHours = true;
+      }
+    });
+  });
+  return [...map.values()].sort((a, b) => a.week - b.week);
+});
 
 /** 章节总数（反馈③：hero 元信息行展示「共 N 阶段 / M 章节」） */
 /** 全局重生成互斥（2026-10-16 反馈③）：任一阶段/章节 DB 状态为 generating
@@ -166,6 +205,50 @@ const resourceTypeLabels: Record<string, string> = {
           </template>
         </div>
       </div>
+    </Card>
+
+    <!-- 周时间线（研读改版）：周次条带——每周章节 chips + 学时合计；
+         chip 点击滚动定位到对应章节。数据由 chapter.week 前端派生 -->
+    <Card v-if="weekBuckets.length">
+      <CardHeader>
+        <CardTitle class="text-base">周时间线</CardTitle>
+      </CardHeader>
+      <CardContent class="space-y-2" data-week-timeline>
+        <div
+          v-for="bucket in weekBuckets"
+          :key="bucket.week"
+          class="flex flex-wrap items-center gap-x-3 gap-y-2 rounded-lg bg-muted-1 px-3 py-2"
+        >
+          <div class="flex shrink-0 items-baseline gap-2">
+            <Badge variant="secondary" class="tabular-nums">
+              第 {{ bucket.week }} 周
+            </Badge>
+            <span
+              v-if="bucket.hasHours"
+              class="text-xs tabular-nums text-muted-foreground"
+            >
+              ≈ {{ bucket.hours }}h
+            </span>
+          </div>
+          <div class="flex min-w-0 flex-wrap items-center gap-1.5">
+            <button
+              v-for="chip in bucket.chapters"
+              :key="`${chip.phaseIndex}-${chip.chapterIndex}`"
+              type="button"
+              class="max-w-56 truncate rounded-full border bg-card px-2.5 py-0.5 text-xs text-foreground/85 transition-colors hover:border-primary/40 hover:text-primary"
+              :aria-label="`跳转到章节：${chip.title}`"
+              @click="
+                emit('locateChapter', {
+                  phaseIndex: chip.phaseIndex,
+                  chapterIndex: chip.chapterIndex,
+                })
+              "
+            >
+              {{ chip.title }}
+            </button>
+          </div>
+        </div>
+      </CardContent>
     </Card>
 
     <!-- 阶段列表（锚点包装：目录跳定位；scroll-mt 抵销 sticky 双层高度） -->

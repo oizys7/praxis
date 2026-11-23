@@ -204,6 +204,19 @@
   .reader-toolbar {
     @apply sticky top-0 z-20 mb-8 flex flex-wrap items-center justify-between gap-2 border-b bg-background/95 py-3 backdrop-blur;
   }
+  /* 标注定位闪烁（研读页）：目标元素在 v-html 内容里，无法携带 scoped
+     属性，动画类放全局层；色值走主题令牌，不写死 */
+  .annotation-flash {
+    animation: praxis-annotation-flash 1.6s ease-out;
+  }
+  @keyframes praxis-annotation-flash {
+    0% {
+      background-color: hsl(var(--primary) / 0.22);
+    }
+    100% {
+      background-color: transparent;
+    }
+  }
 }
 @layer utilities {
   .scroll-stable {

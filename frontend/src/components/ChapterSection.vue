@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch, type ShallowRef } from "vue";
+import { BookOpenText } from "lucide-vue-next";
 import { marked } from "marked";
 import MarkdownContent from "@/components/MarkdownContent.vue";
 import VisualizationPlayer from "@/components/VisualizationPlayer.vue";
@@ -86,20 +87,24 @@ const statusBadge = computed<{
         phaseRegenInFlight.value ||
         chapterRegenerating.value
         ? { label: "⟳ 生成中", variant: "secondary" }
-        : { label: "◌ 未生成", variant: "secondary" };
+        : unreadNewStyle.value
+          ? { label: "未研读", variant: "secondary" }
+          : { label: "◌ 未生成", variant: "secondary" };
     default:
       return null;
   }
 });
 
 /** 本章节重生成按钮：仅历史详情（有 planId）且目标处于 failed/pending 态时
- * 可用；行仍在 generating 时不开放（与后台生成竞争） */
+ * 可用；行仍在 generating 时不开放（与后台生成竞争）。大纲-only 新口径的
+ * 未研读章不在此列——按需生成的主入口在研读页 */
 const canRegenerate = computed(
   () =>
     !!props.planId &&
     props.rowStatus !== "generating" &&
     props.chapter.status !== "generating" &&
-    (props.chapter.status === "failed" || props.chapter.status === "pending"),
+    (props.chapter.status === "failed" || props.chapter.status === "pending") &&
+    !unreadNewStyle.value,
 );
 
 /** 目录命令信箱（悬浮目录 → provide）：点章节时确保本章节正文展开（反馈①） */
@@ -120,6 +125,30 @@ watch(
     }
   },
 );
+
+/**
+ * 跨页「去研读」入口（App provide）：大纲-only 改版后空正文是正常态，
+ * 主入口从「重新生成此章」让位给研读页的按需生成。
+ */
+const openStudy = inject<((planId: string) => void) | null>("openStudy", null);
+
+/**
+ * 大纲-only 新口径：空正文 + 大纲已分配周次（week != null）且非生成中/失败
+ * =「未研读」正常态。旧计划（week == null 的空章）保持「未生成 + 重新生成」
+ * 行为不变。
+ */
+const unreadNewStyle = computed(
+  () =>
+    !props.chapter.contentMd &&
+    props.chapter.week != null &&
+    props.chapter.status !== "generating" &&
+    props.chapter.status !== "failed",
+);
+
+/** 去研读：跳研读页并预选本计划 */
+function goStudy() {
+  if (props.planId) openStudy?.(props.planId);
+}
 
 /**
  * 本章节 scope 是否在飞（keyed 锁判据，task-D2 迁移：key 形态与
@@ -271,12 +300,23 @@ function scrollToHeading(index: number) {
         </div>
       </button>
       <div
-        v-if="statusBadge || canRegenerate"
+        v-if="statusBadge || canRegenerate || (unreadNewStyle && props.planId)"
         class="flex shrink-0 items-center gap-2"
       >
         <Badge v-if="statusBadge" :variant="statusBadge.variant">
           {{ statusBadge.label }}
         </Badge>
+        <!-- 未研读（大纲-only 正常态）：去研读页按需生成 -->
+        <Button
+          v-if="unreadNewStyle && props.planId"
+          variant="outline"
+          size="sm"
+          data-study-goto
+          @click="goStudy"
+        >
+          <BookOpenText class="h-4 w-4" aria-hidden="true" />
+          去研读
+        </Button>
         <Button
           v-if="canRegenerate || chapterRegenerating"
           variant="outline"
@@ -326,7 +366,14 @@ function scrollToHeading(index: number) {
         </button>
       </nav>
       <div ref="contentRoot">
-        <MarkdownContent :content-md="props.chapter.contentMd" />
+        <MarkdownContent
+          :content-md="props.chapter.contentMd"
+          :empty-hint="
+            unreadNewStyle
+              ? '本章尚未研读——到「研读」页选中即可生成正文。'
+              : undefined
+          "
+        />
       </div>
       <!-- 过程动画：只有「执行过程不可见」的章才有，最多一段；没找到合适的
            形式时宁可不给，也不要塞一个错误的类比 -->

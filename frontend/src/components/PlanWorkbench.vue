@@ -47,7 +47,12 @@ import PlanListView from "@/components/PlanListView.vue";
 import PlanResult from "@/components/PlanResult.vue";
 import LoadingState from "@/components/LoadingState.vue";
 import { readerStickyOffset, scrollToWithinMain } from "@/lib/utils";
-import type { PlanRecord, PlanRequest, StudyPlan } from "@/types/agent";
+import type {
+  OutlinePhasePayload,
+  PlanRecord,
+  PlanRequest,
+  StudyPlan,
+} from "@/types/agent";
 
 /**
  * PlanWorkbench：学习计划页工作台（从 App.vue 抽出）。
@@ -614,6 +619,31 @@ function onPlanRefreshed(plan: StudyPlan) {
     error: null,
   };
 }
+
+/** 周时间线 chip 点击：滚动定位并展开对应章节（复用目录联动命令信箱） */
+function onLocateChapter(target: { phaseIndex: number; chapterIndex: number }) {
+  void openChapterFromToc(target.phaseIndex, target.chapterIndex);
+}
+
+/**
+ * 骨架树章条目尾注（大纲-only 语义适配）：outline 载荷带 chapterWeeks
+ * （新链路）→ 尾注「待研读」（正文本就不在此链生成）；旧载荷（无周次数组）
+ * 保持「待生成」。章节完成/阶段收口后无尾注。
+ */
+function skeletonChapterSuffix(
+  phase: OutlinePhasePayload,
+  phaseIndex: number,
+  chapterIndex: number,
+): string {
+  const state = genState.value;
+  if (
+    state?.chapterDone?.[`${phaseIndex}:${chapterIndex}`] ||
+    state?.phaseStatuses[phaseIndex] === "complete"
+  ) {
+    return "";
+  }
+  return phase.chapterWeeks?.length ? "（待研读）" : "（待生成）";
+}
 </script>
 
 <template>
@@ -912,6 +942,7 @@ function onPlanRefreshed(plan: StudyPlan) {
             :storage-issue="genState?.storageIssue"
             :row-status="resultRowStatus ?? undefined"
             @refreshed="onPlanRefreshed"
+            @locate-chapter="onLocateChapter"
           />
 
           <!-- 空态（跨页打开详情的加载窗口由顶部 LoadingState 承担，此处不闪） -->
@@ -990,14 +1021,21 @@ function onPlanRefreshed(plan: StudyPlan) {
                               ? 'bg-destructive'
                               : 'bg-muted-foreground/40'
                         "
-                      /><span class="truncate"
+                      />
+                      <!-- 大纲周次徽标（outline 新载荷 chapterWeeks；研读改版） -->
+                      <span
+                        v-if="phase.chapterWeeks?.[ci] != null"
+                        class="shrink-0 rounded bg-secondary-2 px-1.5 py-0.5 text-[10px] tabular-nums text-secondary-foreground"
+                        >第 {{ phase.chapterWeeks[ci] }} 周</span
+                      >
+                      <span class="truncate"
                         >{{ chapterTitle
-                        }}{{
-                          genState?.chapterDone?.[`${i}:${ci}`] ||
-                          genState?.phaseStatuses[i] === "complete"
-                            ? ""
-                            : "（待生成）"
-                        }}</span
+                        }}{{ skeletonChapterSuffix(phase, i, ci) }}</span
+                      >
+                      <span
+                        v-if="phase.chapterEstimatedHours?.[ci] != null"
+                        class="ml-auto shrink-0 text-xs tabular-nums"
+                        >{{ phase.chapterEstimatedHours[ci] }}h</span
                       >
                     </li>
                   </ul>

@@ -9,6 +9,7 @@ import {
   watch,
 } from "vue";
 import {
+  BookOpenText,
   CalendarCheck,
   Moon,
   NotebookPen,
@@ -28,6 +29,7 @@ import NotesView from "@/components/NotesView.vue";
 import PlanWorkbench from "@/components/PlanWorkbench.vue";
 import SettingsPage from "@/components/Settings.vue";
 import StartupSplash from "@/components/StartupSplash.vue";
+import StudyView from "@/components/StudyView.vue";
 import type { StartupStatus } from "@/types/agent";
 
 /**
@@ -64,13 +66,26 @@ const STARTUP_POLL_MS = 300;
 const STARTUP_MAX_FAILURES = 20;
 
 /** 页面唯一标识：与 MENU_ITEMS 的 id 一一对应 */
-type PageId = "plan" | "calendar" | "notes" | "settings";
+type PageId = "plan" | "study" | "calendar" | "notes" | "settings";
 
 /** 当前激活页面：侧栏菜单切换 */
 const activePage = ref<PageId>("plan");
 const readerFocused = ref(false);
 provide("readerFocused", readerFocused);
 watch(activePage, () => { readerFocused.value = false; });
+
+/**
+ * 研读页跨页导航（结果页章节「去研读」入口）：携带目标计划 id，
+ * StudyView 内部 watch target 完成预选。seq 保证同一计划重复跳转也触发。
+ */
+const studyTarget = shallowRef<{ planId: string; seq: number } | null>(null);
+
+/** 打开研读页并预选计划（provide 给 ChapterSection 等深层组件） */
+function openStudy(planId: string) {
+  studyTarget.value = { planId, seq: Date.now() };
+  activePage.value = "study";
+}
+provide("openStudy", openStudy);
 
 /** PlanWorkbench 实例（日历页「打开计划详情」跨页导航的调用口） */
 const workbenchRef = ref<InstanceType<typeof PlanWorkbench> | null>(null);
@@ -104,6 +119,7 @@ watch(sidebarCollapsed, (v) => {
 /** 主导航菜单（新增页面时在此追加，并在内容区按 activePage 渲染对应区域） */
 const MENU_ITEMS: MenuItem[] = [
   { id: "plan", label: "学习计划", icon: Route },
+  { id: "study", label: "研读", icon: BookOpenText },
   { id: "calendar", label: "打卡日历", icon: CalendarCheck },
   { id: "notes", label: "笔记生成", icon: NotebookPen },
   { id: "settings", label: "设置", icon: Settings },
@@ -266,6 +282,14 @@ onUnmounted(() => disposeProgressListener());
           class="scroll-stable min-w-0 flex-1 overflow-y-auto"
         >
           <PlanWorkbench ref="workbenchRef" />
+        </main>
+
+        <!-- 研读页：三栏（章节树 / 内容 / 标注·笔记·聊天），内部自管滚动 -->
+        <main
+          v-else-if="activePage === 'study'"
+          class="min-w-0 flex-1 overflow-hidden"
+        >
+          <StudyView :target="studyTarget" />
         </main>
 
         <!-- 打卡日历页：视觉版式先行（mock 数据，功能暂不实现） -->

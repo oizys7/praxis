@@ -115,6 +115,17 @@ async function main() {
     await fs.writeFile(file, Buffer.from(data.data, "base64"));
     return file;
   };
+  /** 研读改版交付截图：.review/study-*.png（与 check-* 分开命名） */
+  const shotStudy = async (name) => {
+    const data = await send("Page.captureScreenshot", {
+      format: "png",
+      captureBeyondViewport: false,
+      fromSurface: true,
+    });
+    const file = path.join(ROOT, ".review", `study-${name}.png`);
+    await fs.writeFile(file, Buffer.from(data.data, "base64"));
+    return file;
+  };
   const waitFor = async (expression, timeout = 8000) => {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
@@ -948,6 +959,43 @@ async function main() {
       await evaluate("(window.__previewRecords || []).length === 5"),
     );
 
+    // ---- 研读改版：大纲-only 生成流 + 周时间线 + 去研读入口 ----
+    check(
+      "大纲-only 生成流产出周时间线",
+      await waitFor("!!document.querySelector('[data-week-timeline]')", 4000),
+    );
+    check(
+      "周时间线含周次徽标与学时合计",
+      await evaluate(
+        "(document.querySelector('[data-week-timeline]')?.textContent ?? '').includes('第 1 周') && (document.querySelector('[data-week-timeline]')?.textContent ?? '').includes('≈')",
+      ),
+    );
+    check(
+      "周时间线章节 chips 可点击",
+      (await evaluate(
+        "document.querySelectorAll('[data-week-timeline] button').length",
+      )) > 0,
+    );
+    await shotStudy("week-timeline");
+    check(
+      "结果页章节显示未研读态",
+      await evaluate(
+        "(document.querySelector('.reader-chapter')?.textContent ?? '').includes('未研读')",
+      ),
+    );
+    check(
+      "结果页提供去研读入口",
+      await evaluate("!!document.querySelector('[data-study-goto]')"),
+    );
+    await evaluate("document.querySelector('[data-study-goto]')?.click()");
+    check(
+      "去研读跳转研读页并预选计划",
+      await waitFor(
+        "document.querySelector('h1')?.textContent.includes('研读') && (document.querySelector('[data-study-plan-select]')?.selectedOptions?.[0]?.textContent ?? '').includes('学习数据可视化')",
+        8000,
+      ),
+    );
+
     // 失败场景：保留表单/输入，只在下方显示错误
     await goto(`${BASE}?mode=mock&theme=light&gen=fail`);
     await waitFor(
@@ -1338,6 +1386,324 @@ async function main() {
     );
     await shot("settings");
 
+    // ---- 研读页：三栏 / 直渲染 / 打字机 / 标注 / 笔记 / 聊天 ----
+    await goto(`${BASE}?mode=mock&theme=light&page=study`);
+    await waitFor(
+      "document.querySelector('h1')?.textContent.includes('研读')",
+      8000,
+    );
+    check(
+      "研读菜单与三栏结构",
+      await evaluate(`(() => {
+        const vis = (sel) => {
+          const el = document.querySelector(sel);
+          if (!el) return false;
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && r.height > 0;
+        };
+        return (
+          [...document.querySelectorAll('.nav-item')].some((b) => b.textContent.includes('研读')) &&
+          vis('[data-study-tree]') &&
+          vis('[data-study-reader]') &&
+          vis('[data-study-panel]')
+        );
+      })()`),
+    );
+    check(
+      "默认选最近计划",
+      await evaluate(
+        "(document.querySelector('[data-study-plan-select]')?.selectedOptions?.[0]?.textContent ?? '').includes('Python 编程')",
+      ),
+    );
+    check(
+      "章节树带周次徽标",
+      await evaluate(
+        "(document.querySelector('[data-study-tree]')?.textContent ?? '').includes('第 1 周')",
+      ),
+    );
+    await shotStudy("three-column");
+    // 已生成章节：直接渲染，无打字机
+    await evaluate("document.querySelector('[data-study-chapter=\"0:0\"]')?.click()");
+    check(
+      "已生成章节直接渲染正文",
+      await waitFor(
+        "!!document.querySelector('[data-study-content] .reader-body')",
+        4000,
+      ),
+    );
+    check(
+      "直渲染无打字机残留",
+      await evaluate("!document.querySelector('[data-study-typewriter]')"),
+    );
+
+    // 空章节：自动按需生成 → 打字机渐进 → 完成转 markdown
+    await evaluate(`(() => {
+      const select = document.querySelector('[data-study-plan-select]');
+      const option = [...select.options].find((o) => o.textContent.includes('理解 Web'));
+      const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+      set.call(select, option.value);
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    check(
+      "切换计划章节树更新",
+      await waitFor(
+        "(document.querySelector('[data-study-tree]')?.textContent ?? '').includes('待补齐的一章')",
+        6000,
+      ),
+    );
+    await evaluate(
+      "[...document.querySelectorAll('[data-study-chapter]')].find((b) => b.textContent.includes('待补齐的一章'))?.click()",
+    );
+    check(
+      "空章自动进入打字机生成",
+      await waitFor("!!document.querySelector('[data-study-typewriter]')", 4000),
+    );
+    const typeLen1 = await evaluate(
+      "(document.querySelector('[data-study-typewriter]')?.textContent ?? '').length",
+    );
+    await sleep(350);
+    const typeLen2 = await evaluate(
+      "(document.querySelector('[data-study-typewriter]')?.textContent ?? '').length",
+    );
+    check("打字机文本渐进增长", typeLen2 > typeLen1, {
+      typeLen1,
+      typeLen2,
+    });
+    await shotStudy("typewriter");
+    check(
+      "生成完成转 markdown 全量渲染",
+      await waitFor(
+        "!!document.querySelector('[data-study-content] .reader-body') && (document.querySelector('[data-study-content]')?.textContent ?? '').includes('Mock 预览里按需生成') && !document.querySelector('[data-study-typewriter]')",
+        12000,
+      ),
+    );
+
+    // 重进已生成章节：直接渲染（不打字机）
+    await evaluate("document.querySelector('[data-study-chapter=\"1:0\"]')?.click()");
+    await sleep(400);
+    await evaluate(
+      "[...document.querySelectorAll('[data-study-chapter]')].find((b) => b.textContent.includes('待补齐的一章'))?.click()",
+    );
+    check(
+      "重进已生成章节直接渲染",
+      await waitFor(
+        "!!document.querySelector('[data-study-content] .reader-body') && !document.querySelector('[data-study-typewriter]')",
+        2500,
+      ),
+    );
+
+    // 标注：选中文本 → 浮动按钮 → 评论保存 → 定位 → 删除
+    check(
+      "选中文本浮现标注按钮",
+      await evaluate(`(async () => {
+        const root = document.querySelector('[data-study-content]');
+        if (!root) return false;
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        let node = walker.nextNode();
+        while (node && !(node.textContent ?? '').includes('自检清单')) node = walker.nextNode();
+        if (!node) return false;
+        const start = (node.textContent ?? '').indexOf('自检清单');
+        const range = document.createRange();
+        range.setStart(node, start);
+        range.setEnd(node, start + 4);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        root.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        // 浮动按钮由 Vue 渲染，等一帧再断言
+        await new Promise((resolve) => requestAnimationFrame(resolve));
+        return !!document.querySelector('[data-study-annotate]');
+      })()`),
+    );
+    await evaluate("document.querySelector('[data-study-annotate]')?.click()");
+    check(
+      "标注评论浮层打开",
+      await waitFor(
+        "!!document.querySelector('[data-study-annotate-pop]')",
+        2000,
+      ),
+    );
+    await evaluate(`(() => {
+      const input = document.querySelector('[data-study-annotate-pop] textarea');
+      const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      set.call(input, '拆解思想标注');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('[data-study-annotate-save]')?.click();
+    })()`);
+    check(
+      "标注保存入列表",
+      await waitFor(
+        "document.querySelectorAll('[data-study-annotation-item]').length === 1",
+        3000,
+      ),
+    );
+    check(
+      "标注携带评论内容",
+      await evaluate(
+        "(document.querySelector('[data-study-annotation-item]')?.textContent ?? '').includes('拆解思想标注')",
+      ),
+    );
+    await evaluate(
+      "document.querySelector('[data-study-tab=\"annotations\"]')?.click()",
+    );
+    await sleep(150);
+    await shotStudy("panel-annotations");
+    await evaluate(
+      "document.querySelector('[data-study-annotation-item] button')?.click()",
+    );
+    await sleep(400);
+    check(
+      "标注定位回原文不报错",
+      await evaluate("!!document.querySelector('[data-study-content]')"),
+    );
+    await evaluate(
+      "document.querySelector('[aria-label^=\"删除标注\"]')?.click()",
+    );
+    check(
+      "标注删除后列表清空",
+      await waitFor(
+        "document.querySelectorAll('[data-study-annotation-item]').length === 0",
+        3000,
+      ),
+    );
+
+    // 笔记：防抖保存 → 切章回显
+    await evaluate(
+      "document.querySelector('[data-study-tab=\"note\"]')?.click()",
+    );
+    await evaluate(`(() => {
+      const input = document.querySelector('[data-study-note-input]');
+      const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      set.call(input, '# 本章笔记\\n\\n拆解：输入→处理→输出。');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    check(
+      "笔记防抖保存反馈",
+      await waitFor(
+        "(document.querySelector('[data-study-note-status]')?.textContent ?? '').includes('已保存')",
+        4000,
+      ),
+    );
+    await shotStudy("panel-note");
+    await evaluate("document.querySelector('[data-study-chapter=\"1:0\"]')?.click()");
+    await sleep(400);
+    await evaluate(
+      "[...document.querySelectorAll('[data-study-chapter]')].find((b) => b.textContent.includes('待补齐的一章'))?.click()",
+    );
+    await sleep(700);
+    check(
+      "笔记重进回显",
+      await evaluate(
+        "document.querySelector('[data-study-note-input]')?.value.includes('拆解：输入→处理→输出')",
+      ),
+    );
+
+    // 聊天：提问 → 流式 → 终态 → 历史按章独立
+    await evaluate(
+      "document.querySelector('[data-study-tab=\"chat\"]')?.click()",
+    );
+    await evaluate(`(() => {
+      const input = document.querySelector('[data-study-chat-input]');
+      const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      set.call(input, '这一章的核心方法是什么？');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    await evaluate("document.querySelector('[aria-label=\"发送\"]')?.click()");
+    check(
+      "聊天问题即时上屏",
+      await waitFor(
+        "document.querySelectorAll('[data-study-chat-message]').length === 1",
+        2000,
+      ),
+    );
+    check(
+      "聊天回答流式到达",
+      await waitFor(
+        "document.querySelector('[data-study-chat-streaming]') !== null",
+        4000,
+      ),
+    );
+    check(
+      "聊天回答终态落位",
+      await waitFor(
+        "document.querySelectorAll('[data-study-chat-message]').length === 2 && document.querySelector('[data-study-chat-streaming]') === null",
+        8000,
+      ),
+    );
+    check(
+      "回答带章节上下文话术",
+      await evaluate(
+        "(document.querySelectorAll('[data-study-chat-message]')[1]?.textContent ?? '').includes('输入、处理、输出')",
+      ),
+    );
+    await shotStudy("panel");
+    await evaluate("document.querySelector('[data-study-chapter=\"1:0\"]')?.click()");
+    await sleep(400);
+    check(
+      "切换章节聊天为空（按章独立）",
+      await evaluate(
+        "document.querySelectorAll('[data-study-chat-message]').length === 0",
+      ),
+    );
+    await evaluate(
+      "[...document.querySelectorAll('[data-study-chapter]')].find((b) => b.textContent.includes('待补齐的一章'))?.click()",
+    );
+    check(
+      "重进章节聊天历史回读",
+      await waitFor(
+        "document.querySelectorAll('[data-study-chat-message]').length === 2",
+        4000,
+      ),
+    );
+    await shotStudy("three-column-final");
+
+    // 窄屏：单列不溢出，树抽屉收起
+    await send("Emulation.setDeviceMetricsOverride", {
+      width: 375,
+      height: 812,
+      deviceScaleFactor: 1,
+      mobile: true,
+    });
+    await goto(`${BASE}?mode=mock&theme=light&page=study`);
+    await waitFor(
+      "document.querySelector('h1')?.textContent.includes('研读')",
+      8000,
+    );
+    // 抽屉初始位移动画 200ms：等 transform 落定再量，避免量到过渡中间态
+    await waitFor(
+      "(() => { const r = document.querySelector('[data-study-tree]')?.getBoundingClientRect(); const m = document.querySelector('main')?.getBoundingClientRect(); return !!r && !!m && r.right <= m.left + 1; })()",
+      3000,
+    );
+    const studyNarrow = await evaluate(`(() => {
+      const main = document.querySelector('main');
+      const tree = document.querySelector('[data-study-tree]');
+      const tr = tree?.getBoundingClientRect();
+      const mr = main?.getBoundingClientRect();
+      return {
+        docOverflow: document.documentElement.scrollWidth > window.innerWidth,
+        mainOverflow: main.scrollWidth > main.clientWidth,
+        // 窄屏主区从侧栏右侧（≈64px）开始：抽屉右沿贴住主区左沿即为完全收起
+        treeOffscreen: !!tr && !!mr && tr.right <= mr.left + 1,
+        toggleVisible: !!document.querySelector('[aria-label="章节目录"]'),
+      };
+    })()`);
+    check(
+      "375 研读不横向溢出且树抽屉收起",
+      !studyNarrow.docOverflow &&
+        !studyNarrow.mainOverflow &&
+        studyNarrow.treeOffscreen &&
+        studyNarrow.toggleVisible,
+      studyNarrow,
+    );
+    await shotStudy("375");
+    // 恢复视口，供后续真实数据段使用
+    await send("Emulation.setDeviceMetricsOverride", {
+      width: 1440,
+      height: 1000,
+      deviceScaleFactor: 1,
+      mobile: false,
+    });
+
     // ---- 真实数据只读 ----
     const realAvailable = await fetch(new URL("/preview-data.local.json", BASE))
       .then((r) => r.ok)
@@ -1367,6 +1733,47 @@ async function main() {
         }
       })()`);
       check("真实模式拒绝写 IPC", blocked === "preview_readonly", blocked);
+      const studyBoundary = await evaluate(`(async () => {
+        const invoke = window.__TAURI_INTERNALS__.invoke;
+        const chats = await invoke('list_chat_messages', { planId: 'x', phaseIndex: 0, chapterIndex: 0 });
+        const annotations = await invoke('list_annotations', { planId: 'x', phaseIndex: 0, chapterIndex: 0 });
+        const note = await invoke('get_chapter_note', { planId: 'x', phaseIndex: 0, chapterIndex: 0 });
+        let writeCode = null;
+        try {
+          await invoke('save_chapter_note', { planId: 'x', phaseIndex: 0, chapterIndex: 0, contentMd: 'x' });
+        } catch (error) {
+          writeCode = error.code;
+        }
+        let genCode = null;
+        try {
+          await invoke('generate_chapter_content', { planId: 'x', phaseIndex: 0, chapterIndex: 0 });
+        } catch (error) {
+          genCode = error.code;
+        }
+        let chatCode = null;
+        try {
+          await invoke('chat_stream', { planId: 'x', phaseIndex: 0, chapterIndex: 0, question: 'hi' });
+        } catch (error) {
+          chatCode = error.code;
+        }
+        return { chats, annotations, note, writeCode, genCode, chatCode };
+      })()`);
+      check(
+        "真实模式研读读命令返回空",
+        Array.isArray(studyBoundary.chats) &&
+          studyBoundary.chats.length === 0 &&
+          Array.isArray(studyBoundary.annotations) &&
+          studyBoundary.annotations.length === 0 &&
+          studyBoundary.note === null,
+        studyBoundary,
+      );
+      check(
+        "真实模式研读写命令拒绝",
+        studyBoundary.writeCode === "preview_readonly" &&
+          studyBoundary.genCode === "preview_readonly" &&
+          studyBoundary.chatCode === "preview_readonly",
+        studyBoundary,
+      );
       check(
         "真实模式无预览标志且正文无外链图片",
         await evaluate(
