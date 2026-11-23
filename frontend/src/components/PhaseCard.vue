@@ -148,9 +148,9 @@ async function onRegenerate() {
 <template>
   <!-- 折叠受控开态（目录命令可驱动展开，反馈①） -->
   <Collapsible :open="open" @update:open="(v) => (open = v)">
-    <Card class="overflow-hidden">
+    <Card class="overflow-hidden border-0 bg-transparent shadow-none">
       <!-- 头部：折叠触发器（标题/箭头，主体行可点击）+ 右侧状态徽标与重生成按钮 -->
-      <div class="flex items-center gap-2">
+      <div class="flex items-center gap-2 rounded-xl border bg-secondary/50">
         <CollapsibleTrigger class="min-w-0 flex-1">
           <button
             type="button"
@@ -164,7 +164,7 @@ async function onRegenerate() {
               </span>
               <div class="min-w-0">
                 <div
-                  class="font-display truncate text-[15px] font-semibold leading-tight"
+                  class="text-lg font-semibold leading-relaxed"
                 >
                   {{ phase.name }}
                 </div>
@@ -220,10 +220,10 @@ async function onRegenerate() {
       </p>
 
       <CollapsibleContent>
-        <CardContent class="space-y-4 border-t pt-4">
+        <CardContent class="space-y-6 px-0 pb-8 pt-6 sm:px-2">
           <!-- 阶段目标 -->
           <div v-if="phase.objectives.length">
-            <h4 class="mb-1.5 text-sm font-semibold">🎯 阶段目标</h4>
+            <h4 class="mb-1.5 text-sm font-semibold">阶段目标</h4>
             <ul class="space-y-1 text-sm text-muted-foreground">
               <li
                 v-for="(item, i) in phase.objectives"
@@ -263,7 +263,6 @@ async function onRegenerate() {
             class="rounded-lg border bg-primary/5 p-3"
           >
             <div class="flex flex-wrap items-center gap-2">
-              <span>🚀</span>
               <span class="text-sm font-semibold"
                 >阶段项目：{{ phase.project.name }}</span
               >

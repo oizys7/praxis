@@ -9,10 +9,10 @@ import {
   watch,
 } from "vue";
 import {
-  BookOpen,
   CalendarCheck,
   Moon,
   NotebookPen,
+  Route,
   Settings,
   Sun,
 } from "lucide-vue-next";
@@ -68,6 +68,9 @@ type PageId = "plan" | "calendar" | "notes" | "settings";
 
 /** 当前激活页面：侧栏菜单切换 */
 const activePage = ref<PageId>("plan");
+const readerFocused = ref(false);
+provide("readerFocused", readerFocused);
+watch(activePage, () => { readerFocused.value = false; });
 
 /** PlanWorkbench 实例（日历页「打开计划详情」跨页导航的调用口） */
 const workbenchRef = ref<InstanceType<typeof PlanWorkbench> | null>(null);
@@ -81,6 +84,12 @@ async function onCalendarOpenPlan(planId: string) {
 
 /** 侧栏回传的菜单 id 收窄为页面联合（AppSidebar 以宽型 string 维护 id，菜单项受控常量，收窄安全） */
 function switchPage(id: string) {
+  // 已在学习计划页时再次点击「学习计划」：退出阅读/新建视图回到列表。
+  // 只切视图，不卸载 PlanWorkbench，后台生成监听与任务不受影响。
+  if (id === "plan" && activePage.value === "plan") {
+    workbenchRef.value?.exitToPlanList();
+    return;
+  }
   activePage.value = id as PageId;
 }
 
@@ -94,7 +103,7 @@ watch(sidebarCollapsed, (v) => {
 
 /** 主导航菜单（新增页面时在此追加，并在内容区按 activePage 渲染对应区域） */
 const MENU_ITEMS: MenuItem[] = [
-  { id: "plan", label: "学习计划", icon: BookOpen },
+  { id: "plan", label: "学习计划", icon: Route },
   { id: "calendar", label: "打卡日历", icon: CalendarCheck },
   { id: "notes", label: "笔记生成", icon: NotebookPen },
   { id: "settings", label: "设置", icon: Settings },
@@ -181,7 +190,7 @@ onUnmounted(() => disposeProgressListener());
 </script>
 
 <template>
-  <div class="flex h-screen flex-col overflow-hidden bg-background">
+  <div class="app-shell flex flex-col overflow-hidden bg-background" :class="{ 'is-focused': readerFocused }">
     <!-- 启动页：连云端库（10s+）与起 Agent 期间阻塞进入，
          此前这段等待只表现为各页面转圈，看起来像应用坏了 -->
     <StartupSplash
@@ -193,21 +202,21 @@ onUnmounted(() => disposeProgressListener());
     />
     <template v-else>
       <!-- 顶部栏 -->
-      <header class="shrink-0 border-b bg-background/80 backdrop-blur">
-        <div class="flex items-center justify-between px-6 py-3.5">
+      <header class="app-header shrink-0 border-b bg-card">
+        <div class="flex h-[76px] items-center justify-between gap-3 px-4 sm:px-7">
           <div class="flex items-center gap-3">
             <div
-              class="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-base font-black text-primary-foreground"
+              class="flex h-10 w-10 items-center justify-center rounded-xl bg-primary font-display text-2xl font-semibold text-primary-foreground"
             >
               P
             </div>
             <div>
               <!-- 页面唯一 h1 归属详情页（PlanResult），顶栏品牌降为 p -->
               <p class="font-display text-base font-semibold leading-tight">
-                Praxis · 学习路线规划 Agent
+                Praxis
               </p>
               <p class="text-xs text-muted-foreground">
-                理论 + 实操 + 作业 + 项目，可执行可验收
+                按目标规划学习路线
               </p>
             </div>
           </div>
@@ -215,7 +224,7 @@ onUnmounted(() => disposeProgressListener());
             <!-- 暗色主题切换：样式对齐侧栏图标按钮（rounded-lg + hover 语义色） -->
             <button
               type="button"
-              class="flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+              class="flex h-11 w-11 items-center justify-center rounded-xl text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
               :aria-label="isDark ? '切换到亮色主题' : '切换到暗色主题'"
               v-tip="isDark ? '切换到亮色主题' : '切换到暗色主题'"
               @click="toggleTheme"
@@ -233,7 +242,7 @@ onUnmounted(() => disposeProgressListener());
               "
             >
               <span class="mr-1">●</span>
-              Agent 服务{{
+              <span class="hidden sm:inline">Agent 服务</span>{{
                 agentOnline === null ? "检测中…" : agentOnline ? "在线" : "离线"
               }}
             </Badge>

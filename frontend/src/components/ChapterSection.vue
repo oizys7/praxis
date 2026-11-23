@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, inject, ref, watch, type ShallowRef } from "vue";
+import { marked } from "marked";
 import MarkdownContent from "@/components/MarkdownContent.vue";
 import VisualizationPlayer from "@/components/VisualizationPlayer.vue";
 import ExercisePanel from "@/components/ExercisePanel.vue";
@@ -14,6 +15,7 @@ import {
 } from "@/composables/useAgent";
 import { fetchPlanRecord } from "@/composables/usePlanHistory";
 import { isChapterGenerating } from "@/composables/useGenerationProgress";
+import { readerStickyOffset, scrollToWithinMain } from "@/lib/utils";
 import type { Chapter, StudyPlan } from "@/types/agent";
 
 /**
@@ -192,11 +194,15 @@ const collapsed = ref(false);
 const headings = computed(() => {
   const list: { level: number; text: string }[] = [];
   if (!props.chapter.contentMd) return list;
-  const headingRe = /^(#{2,3})[ \t]+(.+?)[ \t]*$/gm;
-  let match: RegExpExecArray | null;
-  while ((match = headingRe.exec(props.chapter.contentMd)) !== null) {
-    list.push({ level: match[1].length, text: match[2] });
-  }
+  marked.walkTokens(marked.lexer(props.chapter.contentMd), (token) => {
+    if (token.type === "heading" && (token.depth === 2 || token.depth === 3)) {
+      const html = marked.parseInline(token.text, { async: false }) as string;
+      const text =
+        new DOMParser().parseFromString(html, "text/html").body.textContent ??
+        token.text;
+      list.push({ level: token.depth, text });
+    }
+  });
   return list;
 });
 
@@ -208,18 +214,18 @@ const contentRoot = ref<HTMLElement | null>(null);
  * 这样无需生成/维护锚点 id（省掉一套 slug 冲突处理）。
  */
 function scrollToHeading(index: number) {
-  const nodes = contentRoot.value?.querySelectorAll("h2, h3");
-  nodes?.[index]?.scrollIntoView({ behavior: "smooth", block: "start" });
+  const nodes = contentRoot.value?.querySelectorAll<HTMLElement>("h2, h3");
+  scrollToWithinMain(nodes?.[index] ?? null, readerStickyOffset(12));
 }
 </script>
 
 <template>
-  <section class="rounded-lg border bg-card p-4">
+  <section class="reader-chapter">
     <!-- 整章标题行：chevron 切换正文显示；右侧章节级徽标与重生成入口 -->
     <header class="flex items-start justify-between gap-2">
       <button
         type="button"
-        class="flex min-w-0 flex-1 items-start gap-2 text-left"
+        class="flex min-h-11 min-w-0 flex-1 items-start gap-3 rounded text-left"
         :aria-expanded="!collapsed"
         @click="collapsed = !collapsed"
       >
@@ -237,7 +243,9 @@ function scrollToHeading(index: number) {
           <path d="m6 9 6 6 6-6" />
         </svg>
         <div class="min-w-0">
-          <h4 class="flex flex-wrap items-baseline gap-2 text-sm font-semibold">
+          <h4
+            class="flex flex-wrap items-baseline gap-2 text-xl font-semibold leading-relaxed"
+          >
             <span>{{ props.chapter.title }}</span>
             <!-- 打卡态是只读派生（由打卡记录聚合），这里只负责显示，不提供写入 -->
             <Badge
@@ -294,11 +302,11 @@ function scrollToHeading(index: number) {
     </p>
 
     <!-- 正文：markdown 渲染（整章标题行折叠，默认展开） -->
-    <div v-show="!collapsed" class="mt-3">
+    <div v-show="!collapsed" class="mt-6">
       <!-- 章内小节目录：正文 1500-3000 字，靠滚动定位太慢，给小节一个扁平入口 -->
       <nav
         v-if="headings.length > 2"
-        class="mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-border/60 bg-muted/30 px-3 py-2"
+        class="mb-8 flex flex-wrap items-center gap-x-2 gap-y-1 border-y border-border/60 py-3"
         aria-label="本章目录"
       >
         <span class="text-xs text-muted-foreground">本章目录</span>
@@ -306,7 +314,7 @@ function scrollToHeading(index: number) {
           v-for="(heading, index) in headings"
           :key="index"
           type="button"
-          class="rounded px-1.5 py-0.5 text-xs transition-colors hover:bg-background hover:text-primary focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:outline-none"
+          class="min-h-9 rounded px-2 py-1 text-xs transition-colors hover:bg-accent hover:text-primary focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
           :class="
             heading.level === 3
               ? 'text-muted-foreground/80'

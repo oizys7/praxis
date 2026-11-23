@@ -117,7 +117,10 @@ function cellLabel(cell: CalendarCell): string {
 <template>
   <div>
     <!-- 星期表头（周一起始） -->
-    <div class="mb-2 grid grid-cols-7 gap-2" aria-hidden="true">
+    <div
+      class="mb-2 grid grid-cols-[repeat(7,minmax(0,1fr))] gap-1 sm:gap-2"
+      aria-hidden="true"
+    >
       <div
         v-for="label in WEEK_LABELS"
         :key="label"
@@ -127,9 +130,9 @@ function cellLabel(cell: CalendarCell): string {
       </div>
     </div>
 
-    <!-- 6 × 7 月历网格 -->
+    <!-- 6 × 7 月历网格；month-grid 为回归脚本的结构钩子（scripts/preview-check.mjs） -->
     <div
-      class="grid grid-cols-7 gap-2"
+      class="month-grid grid grid-cols-[repeat(7,minmax(0,1fr))] gap-1 sm:gap-2"
       role="group"
       :aria-label="`${year} 年 ${month + 1} 月日历`"
     >
@@ -143,7 +146,7 @@ function cellLabel(cell: CalendarCell): string {
         <button
           v-else
           type="button"
-          class="flex min-h-[5.5rem] cursor-pointer flex-col items-start gap-1 rounded-lg border p-1.5 text-left transition-colors duration-200 hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          class="flex min-h-[5.5rem] min-w-0 cursor-pointer flex-col items-start gap-1 overflow-hidden rounded-lg border p-1.5 text-left transition-colors duration-200 hover:bg-accent/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
           :class="
             cell.isToday
               ? 'border-primary/60 bg-primary/[0.05] ring-2 ring-inset ring-primary/50'
@@ -170,7 +173,7 @@ function cellLabel(cell: CalendarCell): string {
             </span>
             <span
               v-if="cell.total > 0"
-              class="h-1.5 w-1.5 rounded-full"
+              class="month-dot hidden h-1.5 w-1.5 rounded-full sm:inline-block"
               :class="
                 cell.done === cell.total
                   ? 'bg-success'
@@ -178,13 +181,29 @@ function cellLabel(cell: CalendarCell): string {
               "
               aria-hidden="true"
             />
+            <!-- 窄屏只留日期与任务数；具体章节点日看抽屉 -->
+            <span
+              v-if="cell.total > 0"
+              class="month-count ml-auto text-[10px] leading-none tabular-nums sm:hidden"
+              :class="
+                cell.done === cell.total
+                  ? 'text-success'
+                  : 'text-muted-foreground'
+              "
+              aria-hidden="true"
+            >
+              {{ cell.total }}
+            </span>
           </span>
-          <!-- 章事件块（至多两枚，溢出折叠） -->
-          <ul v-if="cell.events.length > 0" class="w-full space-y-1">
+          <!-- 章事件块（至多两枚，溢出折叠；窄屏隐藏） -->
+          <ul
+            v-if="cell.events.length > 0"
+            class="month-events hidden min-w-0 w-full space-y-1 overflow-hidden sm:block"
+          >
             <li
               v-for="(ev, ei) in cell.events"
               :key="ei"
-              class="truncate rounded-md border px-1.5 py-0.5 text-[11px] leading-tight"
+              class="min-w-0 truncate rounded-md border px-1.5 py-0.5 text-[11px] leading-tight"
               :class="
                 ev.done
                   ? 'border-transparent bg-success/20 text-success'

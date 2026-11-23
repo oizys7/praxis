@@ -82,14 +82,11 @@ function onSubmit() {
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-6xl px-6 py-8 2xl:max-w-7xl">
+  <div class="page-shell">
     <!-- 页头：衬线大标题 + 摘行（原 CardHeader 文案上移） -->
     <div class="mb-6">
-      <h2 class="font-display text-3xl font-semibold tracking-tight">设置</h2>
-      <p class="mt-1 text-sm text-muted-foreground">
-        Agent 运行配置，保存后立即热加载到服务；Key 仅保存在本机 settings.json
-      </p>
-      <div class="mt-4 h-px bg-primary/15" role="presentation" />
+      <h1 class="page-heading">设置</h1>
+      <p class="page-description">选择适合你的模型，配置会在保存后生效。API Key 仅保存在本机。</p>
     </div>
     <Card>
       <CardContent class="pt-6">

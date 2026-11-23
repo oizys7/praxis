@@ -2,51 +2,72 @@
 @tailwind components;
 @tailwind utilities;
 
-/*
- * shadcn/ui 色板 CSS 变量（hsl 通道形式，由 tailwind.config.js 引用）。
- * 「自习室纸面」主题：冷灰米白纸底 + 墨线正文 + 墨蓝主强调 + 书绿成长语义
- * + 朱批警示 + 沙框分隔；个人学习工具，安静耐读优先于仪表盘感。
- * 暗色为「暗自习室」：同语义变量的暗底重映射（.dark 分支），
- * documentElement 的 dark class 切换（入口 main.ts 初始化 + App 顶栏按钮）。
- */
 @layer base {
   :root {
-    /* 原生控件（select 下拉列表、滚动条、日期选择器）跟随主题：
-       这些部件由 UA 绘制，只有 color-scheme 能影响它们 */
     color-scheme: light;
-    /* 纸面 #FAF9F6 冷灰米白 */
+    /* 「自习室纸面」暖色主题（应设计要求从改版前的暖黄纸面恢复）：
+       纸面 #FAF9F6 + 墨线 #2A3342 + 墨蓝 #3D5A73 主强调 + 书绿/朱批语义；
+       形状与布局沿用现版（radius 0.75rem 不回退） */
     --background: 40 33% 97%;
-    /* 墨线 #2A3342 近黑偏蓝灰 */
     --foreground: 215 22% 21%;
     --card: 40 33% 99%;
     --card-foreground: 215 22% 21%;
     --popover: 40 33% 99%;
     --popover-foreground: 215 22% 21%;
-    /* 墨蓝 #3D5A73 主强调 */
     --primary: 208 31% 35%;
     --primary-foreground: 40 33% 98%;
-    /* 沙框 #E7E2D8 的两档浅层底 */
     --secondary: 40 24% 92%;
     --secondary-foreground: 215 22% 28%;
     --muted: 40 24% 93%;
     --muted-foreground: 215 10% 42%;
     --accent: 40 24% 92%;
     --accent-foreground: 215 22% 28%;
-    /* 朱批 #B4443C */
     --destructive: 4 50% 47%;
     --destructive-foreground: 40 33% 98%;
     --border: 40 24% 87%;
     --input: 40 24% 87%;
     --ring: 208 31% 35%;
-    /* 书绿 #5E7B57 成长语义（完成/知识点/正向） */
     --success: 96 17% 41%;
-    --radius: 0.625rem;
+    --success-foreground: 40 33% 98%;
+    --radius: 0.75rem;
     /*
-     * 代码块配色：Catppuccin Latte（白主题）。
-     * 这一组刻意独立于上面的语义变量——上面是 HSL 通道三元组（由
-     * hsl(var(--x)) 消费），而代码高亮要十几种语义色，塞进去只会把 19 个
-     * 变量扩成 40 个；这里直接用 Catppuccin 官方 hex，跟着 .dark 换。
+     * 色阶令牌（供全局使用）：六个颜色族 × 5 阶，经 tailwind.config.js
+     * 映射为 bg-primary-3 / text-success-5 等工具类。约定两主题一致：
+     * 3 = 基准（与同族 DEFAULT 同值），1→5 由「融入纸面」走向「强调端」
+     * （亮色下 5 最深、暗色下 5 最亮，都是对底面对比最强的一端）。
+     * 手写 CSS 直接消费 hsl(var(--primary-1))。
      */
+    --primary-1: 208 30% 94%;
+    --primary-2: 208 28% 80%;
+    --primary-3: 208 31% 35%;
+    --primary-4: 211 33% 27%;
+    --primary-5: 213 36% 20%;
+    --secondary-1: 40 26% 96%;
+    --secondary-2: 40 25% 94%;
+    --secondary-3: 40 24% 92%;
+    --secondary-4: 40 22% 85%;
+    --secondary-5: 38 20% 76%;
+    --accent-1: 40 26% 96%;
+    --accent-2: 40 25% 94%;
+    --accent-3: 40 24% 92%;
+    --accent-4: 40 22% 85%;
+    --accent-5: 38 20% 76%;
+    --muted-1: 40 25% 97%;
+    --muted-2: 40 24% 95%;
+    --muted-3: 40 24% 93%;
+    --muted-4: 40 22% 87%;
+    --muted-5: 39 20% 79%;
+    --destructive-1: 4 45% 95%;
+    --destructive-2: 4 48% 87%;
+    --destructive-3: 4 50% 47%;
+    --destructive-4: 5 52% 39%;
+    --destructive-5: 5 55% 31%;
+    --success-1: 96 20% 94%;
+    --success-2: 96 18% 85%;
+    --success-3: 96 17% 41%;
+    --success-4: 98 19% 33%;
+    --success-5: 100 22% 26%;
+    /* 代码块：Catppuccin Latte（原暖色主题的白主题代码配色） */
     --code-base: #eff1f5;
     --code-mantle: #e6e9ef;
     --code-text: #4c4f69;
@@ -63,66 +84,77 @@
     --code-meta: #179299;
     --code-tag: #d20f39;
   }
-
-  /*
-   * 「暗自习室」：深层墨蓝纸面基调，:root 语义变量逐项暗底重映射——
-   * 纸面下沉为深墨蓝、墨线反转为暖纸白、墨蓝/书绿/朱批换提亮变体，
-   * 徽章三态（success/destructive/secondary）随之联动；组件层零 dark:
-   * 变体，全靠此组换肤。--radius 不重复声明，继承 :root 保持一致。
-   */
   .dark {
-    /* 暗色下原生下拉/滚动条转深色，否则 <option> 仍是白底黑字 */
     color-scheme: dark;
-    /* 深墨蓝纸面 #141A24 */
-    --background: 216 29% 11%;
-    /* 暖纸白 #E2E7F0（墨线反转，暗底正文 ~13.9:1） */
-    --foreground: 215 25% 91%;
-    /* 卡片比纸面亮一档 #1A222D */
-    --card: 216 27% 14%;
-    --card-foreground: 215 25% 91%;
-    /* 浮层比卡片再亮半档，保持层级感 */
-    --popover: 216 27% 15%;
-    --popover-foreground: 215 25% 91%;
-    /* 墨蓝提亮变体 #7E9FBE（亮色 #3D5A73 的暗底等值，暗底 ~6.3:1） */
-    --primary: 209 33% 62%;
-    --primary-foreground: 216 30% 12%;
-    /* 沙框深层底 #242C38 */
-    --secondary: 217 22% 18%;
-    --secondary-foreground: 215 25% 90%;
-    --muted: 217 21% 17%;
-    /* 辅助正文 #98A4B3（暗底 ~6.9:1） */
-    --muted-foreground: 215 15% 65%;
-    --accent: 217 22% 18%;
-    --accent-foreground: 215 25% 90%;
-    /* 朱批提亮变体 #CC645C（亮色 #B4443C 的暗底等值，暗底 ~4.6:1） */
-    --destructive: 4 52% 58%;
-    --destructive-foreground: 216 30% 12%;
-    /* 沙框暗色等值 #2D3643 */
-    --border: 217 20% 22%;
-    --input: 217 20% 22%;
-    --ring: 209 33% 62%;
-    /* 书绿提亮变体 #8FAB7C（亮色 #5E7B57 的暗底等值，暗底 ~6.9:1） */
-    --success: 96 22% 58%;
-    /* 代码块配色：Catppuccin Frappé（黑主题），与 Latte 逐项对应 */
-    --code-base: #303446;
-    --code-mantle: #292c3c;
-    --code-text: #c6d0f5;
-    --code-subtext: #a5adce;
-    --code-comment: #737994;
-    --code-border: #414559;
-    --code-keyword: #ca9ee6;
-    --code-string: #a6d189;
-    --code-number: #ef9f76;
-    --code-function: #8caaee;
-    --code-type: #e5c890;
-    --code-attr: #e5c890;
-    --code-variable: #e78284;
-    --code-meta: #81c8be;
-    --code-tag: #e78284;
+    --background: 215 22% 12%;
+    --foreground: 211 19% 86%;
+    --card: 215 20% 15%;
+    --card-foreground: 211 19% 86%;
+    --popover: 215 19% 18%;
+    --popover-foreground: 211 19% 86%;
+    --primary: 187 30% 65%;
+    --primary-foreground: 215 25% 12%;
+    --secondary: 213 18% 21%;
+    --secondary-foreground: 210 20% 86%;
+    --muted: 213 18% 18%;
+    --muted-foreground: 212 15% 67%;
+    --accent: 201 22% 23%;
+    --accent-foreground: 187 30% 78%;
+    --destructive: 2 68% 73%;
+    --destructive-foreground: 215 25% 12%;
+    --border: 213 17% 26%;
+    --input: 213 17% 35%;
+    --ring: 187 30% 65%;
+    --success: 155 31% 65%;
+    --success-foreground: 215 25% 12%;
+    /* 色阶令牌（暗色分支）：3 = 基准，1→5 由「沉入暗底」走向「提亮强调端」。
+       亮暗两套独立成阶，语义方向一致（5 恒为对比最强端） */
+    --primary-1: 187 28% 26%;
+    --primary-2: 187 28% 44%;
+    --primary-3: 187 30% 65%;
+    --primary-4: 188 33% 74%;
+    --primary-5: 189 36% 83%;
+    --secondary-1: 213 18% 13%;
+    --secondary-2: 213 18% 17%;
+    --secondary-3: 213 18% 21%;
+    --secondary-4: 213 16% 28%;
+    --secondary-5: 213 15% 37%;
+    --accent-1: 201 22% 14%;
+    --accent-2: 201 22% 18%;
+    --accent-3: 201 22% 23%;
+    --accent-4: 201 20% 31%;
+    --accent-5: 201 19% 41%;
+    --muted-1: 213 18% 11%;
+    --muted-2: 213 18% 14%;
+    --muted-3: 213 18% 18%;
+    --muted-4: 213 16% 25%;
+    --muted-5: 213 15% 34%;
+    --destructive-1: 2 45% 28%;
+    --destructive-2: 2 55% 48%;
+    --destructive-3: 2 68% 73%;
+    --destructive-4: 3 74% 81%;
+    --destructive-5: 4 80% 88%;
+    --success-1: 155 26% 24%;
+    --success-2: 155 28% 42%;
+    --success-3: 155 31% 65%;
+    --success-4: 156 34% 74%;
+    --success-5: 157 38% 83%;
+    --code-base: #1c2531;
+    --code-mantle: #263241;
+    --code-text: #ccd6e3;
+    --code-subtext: #a9b7c7;
+    --code-comment: #91a1b6;
+    --code-border: #344254;
+    --code-keyword: #c6a6df;
+    --code-string: #a5c89e;
+    --code-number: #e0ae85;
+    --code-function: #9abbe3;
+    --code-type: #d7c28f;
+    --code-attr: #d7c28f;
+    --code-variable: #e2a0b3;
+    --code-meta: #94c6c8;
+    --code-tag: #e2a0b3;
   }
-}
-
-@layer base {
   * {
     @apply border-border;
   }
@@ -131,194 +163,340 @@
     font-family:
       "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   }
-  /* viewport-lock 双保险：滚动宿主是各页面 main（overflow-y-auto），
-     html/body 永不出现文档级滚动条（消灭与 main 并存的双滚动条） */
   html,
   body {
     overflow: hidden;
   }
+  button:not(:disabled),
+  [role="button"],
+  summary {
+    cursor: pointer;
+  }
+  :focus-visible {
+    outline: 2px solid hsl(var(--ring));
+    outline-offset: 4px;
+  }
+  ::selection {
+    background: hsl(var(--primary) / 0.18);
+  }
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--border)) transparent;
+  }
 }
 
+@layer components {
+  .page-shell {
+    @apply mx-auto w-full max-w-6xl px-5 py-8 sm:px-8 lg:px-12 lg:py-12;
+  }
+  .page-heading {
+    @apply font-display text-3xl font-semibold tracking-tight sm:text-4xl;
+  }
+  .page-description {
+    @apply mt-3 text-sm leading-7 text-muted-foreground;
+  }
+  .reader-chapter {
+    @apply border-t py-8 sm:py-10;
+  }
+  .reader-chapter:first-child {
+    @apply border-t-0;
+  }
+  .reader-toolbar {
+    @apply sticky top-0 z-20 mb-8 flex flex-wrap items-center justify-between gap-2 border-b bg-background/95 py-3 backdrop-blur;
+  }
+}
 @layer utilities {
-  /* 滚动条槽位常驻：内容高度跨越一屏阈值时滚动条出现/消失不再挤压
-     内容宽度，消除全文 reflow 文字抖动（Windows 滚动条占宽） */
   .scroll-stable {
     scrollbar-gutter: stable;
   }
 }
 
-/*
- * 减动画偏好退避（Web Interface Guidelines）：装饰性动效在
- * prefers-reduced-motion 下全部停用——进场位移、过渡ooth全部即时化；
- * 过程指示（spinner，animation 类）保留，语义需要不属于装饰。
- */
-@media (prefers-reduced-motion: reduce) {
-  .animate-fade-in-up {
-    animation: none !important;
-  }
-
-  *,
-  *::before,
-  *::after {
-    transition-duration: 0.01ms !important;
-  }
+.app-shell {
+  height: 100dvh;
+}
+.app-sidebar {
+  width: 216px;
+}
+.app-sidebar.is-collapsed {
+  width: 72px;
+}
+.app-sidebar.is-collapsed .nav-label,
+.app-sidebar.is-collapsed .sidebar-caption {
+  display: none;
+}
+.app-sidebar.is-collapsed .nav-item {
+  justify-content: center;
+  padding-inline: 0;
+}
+.app-shell.is-focused .app-sidebar {
+  display: none;
+}
+.app-shell.is-focused .app-header {
+  display: none;
 }
 
-/* ---------------------------------------------------------------------------
- * 全局统一 tooltip（v-tip 指令，src/directives/tip.ts）
- * 深墨蓝气泡 + 纸色文字，跟随明暗主题；fixed 定位挂 body。
- * ------------------------------------------------------------------------- */
 .praxis-tip {
   position: fixed;
   z-index: 9999;
   max-width: min(280px, calc(100vw - 16px));
-  padding: 6px 10px;
+  padding: 7px 11px;
   border-radius: 8px;
-  /* 浮层语义气泡：跟随主题同色系——亮色=近白纸底墨字，暗色=深底亮字
-   * （popover 本就是浮层角色，border 界定边缘，不反转不恒黑）。
-   * 变量是 HSL 通道值（tailwind 约定），必须 hsl() 包装——裸 var() 是
-   * 非法颜色值被整条丢弃，此前气泡一直因此全透明。 */
-  background-color: hsl(var(--popover));
+  background: hsl(var(--popover));
   color: hsl(var(--popover-foreground));
   border: 1px solid hsl(var(--border));
   font-size: 12px;
   line-height: 1.6;
   overflow-wrap: anywhere;
-  box-shadow: 0 4px 16px rgb(0 0 0 / 0.16);
+  box-shadow: 0 6px 24px rgb(20 35 50 / 0.12);
   pointer-events: none;
   opacity: 0;
   transform: translateY(2px);
   transition:
-    opacity 0.14s ease,
-    transform 0.14s ease;
+    opacity 140ms ease,
+    transform 140ms ease;
 }
-
 .praxis-tip--show {
   opacity: 1;
   transform: translateY(0);
 }
-
-/* 隐形测量阶段：禁用过渡，避免首帧闪跳 */
 .praxis-tip--measure {
   transition: none;
 }
-
-/* ---------------------------------------------------------------------------
- * 全局按钮按压反馈：按下轻微缩放 + 统一过渡收编。
- * unlayered 声明优先于工具层（覆盖 Button variants 的 transition-colors
- * 为超集列表，颜色/阴影/位移/内边距过渡全部保留）。
- * ------------------------------------------------------------------------- */
 button:not(:disabled) {
-  transition-property:
-    color, background-color, border-color, box-shadow, transform, opacity,
-    padding;
-  transition-duration: 150ms;
-  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-button:not(:disabled):active {
-  transform: scale(0.97);
-}
-
-/* ---------------------------------------------------------------------------
- * 日历年月切换动画（CalendarView，v-tip 交互区同族）
- * cal-cross = 月↔年纯淡化；cal-slide-next/prev = 翻页（进入侧 10px 方向位移）。
- * 用 out-in 一次只交接一个视图：月历与热力图布局差异大，叠层交叉会重影。
- * leave 90ms 快速退场、enter 170ms 顺滑收住（合计 260ms，与滑块 220ms 同拍）；
- * 不做缩放。reduced-motion 全局块即时化（瞬切）。
- * ------------------------------------------------------------------------- */
-.cal-cross-enter-active,
-.cal-slide-next-enter-active,
-.cal-slide-prev-enter-active {
   transition:
-    opacity 0.17s cubic-bezier(0.32, 0.72, 0, 1),
-    transform 0.17s cubic-bezier(0.32, 0.72, 0, 1);
+    color 160ms,
+    background-color 160ms,
+    border-color 160ms,
+    opacity 160ms;
 }
 
-.cal-cross-leave-active,
-.cal-slide-next-leave-active,
-.cal-slide-prev-leave-active {
-  transition:
-    opacity 0.09s ease-in,
-    transform 0.09s ease-in;
+.reader-body {
+  font-size: var(--reader-font-size, 17px);
 }
-
-/* 月 ↔ 年：纯淡化交接（两种布局差异大，叠层/缩放都会显得抖） */
-.cal-cross-enter-from,
-.cal-cross-leave-to {
-  opacity: 0;
+.markdown-code {
+  color: hsl(var(--foreground));
+  line-height: 1.95;
+  overflow-wrap: anywhere;
+  text-align: start;
 }
-
-/* 翻页：仅进入侧带极轻方向位移，退场纯淡出 */
-.cal-slide-next-enter-from {
-  opacity: 0;
-  transform: translateX(10px);
+.markdown-code > :first-child {
+  margin-top: 0;
 }
-
-.cal-slide-next-leave-to {
-  opacity: 0;
+.markdown-code p {
+  margin: 1.1em 0;
 }
-
-.cal-slide-prev-enter-from {
-  opacity: 0;
-  transform: translateX(-10px);
+.markdown-code h1,
+.markdown-code h2,
+.markdown-code h3,
+.markdown-code h4,
+.markdown-code h5,
+.markdown-code h6 {
+  color: hsl(var(--foreground));
+  font-weight: 650;
+  line-height: 1.5;
+  margin: 2em 0 0.85em;
+  scroll-margin-top: 110px;
+  text-wrap: pretty;
 }
-
-.cal-slide-prev-leave-to {
-  opacity: 0;
+.markdown-code h1 {
+  font-size: 1.65em;
 }
-
-/* ---------------------------------------------------------------
- * 抽屉打卡「盖章」动画（DayDrawer）：从未学 → 已学时印章压下。
- * 略微过冲后落定（scale + 小角度旋转），240ms 弹性曲线；
- * 印章元素以 item.done 为 key 重建，保证每次打卡都重放一次。
- * reduced-motion 全局块会把动画时长压到 0.01ms。
- * --------------------------------------------------------------- */
-@keyframes stamp-in {
-  0% {
-    transform: scale(0.55) rotate(-14deg);
-    opacity: 0.35;
-  }
-  55% {
-    transform: scale(1.15) rotate(3deg);
-    opacity: 1;
-  }
-  100% {
-    transform: scale(1) rotate(0deg);
-  }
+.markdown-code h2 {
+  font-size: 1.4em;
 }
-
-.stamp-in {
-  animation: stamp-in 240ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+.markdown-code h3 {
+  font-size: 1.15em;
 }
-
-/* ---------------------------------------------------------------------------
- * 章节正文的代码块（.markdown-code 由 MarkdownContent 挂在外层容器上）
- *
- * 放在 @layer 之外是有意的：v-html 注入的正文拿不到工具类，pre/code 的外观
- * 只能靠这里统一；而 Tailwind preflight 在 base 层，层级外的规则天然压过它。
- * ------------------------------------------------------------------------- */
+.markdown-code h4,
+.markdown-code h5,
+.markdown-code h6 {
+  font-size: 1em;
+}
+.markdown-code strong {
+  font-weight: 650;
+}
+.markdown-code ul,
+.markdown-code ol {
+  padding-left: 1.5em;
+  margin: 1em 0;
+}
+.markdown-code ul {
+  list-style: disc;
+}
+.markdown-code ol {
+  list-style: decimal;
+}
+.markdown-code li {
+  padding-left: 0.25em;
+  margin: 0.4em 0;
+}
+.markdown-code li::marker {
+  color: hsl(var(--primary));
+}
+.markdown-code a {
+  color: hsl(var(--primary));
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+.markdown-code a:hover {
+  text-decoration-thickness: 2px;
+}
+.markdown-code blockquote {
+  margin: 1.6em 0;
+  padding: 0.2em 1.2em;
+  border-left: 3px solid hsl(var(--primary) / 0.6);
+  background: hsl(var(--accent) / 0.5);
+  color: hsl(var(--secondary-foreground));
+  border-radius: 0 8px 8px 0;
+}
+.markdown-code hr {
+  margin: 2em 0;
+}
+.markdown-code img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 1.5em auto;
+  border-radius: 10px;
+}
+.markdown-code .img-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 1.5em auto;
+  padding: 2.5rem 1rem;
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px dashed hsl(var(--border));
+  border-radius: 10px;
+  background: hsl(var(--muted) / 0.35);
+  color: hsl(var(--muted-foreground));
+  font-size: 0.875em;
+}
+.markdown-code .table-scroll {
+  overflow-x: auto;
+  margin: 1.5em 0;
+  border: 1px solid hsl(var(--border));
+  border-radius: 10px;
+}
+/* 宽表溢出提示：仅真的横向溢出时出现（.is-overflow 由组件核对 scrollWidth）。
+   sticky left 让提示在横向滚动时保持可见；两侧渐隐只在没有更多内容的
+   一侧关闭（.at-start/.at-end 由滚动边缘同步）。背景层固定在包裹层视口，
+   不随内容滚动（scroll 容器内 background-attachment 默认即如此）。 */
+.markdown-code .table-hint {
+  display: none;
+}
+.markdown-code .table-scroll.is-overflow {
+  background-image:
+    linear-gradient(
+      to left,
+      transparent calc(100% - 104px),
+      hsl(var(--card) / 0.9) calc(100% - 2px)
+    ),
+    linear-gradient(
+      to right,
+      transparent calc(100% - 104px),
+      hsl(var(--card) / 0.9) calc(100% - 2px)
+    );
+}
+.markdown-code .table-scroll.is-overflow.at-start {
+  background-image: none,
+    linear-gradient(
+      to right,
+      transparent calc(100% - 104px),
+      hsl(var(--card) / 0.9) calc(100% - 2px)
+    );
+}
+.markdown-code .table-scroll.is-overflow.at-end {
+  background-image: linear-gradient(
+      to left,
+      transparent calc(100% - 104px),
+      hsl(var(--card) / 0.9) calc(100% - 2px)
+    ),
+    none;
+}
+.markdown-code .table-scroll.is-overflow .table-hint {
+  display: block;
+  position: sticky;
+  left: 0;
+  width: fit-content;
+  padding: 7px 14px 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: hsl(var(--muted-foreground));
+}
+.markdown-code .table-scroll > table {
+  margin-top: 2px;
+}
+.markdown-code table {
+  width: max-content;
+  min-width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875em;
+  text-align: left;
+}
+.markdown-code th {
+  background: hsl(var(--muted));
+  font-weight: 600;
+}
+.markdown-code th,
+.markdown-code td {
+  padding: 0.7em 1em;
+  border-bottom: 1px solid hsl(var(--border));
+  min-width: 7em;
+}
+.markdown-code tr:last-child td {
+  border-bottom: 0;
+}
+.markdown-code .code-block {
+  margin: 1.5em 0;
+  overflow: hidden;
+  border: 1px solid var(--code-border);
+  border-radius: 10px;
+  background: var(--code-base);
+}
+.code-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 3px 14px;
+  background: var(--code-mantle);
+  border-bottom: 1px solid var(--code-border);
+  color: var(--code-subtext);
+  font:
+    12px/1.5 "Segoe UI",
+    sans-serif;
+}
+.code-copy {
+  min-height: 40px;
+  padding: 0 8px;
+  border-radius: 5px;
+}
+.code-copy:hover {
+  color: var(--code-text);
+  background: var(--code-base);
+}
 .markdown-code pre {
-  margin: 0.75rem 0;
-  padding: 0.75rem 0.875rem;
+  margin: 1em 0;
+  padding: 1.1rem 1.25rem;
   overflow-x: auto;
   background: var(--code-base);
   color: var(--code-text);
   border: 1px solid var(--code-border);
-  border-radius: calc(var(--radius) - 2px);
+  border-radius: 10px;
   font-family:
-    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono",
-    monospace;
-  font-size: 0.8125rem;
-  line-height: 1.7;
+    "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+  font-size: 0.85em;
+  line-height: 1.8;
   tab-size: 2;
-  /* 正文段落带 text-indent（首行缩进 2em），而 text-indent 是可继承属性：
-     这里必须显式归零，否则代码块第一行会凭空缩进 */
   text-indent: 0;
 }
-
-/* pre 里的 code 只是「容器内的纯文本」：不能再有背景或内边距，
-   否则整块代码会比正文多内缩一截（旧的 [&_code]:px-1 正是这么来的） */
+.markdown-code .code-block pre {
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
 .markdown-code pre code {
   padding: 0;
   background: transparent;
@@ -327,25 +505,17 @@ button:not(:disabled):active {
   font-size: inherit;
   white-space: pre;
 }
-
-/* 行内 code（片段、字段名） */
 .markdown-code :not(pre) > code {
-  padding: 0.1em 0.35em;
+  padding: 0.12em 0.35em;
   background: var(--code-mantle);
   color: var(--code-variable);
-  border: 1px solid var(--code-border);
   border-radius: 4px;
-  font-family:
-    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono",
-    monospace;
+  font-family: "Cascadia Code", Consolas, monospace;
   font-size: 0.875em;
 }
-
-/* Catppuccin 语法着色：highlight.js 的 token 类名 */
 .hljs-comment,
 .hljs-quote {
   color: var(--code-comment);
-  font-style: italic;
 }
 .hljs-keyword,
 .hljs-selector-tag,
@@ -396,4 +566,78 @@ button:not(:disabled):active {
 }
 .hljs-strong {
   font-weight: 600;
+}
+
+.cal-cross-enter-active,
+.cal-slide-next-enter-active,
+.cal-slide-prev-enter-active {
+  transition:
+    opacity 170ms,
+    transform 170ms;
+}
+.cal-cross-leave-active,
+.cal-slide-next-leave-active,
+.cal-slide-prev-leave-active {
+  transition: opacity 90ms;
+}
+.cal-cross-enter-from,
+.cal-cross-leave-to,
+.cal-slide-next-leave-to,
+.cal-slide-prev-leave-to {
+  opacity: 0;
+}
+.cal-slide-next-enter-from {
+  opacity: 0;
+  transform: translateX(10px);
+}
+.cal-slide-prev-enter-from {
+  opacity: 0;
+  transform: translateX(-10px);
+}
+@keyframes stamp-in {
+  from {
+    transform: scale(0.85);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+.stamp-in {
+  animation: stamp-in 180ms ease-out both;
+}
+
+@media (max-width: 767px) {
+  .app-sidebar,
+  .app-sidebar.is-collapsed {
+    width: 64px;
+  }
+  .app-sidebar .nav-label,
+  .app-sidebar .sidebar-caption,
+  .app-sidebar .sidebar-collapse {
+    display: none;
+  }
+  .app-sidebar .nav-item {
+    justify-content: center;
+    padding-inline: 0;
+  }
+  .reader-body {
+    font-size: max(16px, calc(var(--reader-font-size, 17px) - 1px));
+  }
+}
+/* 只作用于应用界面：Mermaid 会在 body 上挂一个隐藏测量 SVG，全局 * 的
+   transition 规则会让其 getBBox 返回异常尺寸（节点被放大到 2000px 量级，
+   整图被缩成一小团）。测量节点在 .app-shell 之外，限定作用域即可规避。 */
+@media (prefers-reduced-motion: reduce) {
+  .app-shell,
+  .app-shell *,
+  .app-shell *::before,
+  .app-shell *::after,
+  .praxis-tip {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

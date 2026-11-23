@@ -136,10 +136,17 @@ export function isObservationTerminal(
   return Object.keys(obs.phaseStatuses).length >= obs.outlinePhaseCount;
 }
 
-/** 已判定终态的计划 id 列表（响应式视图，供 watch） */
+/**
+ * 已判定终态的计划 id 列表（响应式视图，供 watch）。
+ *
+ * 注意必须同时收 `obs.terminal`：isObservationTerminal 在判定成功后会被
+ * notifyTerminal 置 terminal=true，随后对同一 obs 返回 false；只看该函数
+ * 会让 computed 在终态拐点反而变空，终态 watch 永远收不到 id（生成完成后
+ * 停在骨架页）。removed 分支同样靠 terminal=true 进入调用方的消失处理。
+ */
 export const terminalPlanIds = computed(() =>
   Object.values(observations.value)
-    .filter((obs) => isObservationTerminal(obs))
+    .filter((obs) => obs.terminal || isObservationTerminal(obs))
     .map((obs) => obs.planId),
 );
 

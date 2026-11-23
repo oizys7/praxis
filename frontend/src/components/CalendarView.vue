@@ -396,15 +396,12 @@ async function onUpdateStudyDays(planId: string, days: number[]) {
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-7xl px-6 py-8 2xl:max-w-[1600px]">
-    <!-- 页头：衬线大标题 + 摘行靠左；视图切换与翻页下沉到日历右栏上方 -->
+  <div class="page-shell">
+    <!-- 页头：衬线大标题（动态视图标题）+ 摘行靠左；视图切换与翻页下沉到日历右栏上方 -->
     <div class="mb-2">
-      <h2
-        class="font-display text-3xl font-semibold tracking-tight tabular-nums"
-        aria-live="polite"
-      >
+      <h1 class="page-heading tabular-nums" aria-live="polite">
         {{ viewTitle }}
-      </h2>
+      </h1>
     </div>
 
     <!-- 摘行（真数据；中文逗号分隔） -->
@@ -433,17 +430,19 @@ async function onUpdateStudyDays(planId: string, days: number[]) {
       class="rounded-lg border border-dashed border-border px-6 py-16 text-center"
     >
       <p class="text-sm text-muted-foreground">
-        还没有学习计划——去「学习计划」页生成第一份计划，点「开始学习」后排定每日日程。
+        还没有学习计划——去「学习计划」生成第一份计划，点「开始学习」后排定每日日程。
       </p>
     </div>
 
     <template v-else>
       <!-- 双栏：左计划进度管理 / 右日历（控件行 + 主体）；窄屏日历在上 -->
       <div
-        class="grid items-start gap-5 lg:grid-cols-[320px_minmax(0,1fr)] 2xl:grid-cols-[380px_minmax(0,1fr)]"
+        class="grid items-start gap-6 xl:grid-cols-[260px_minmax(0,1fr)]"
       >
-        <!-- 左：计划进度管理（三分类 + 学习日本地暂存编辑入口） -->
-        <div class="order-2 lg:order-1">
+        <!-- 左：计划进度管理（三分类 + 学习日本地暂存编辑入口）。
+             min-w-0：行内 truncate 标题的 min-content 会沿块级链撑大隐式
+             网格轨道，窄屏把整页顶出视口（评审确认缺陷） -->
+        <div class="order-2 min-w-0 lg:order-1">
           <PlanProgressPanel
             :summaries="summaries"
             :saving="daysSaving"
@@ -454,7 +453,7 @@ async function onUpdateStudyDays(planId: string, days: number[]) {
         </div>
 
         <!-- 右：视图控件行 + 日历主体 -->
-        <div class="order-1 space-y-3 lg:order-2">
+        <div class="order-1 min-w-0 space-y-3 lg:order-2">
           <div class="flex flex-wrap items-center justify-between gap-3">
             <!-- 分段控件：滑块在两格间滑动（弹性曲线，300ms），
                  文字色随之过渡；两按钮等宽（单字 + 同 padding） -->
@@ -528,7 +527,7 @@ async function onUpdateStudyDays(planId: string, days: number[]) {
             </div>
           </div>
           <Card>
-            <CardContent class="p-3 sm:p-4">
+            <CardContent class="min-w-0 p-3 sm:p-4">
               <!-- 月↔年交叉淡切 / 月份翻页方向滑动（out-in 不叠影） -->
               <!-- 一次只交接一个视图（out-in）：月历与热力图布局差异大，
                    叠层交叉会出现两层内容重影；leave 极短、enter 顺滑收住 -->

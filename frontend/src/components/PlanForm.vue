@@ -1,18 +1,9 @@
 <script setup lang="ts">
-import { computed, reactive } from "vue";
+import { computed, nextTick, reactive } from "vue";
+import { Check, ChevronDown, LoaderCircle } from "lucide-vue-next";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardFooter,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import {
   INTEREST_PRESETS,
@@ -47,8 +38,21 @@ const STUDY_DAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"] as co
 /** 行内校验错误 */
 const errors = reactive({ goal: "", weeklyHours: "", weeks: "" });
 
-/** 偏好方向标签是否可提交（仅用于按钮禁用态展示） */
-const canSubmit = computed(() => !props.loading);
+/** 只在输入有效时展示节奏摘要，避免将无效输入呈现为计划。 */
+const rhythmSummary = computed(() => {
+  const hours = Number(form.weeklyHours);
+  const weeks = Number(form.weeks);
+  if (
+    !Number.isInteger(hours) ||
+    hours < 1 ||
+    hours > 80 ||
+    !Number.isInteger(weeks) ||
+    weeks < 1 ||
+    weeks > 52
+  )
+    return "填写每周时长和周数，安排适合自己的学习节奏。";
+  return `每周 ${form.studyDays.length} 天，共 ${weeks} 周，预计投入 ${hours * weeks} 小时。`;
+});
 
 /** 切换偏好方向标签的选中状态 */
 function toggleInterest(tag: string) {
@@ -78,20 +82,30 @@ function validate(): boolean {
     form.goal.trim().length < 4 ? "请至少用 4 个字描述你的学习目标" : "";
   const hours = Number(form.weeklyHours);
   errors.weeklyHours =
-    !Number.isFinite(hours) || hours < 1 || hours > 80
-      ? "请填写 1-80 之间的数字"
+    !Number.isInteger(hours) || hours < 1 || hours > 80
+      ? "请填写 1–80 之间的整数"
       : "";
   const weeks = Number(form.weeks);
   errors.weeks =
-    !Number.isFinite(weeks) || weeks < 1 || weeks > 52
+    !Number.isInteger(weeks) || weeks < 1 || weeks > 52
       ? "请填写 1-52 之间的整数"
       : "";
   return !errors.goal && !errors.weeklyHours && !errors.weeks;
 }
 
 /** 提交：校验通过后组装 PlanRequest 抛给父组件 */
-function onSubmit() {
-  if (props.loading || !validate()) return;
+async function onSubmit() {
+  if (props.loading) return;
+  if (!validate()) {
+    await nextTick();
+    const field = errors.goal
+      ? "goal"
+      : errors.weeklyHours
+        ? "weekly-hours"
+        : "weeks";
+    document.getElementById(field)?.focus();
+    return;
+  }
   emit("submit", {
     goal: form.goal.trim(),
     level: form.level,
@@ -105,172 +119,270 @@ function onSubmit() {
 </script>
 
 <template>
-  <Card class="h-fit lg:sticky lg:top-24">
-    <CardHeader>
-      <CardTitle>制定我的学习计划</CardTitle>
-      <CardDescription>
-        填写学习需求，Agent 将生成"理论 + 实操 + 作业 +
-        项目"四位一体的分阶段计划。
-      </CardDescription>
-    </CardHeader>
-
-    <CardContent class="space-y-5">
-      <!-- 组题：目标与起点 -->
-      <div class="flex items-center gap-3">
-        <span class="text-xs font-medium text-muted-foreground"
-          >目标与起点</span
-        >
-        <div class="h-px flex-1 bg-primary/10" role="presentation" />
-      </div>
-
-      <!-- 学习目标 -->
-      <div class="space-y-1.5">
-        <Label for="goal">学习目标 *</Label>
-        <Input
-          id="goal"
-          v-model="form.goal"
-          placeholder="例如：三个月内成为能独立开发 Web 应用的后端工程师"
-          :disabled="props.loading"
-        />
-        <p v-if="errors.goal" class="text-xs text-destructive">
-          {{ errors.goal }}
-        </p>
-      </div>
-
-      <!-- 当前水平 -->
-      <div class="space-y-1.5">
-        <Label for="level">当前水平</Label>
-        <Select
-          id="level"
-          v-model="form.level"
-          :options="LEVEL_OPTIONS"
-          :disabled="props.loading"
-        />
-      </div>
-
-      <!-- 组题：学习节奏 -->
-      <div class="flex items-center gap-3 pt-1">
-        <span class="text-xs font-medium text-muted-foreground">学习节奏</span>
-        <div class="h-px flex-1 bg-primary/10" role="presentation" />
-      </div>
-
-      <!-- 每周可用小时 / 期望周数 -->
-      <div class="grid grid-cols-2 gap-4">
-        <div class="space-y-1.5">
-          <Label for="weekly-hours">每周可用小时 *</Label>
-          <Input
-            id="weekly-hours"
-            v-model="form.weeklyHours"
-            type="number"
-            :min="1"
-            :max="80"
-            :disabled="props.loading"
-          />
-          <p v-if="errors.weeklyHours" class="text-xs text-destructive">
-            {{ errors.weeklyHours }}
+  <form
+    class="min-w-0 space-y-6"
+    novalidate
+    :aria-busy="props.loading"
+    @submit.prevent="onSubmit"
+  >
+    <div class="divide-y divide-border rounded-2xl border bg-card px-5 sm:px-8">
+      <section aria-labelledby="goal-heading" class="space-y-6 py-7 sm:py-8">
+        <div>
+          <h3 id="goal-heading" class="text-base font-semibold">目标与起点</h3>
+          <p class="mt-1 text-sm text-muted-foreground">
+            想学会什么，以及现在走到了哪里。
           </p>
         </div>
-        <div class="space-y-1.5">
-          <Label for="weeks">期望周数 *</Label>
-          <Input
-            id="weeks"
-            v-model="form.weeks"
-            type="number"
-            :min="1"
-            :max="52"
-            :disabled="props.loading"
-          />
-          <p v-if="errors.weeks" class="text-xs text-destructive">
-            {{ errors.weeks }}
-          </p>
-        </div>
-      </div>
-
-      <!-- 每周学习日（需求 5：默认全选，至少保留一天） -->
-      <div class="space-y-1.5">
-        <Label>每周学习日</Label>
-        <div class="flex flex-wrap gap-1.5">
-          <button
-            v-for="(label, i) in STUDY_DAY_LABELS"
-            :key="label"
-            type="button"
-            class="rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            :aria-pressed="form.studyDays.includes(i + 1)"
-            :aria-label="`每周${label}${form.studyDays.includes(i + 1) ? '（已选）' : ''}`"
-            :disabled="props.loading"
-            @click="toggleStudyDay(i + 1)"
+        <div class="space-y-2">
+          <Label for="goal"
+            >学习目标 <span class="text-muted-foreground">（必填）</span></Label
           >
-            <Badge
-              :variant="form.studyDays.includes(i + 1) ? 'default' : 'outline'"
-              class="cursor-pointer select-none px-2.5 transition-opacity hover:opacity-80"
+          <Textarea
+            id="goal"
+            v-model="form.goal"
+            :rows="4"
+            class="resize-y bg-background/70 text-base leading-7 shadow-none aria-invalid:border-destructive aria-invalid:focus-visible:ring-destructive/30"
+            placeholder="例如：三个月内掌握后端开发，独立完成一个带登录和数据库的 Web 应用。"
+            required
+            :aria-invalid="!!errors.goal"
+            :aria-describedby="
+              errors.goal ? 'goal-hint goal-error' : 'goal-hint'
+            "
+            :disabled="props.loading"
+            @update:model-value="errors.goal = ''"
+          />
+          <p id="goal-hint" class="text-xs leading-5 text-muted-foreground">
+            写下希望完成的事，比只写一个学科名称更有帮助。
+          </p>
+          <p
+            v-if="errors.goal"
+            id="goal-error"
+            role="alert"
+            class="text-sm text-destructive"
+          >
+            {{ errors.goal }}
+          </p>
+        </div>
+        <div class="space-y-2 sm:max-w-sm">
+          <Label for="level">当前水平</Label>
+          <div class="relative">
+            <select
+              id="level"
+              v-model="form.level"
+              :disabled="props.loading"
+              class="h-11 w-full appearance-none rounded-md border border-input bg-background/70 px-3 pr-10 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
             >
+              <option
+                v-for="option in LEVEL_OPTIONS"
+                :key="option.value"
+                :value="option.value"
+              >
+                {{ option.label }}
+              </option>
+            </select>
+            <ChevronDown
+              class="pointer-events-none absolute right-3 top-3.5 h-4 w-4 text-muted-foreground"
+              aria-hidden="true"
+            />
+          </div>
+        </div>
+      </section>
+
+      <section aria-labelledby="rhythm-heading" class="space-y-6 py-7 sm:py-8">
+        <div>
+          <h3 id="rhythm-heading" class="text-base font-semibold">学习节奏</h3>
+          <p class="mt-1 text-sm text-muted-foreground">
+            为学习留出时间，也为日常留出余地。
+          </p>
+        </div>
+        <div class="grid gap-5 sm:grid-cols-2">
+          <div class="space-y-2">
+            <Label for="weekly-hours"
+              >每周投入
+              <span class="text-muted-foreground">（小时，必填）</span></Label
+            >
+            <Input
+              id="weekly-hours"
+              v-model="form.weeklyHours"
+              type="number"
+              :min="1"
+              :max="80"
+              step="1"
+              required
+              class="h-11 bg-background/70 shadow-none aria-invalid:border-destructive aria-invalid:focus-visible:ring-destructive/30"
+              :disabled="props.loading"
+              :aria-invalid="!!errors.weeklyHours"
+              :aria-describedby="
+                errors.weeklyHours ? 'hours-hint hours-error' : 'hours-hint'
+              "
+              @update:model-value="errors.weeklyHours = ''"
+            />
+            <p id="hours-hint" class="text-xs text-muted-foreground">
+              1–80 小时，填写整数
+            </p>
+            <p
+              v-if="errors.weeklyHours"
+              id="hours-error"
+              role="alert"
+              class="text-sm text-destructive"
+            >
+              {{ errors.weeklyHours }}
+            </p>
+          </div>
+          <div class="space-y-2">
+            <Label for="weeks"
+              >计划时长
+              <span class="text-muted-foreground">（周，必填）</span></Label
+            >
+            <Input
+              id="weeks"
+              v-model="form.weeks"
+              type="number"
+              :min="1"
+              :max="52"
+              step="1"
+              required
+              class="h-11 bg-background/70 shadow-none aria-invalid:border-destructive aria-invalid:focus-visible:ring-destructive/30"
+              :disabled="props.loading"
+              :aria-invalid="!!errors.weeks"
+              :aria-describedby="
+                errors.weeks ? 'weeks-hint weeks-error' : 'weeks-hint'
+              "
+              @update:model-value="errors.weeks = ''"
+            />
+            <p id="weeks-hint" class="text-xs text-muted-foreground">
+              1–52 周，填写整数
+            </p>
+            <p
+              v-if="errors.weeks"
+              id="weeks-error"
+              role="alert"
+              class="text-sm text-destructive"
+            >
+              {{ errors.weeks }}
+            </p>
+          </div>
+        </div>
+        <fieldset class="min-w-0 space-y-3" aria-describedby="study-days-hint">
+          <legend class="text-sm font-medium">每周学习日</legend>
+          <div class="flex flex-wrap gap-2">
+            <button
+              v-for="(label, i) in STUDY_DAY_LABELS"
+              :key="label"
+              type="button"
+              class="flex min-h-11 min-w-11 items-center justify-center gap-1 rounded-lg border px-3 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+              :class="
+                form.studyDays.includes(i + 1)
+                  ? 'border-primary/40 bg-primary/10 font-medium text-primary'
+                  : 'border-input bg-background/70 text-muted-foreground hover:bg-secondary'
+              "
+              :aria-pressed="form.studyDays.includes(i + 1)"
+              :aria-label="`周${label}`"
+              :disabled="props.loading"
+              @click="toggleStudyDay(i + 1)"
+            >
+              <Check
+                v-if="form.studyDays.includes(i + 1)"
+                class="h-3.5 w-3.5"
+                aria-hidden="true"
+              />
               周{{ label }}
-            </Badge>
-          </button>
-        </div>
-        <p class="text-xs text-muted-foreground">
-          计划章节将按所选日子排布到日历（至少保留一天）
-        </p>
-      </div>
-
-      <!-- 组题：偏好与基础 -->
-      <div class="flex items-center gap-3 pt-1">
-        <span class="text-xs font-medium text-muted-foreground"
-          >偏好与基础</span
-        >
-        <div class="h-px flex-1 bg-primary/10" role="presentation" />
-      </div>
-
-      <!-- 偏好方向（多选标签） -->
-      <div class="space-y-1.5">
-        <Label>偏好方向（可多选）</Label>
-        <div class="flex flex-wrap gap-2">
-          <button
-            v-for="tag in INTEREST_PRESETS"
-            :key="tag"
-            type="button"
-            class="rounded-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            :disabled="props.loading"
-            @click="toggleInterest(tag)"
+            </button>
+          </div>
+          <p
+            id="study-days-hint"
+            class="text-xs leading-5 text-muted-foreground"
           >
-            <Badge
-              :variant="form.interests.includes(tag) ? 'default' : 'outline'"
-              class="cursor-pointer select-none transition-opacity hover:opacity-80"
-            >
-              {{ tag }}
-            </Badge>
-          </button>
-        </div>
-      </div>
-
-      <!-- 已有基础 -->
-      <div class="space-y-1.5">
-        <Label for="background">已有基础</Label>
-        <Textarea
-          id="background"
-          v-model="form.background"
-          :rows="4"
-          placeholder="描述你已经掌握的知识和做过的项目，帮助 Agent 校准起点（可留空，Agent 可能会追问）"
-          :disabled="props.loading"
-        />
-      </div>
-    </CardContent>
-
-    <CardFooter>
-      <Button class="w-full" :disabled="!canSubmit" @click="onSubmit">
-        <svg
-          v-if="props.loading"
-          class="h-4 w-4 animate-spin"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="2"
+            章节将按所选日期安排到日历，至少保留一天。
+          </p>
+        </fieldset>
+        <p
+          class="rounded-lg bg-secondary/60 px-4 py-3 text-sm leading-6 text-muted-foreground"
+          aria-live="polite"
         >
-          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-        </svg>
-        <span v-if="props.loading">Agent 规划中…</span>
-        <span v-else>生成学习计划 ✨</span>
+          {{ rhythmSummary }}
+        </p>
+      </section>
+
+      <section
+        aria-labelledby="preferences-heading"
+        class="space-y-6 py-7 sm:py-8"
+      >
+        <div>
+          <h3 id="preferences-heading" class="text-base font-semibold">
+            偏好与基础
+            <span class="ml-2 text-sm font-normal text-muted-foreground"
+              >选填</span
+            >
+          </h3>
+          <p class="mt-1 text-sm text-muted-foreground">
+            让练习贴近你的兴趣，让内容从合适的地方开始。
+          </p>
+        </div>
+        <fieldset class="min-w-0 space-y-3">
+          <legend class="text-sm font-medium">
+            感兴趣的方向
+            <span class="font-normal text-muted-foreground">（可多选）</span>
+          </legend>
+          <div class="flex flex-wrap gap-2">
+            <button
+              v-for="tag in INTEREST_PRESETS"
+              :key="tag"
+              type="button"
+              class="inline-flex min-h-11 items-center gap-2 rounded-lg border px-4 py-2 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50"
+              :class="
+                form.interests.includes(tag)
+                  ? 'border-primary/40 bg-primary/10 font-medium text-primary'
+                  : 'border-input bg-background/70 text-muted-foreground hover:bg-secondary'
+              "
+              :aria-pressed="form.interests.includes(tag)"
+              :disabled="props.loading"
+              @click="toggleInterest(tag)"
+            >
+              <Check
+                v-if="form.interests.includes(tag)"
+                class="h-3.5 w-3.5"
+                aria-hidden="true"
+              />
+              {{ tag }}
+            </button>
+          </div>
+        </fieldset>
+        <div class="space-y-2">
+          <Label for="background">已有基础</Label>
+          <Textarea
+            id="background"
+            v-model="form.background"
+            :rows="3"
+            class="resize-y bg-background/70 leading-7 shadow-none"
+            placeholder="已经学过哪些知识，或做过什么项目？"
+            :disabled="props.loading"
+            aria-describedby="background-hint"
+          />
+          <p
+            id="background-hint"
+            class="text-xs leading-5 text-muted-foreground"
+          >
+            可以留空；需要更多信息时，会进一步向你确认。
+          </p>
+        </div>
+      </section>
+    </div>
+
+    <footer
+      class="flex flex-col gap-4 pb-2 sm:flex-row sm:items-center sm:justify-between"
+    >
+      <p class="text-sm leading-6 text-muted-foreground">
+        生成的计划会自动保存到列表。
+      </p>
+      <Button type="submit" class="min-h-11 px-7" :disabled="props.loading">
+        <LoaderCircle
+          v-if="props.loading"
+          class="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none"
+          aria-hidden="true"
+        />
+        {{ props.loading ? "正在规划…" : "生成学习计划" }}
       </Button>
-    </CardFooter>
-  </Card>
+    </footer>
+  </form>
 </template>

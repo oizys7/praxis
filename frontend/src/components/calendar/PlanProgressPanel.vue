@@ -15,6 +15,7 @@
  */
 import { computed, ref } from "vue";
 import { CalendarCheck, Play, SquareCheck } from "lucide-vue-next";
+import { Card, CardContent } from "@/components/ui/card";
 import type { PlanSummary } from "@/types/agent";
 
 const props = defineProps<{

@@ -49,7 +49,8 @@ const WEEKDAY_LABELS = ["一", "二", "三", "四", "五", "六", "日"] as cons
 
 const weekdayLabel = computed(() => {
   if (!props.date) return "";
-  return WEEKDAY_LABELS[props.date.getDay()];
+  // getDay()：周日=0；标签数组以周一开头，需平移一位
+  return WEEKDAY_LABELS[(props.date.getDay() + 6) % 7];
 });
 
 /** 标题「10 月 14 日 · 周二」 */

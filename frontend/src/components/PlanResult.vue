@@ -121,13 +121,16 @@ const resourceTypeLabels: Record<string, string> = {
 
     <!-- 计划概览（反馈③整卡一体化：渐变 hero + 元信息行 + 概要同层，
          与下方目录/阶段卡共用一套节奏） -->
-    <Card class="overflow-hidden">
-      <!-- 音书页头：沙色纸带取代渐变洗染；标题 serif（书页隐喻），
-           唯一编排式入场动效挂在这行字上 -->
-      <div class="border-b bg-secondary/40 p-6">
-        <div class="flex flex-wrap items-start justify-between gap-3">
+    <Card class="overflow-hidden rounded-none border-0 bg-transparent shadow-none">
+      <!-- 页头：衬线大标题 + 元信息行 + 概要（底部 hairline 与正文分隔），
+           唯一编排式入场动效挂在这行字上。
+           id 供生成终态到达反馈定位（PlanWorkbench 终态 watch 滚动到此） -->
+      <div id="plan-result-top" class="border-b pb-10 pt-4">
+        <div class="flex flex-col items-start gap-5">
           <h1
-            class="animate-fade-in-up font-display text-3xl font-semibold tracking-tight"
+            id="plan-result-title"
+            tabindex="-1"
+            class="font-display text-3xl font-semibold leading-[1.45] tracking-tight sm:text-[38px]"
           >
             {{ plan.title }}
           </h1>
@@ -143,7 +146,7 @@ const resourceTypeLabels: Record<string, string> = {
         <!-- 概要段落：空串（旧数据未写 overview）隐藏整行 -->
         <p
           v-if="plan.overview"
-          class="mt-3 leading-relaxed text-muted-foreground"
+          class="mt-6 text-base leading-8 text-muted-foreground"
         >
           {{ plan.overview }}
         </p>
@@ -188,7 +191,7 @@ const resourceTypeLabels: Record<string, string> = {
     <!-- 术语表（只读）：由各章核心术语去重汇总，随计划重新生成而变 -->
     <Card v-if="plan.glossary?.length">
       <CardHeader>
-        <CardTitle class="text-base">🔤 术语表</CardTitle>
+        <CardTitle class="text-base">术语表</CardTitle>
       </CardHeader>
       <CardContent>
         <!-- 术语与出处分两行：同一行 + truncate 时，长术语会把出处挤没、
@@ -212,7 +215,7 @@ const resourceTypeLabels: Record<string, string> = {
     <Card v-if="plan.resources.length">
       <CardHeader>
         <CardTitle class="flex flex-wrap items-baseline gap-x-2 text-base">
-          📖 推荐资源
+          推荐资源
           <span class="text-xs font-normal text-muted-foreground">
             未经核实，版本与适用性请自行判断
           </span>
@@ -265,7 +268,7 @@ const resourceTypeLabels: Record<string, string> = {
     <Card v-if="plan.reviewNotes" class="border-dashed">
       <CardContent class="pt-6">
         <div class="text-xs font-semibold text-muted-foreground">
-          🔍 Agent 评审备注
+          Agent 评审备注
         </div>
         <p class="mt-1.5 whitespace-pre-line text-sm text-muted-foreground">
           {{ plan.reviewNotes }}

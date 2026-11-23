@@ -7,16 +7,13 @@ import { NotebookPen } from "lucide-vue-next";
 </script>
 
 <template>
-  <div class="mx-auto w-full max-w-6xl px-6 py-8 2xl:max-w-7xl">
-    <!-- 页头：与其他页同构的衬线大标题 + hairline -->
+  <div class="page-shell">
+    <!-- 页头：与其他页同构的衬线大标题 + 摘行 -->
     <div class="mb-6">
-      <h2 class="font-display text-3xl font-semibold tracking-tight">
-        笔记生成
-      </h2>
+      <h1 class="page-heading">笔记生成</h1>
       <p class="mt-1 text-sm text-muted-foreground">
         把学过的章节整理成可复习的笔记
       </p>
-      <div class="mt-4 h-px bg-primary/15" role="presentation" />
     </div>
     <!-- 空态：方向性邀请（空屏是行动邀请，不是气氛渲染） -->
     <div class="flex justify-center py-16">

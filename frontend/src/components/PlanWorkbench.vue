@@ -3,6 +3,7 @@ import {
   computed,
   inject,
   nextTick,
+  onMounted,
   onUnmounted,
   provide,
   ref,
@@ -14,6 +15,10 @@ import {
   ArrowLeft,
   ArrowUp,
   Map,
+  List,
+  Maximize2,
+  Minimize2,
+  X,
   RotateCcw,
   TriangleAlert,
 } from "lucide-vue-next";
@@ -41,6 +46,7 @@ import PlanForm from "@/components/PlanForm.vue";
 import PlanListView from "@/components/PlanListView.vue";
 import PlanResult from "@/components/PlanResult.vue";
 import LoadingState from "@/components/LoadingState.vue";
+import { readerStickyOffset, scrollToWithinMain } from "@/lib/utils";
 import type { PlanRecord, PlanRequest, StudyPlan } from "@/types/agent";
 
 /**
@@ -61,6 +67,20 @@ const { loading, error, result, generatePlan } = useAgent();
 const planView = ref<"list" | "create">("list");
 /** 历史查看模式：主轴展示已保存计划，隐藏参数卡 */
 const historyMode = ref(false);
+const readerFocused = inject("readerFocused", ref(false));
+const tocOpen = ref(false);
+/** 目录面板（打开后焦点移入，Esc 与键盘导航随即可用） */
+const tocPanelEl = ref<HTMLElement | null>(null);
+const storedFontSize = Number(localStorage.getItem("praxis.readerFontSize"));
+const readerFontSize = ref(
+  [16, 17, 18, 19, 20].includes(storedFontSize) ? storedFontSize : 17,
+);
+watch(readerFontSize, (size) =>
+  localStorage.setItem("praxis.readerFontSize", String(size)),
+);
+onUnmounted(() => {
+  readerFocused.value = false;
+});
 /** 整计划重生成提交中（命令本身很快返回，仅用于按钮防连点） */
 const replayingPlan = ref(false);
 /**
@@ -78,29 +98,107 @@ const planScrollHost = inject<ShallowRef<HTMLElement | null>>(
   shallowRef<HTMLElement | null>(null),
 );
 
+/** 阅读锚点：视口前 35% 线之上最后一个结构元素（章锚点或章内标题） */
+function findReadingAnchor(): HTMLElement | null {
+  const candidates = planScrollHost?.value?.querySelectorAll<HTMLElement>(
+    '[id^="plan-phase-"], .markdown-code h2, .markdown-code h3',
+  );
+  if (!candidates) return null;
+  let anchor: HTMLElement | null = null;
+  for (const el of candidates) {
+    if (el.getBoundingClientRect().top <= window.innerHeight * 0.35)
+      anchor = el;
+  }
+  return anchor;
+}
+
+/**
+ * 排版突变（字号/专注态切换）前后保持阅读位置：记录锚点元素突变前的
+ * 视口偏移，突变应用后把差值补回滚动宿主——重排改变行高/行宽时，读者
+ * 正在读的那一行保持在原地，而不是跳到别处。
+ */
+async function withReadingPosition(apply: () => void) {
+  const anchor = findReadingAnchor();
+  const before = anchor?.getBoundingClientRect().top;
+  apply();
+  await nextTick();
+  if (!anchor || before === undefined) return;
+  const delta = anchor.getBoundingClientRect().top - before;
+  if (delta) {
+    planScrollHost?.value?.scrollBy({ top: delta, behavior: "instant" });
+  }
+}
+
+/** 字号切换：正文整体重排，锚点补偿防止阅读位置漂移（watch 在重排前同步记位） */
+watch(readerFontSize, async (size, prev) => {
+  if (size === prev) return;
+  await withReadingPosition(() => {});
+});
+
+/** 专注模式切换：隐藏侧栏/顶栏改变内容宽度，同样锚点补偿 */
+async function toggleReaderFocus() {
+  await withReadingPosition(() => {
+    readerFocused.value = !readerFocused.value;
+  });
+  if (!readerFocused.value) {
+    // Escape/按钮退出后把焦点还给触发按钮，键盘用户不落回 body
+    await nextTick();
+    document
+      .querySelector<HTMLButtonElement>('[aria-label="专注阅读"]')
+      ?.focus();
+  }
+}
+
+/** 打开目录：面板挂载后把焦点移入（Esc 与键盘导航随即可用） */
+async function openToc() {
+  tocOpen.value = true;
+  await nextTick();
+  tocPanelEl.value?.focus();
+}
+
+/** 关闭目录：焦点返回触发按钮（经 aria-controls 定位，键盘用户不落在 body） */
+async function closeToc() {
+  tocOpen.value = false;
+  await nextTick();
+  document
+    .querySelector<HTMLButtonElement>('[aria-controls="reader-toc"]')
+    ?.focus();
+}
+
 /** 回到顶部：平滑滚动详情主区 */
 function scrollPlanToTop() {
-  planScrollHost?.value?.scrollTo({ top: 0, behavior: "smooth" });
+  planScrollHost?.value?.scrollTo({
+    top: 0,
+    behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
+      ? "instant"
+      : "smooth",
+  });
 }
 
 /** 返回列表（退出查看视图时同步复位历史查看态） */
 function exitToPlanList() {
   planView.value = "list";
   historyMode.value = false;
+  readerFocused.value = false;
+  tocOpen.value = false;
+  resultRevealPending.value = false;
 }
 
-/** 目录跳转（悬浮两级目录，与回顶同层 fixed）：平滑定位到阶段/章节锚点 */
+
+/** 目录跳转（悬浮两级目录，与回顶同层 fixed）：只在 main 内定位，避免顶栏被根滚动顶出 */
 function scrollToPhase(index: number) {
-  document
-    .getElementById(`plan-phase-${index}`)
-    ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  scrollToWithinMain(
+    document.getElementById(`plan-phase-${index}`),
+    readerStickyOffset(36),
+  );
 }
 
-/** 两级目录章节跳转：章节锚点包装层在 PhaseCard 内 */
+/** 两级目录章节跳转：章节锚点包装层在 PhaseCard 内（scroll-mt-24 = 96px） */
 function scrollToChapter(phaseIndex: number, chapterIndex: number) {
-  document
-    .getElementById(`plan-phase-${phaseIndex}-chapter-${chapterIndex}`)
-    ?.scrollIntoView({ behavior: "smooth", block: "start" });
+  scrollToWithinMain(
+    document.getElementById(`plan-phase-${phaseIndex}-chapter-${chapterIndex}`),
+    readerStickyOffset(12),
+  );
 }
 
 /* 目录 → 正文 联动命令信箱：目录不仅要跳转，还要控制正文的展开/折叠
@@ -114,14 +212,22 @@ const tocCommands = shallowRef<{
 provide("planTocCommands", tocCommands);
 
 /** 目录点阶段：滚动 + 确保该阶段正文展开（PhaseCard 消费） */
-function openPhaseFromToc(pi: number) {
+async function openPhaseFromToc(pi: number) {
+  // 点击即高亮：目标行可能因懒渲染后的页面高度变化落在 35% 判定线下方，
+  // 只靠滚动监读会让目录短暂指回上一阶段；用户主动选择优先。
+  activePhase.value = pi;
+  tocJumpGuardUntil = Date.now() + 900;
   tocCommands.value = { phase: pi, seq: Date.now() };
+  await nextTick();
   scrollToPhase(pi);
 }
 
 /** 目录点章节：滚动 + 确保父阶段与章节正文展开（双向联动） */
-function openChapterFromToc(pi: number, ci: number) {
+async function openChapterFromToc(pi: number, ci: number) {
+  activePhase.value = pi;
+  tocJumpGuardUntil = Date.now() + 900;
   tocCommands.value = { phase: pi, chapter: { p: pi, c: ci }, seq: Date.now() };
+  await nextTick();
   scrollToChapter(pi, ci);
 }
 
@@ -129,6 +235,8 @@ function openChapterFromToc(pi: number, ci: number) {
  * 阶段展开/折叠——两者都跟随外部阅读状态，不在目录内自造独立状态。
  * 取视口前 35% 为判定线（阅读位），最后一个越线锚点即为当前阶段。 */
 const activePhase = ref(0);
+/** 目录主动跳转后的短暂抑制窗口（见 openPhaseFromToc 注释） */
+let tocJumpGuardUntil = 0;
 let spyRaf = 0;
 
 function updateActivePhase() {
@@ -150,9 +258,11 @@ function updateActivePhase() {
 }
 
 function onHostScroll() {
+  if (Date.now() < tocJumpGuardUntil) return;
   if (spyRaf) return;
   spyRaf = requestAnimationFrame(() => {
     spyRaf = 0;
+    if (Date.now() < tocJumpGuardUntil) return;
     updateActivePhase();
   });
 }
@@ -185,9 +295,33 @@ watch(
   },
 );
 
+/**
+ * 全局 Escape：目录开着先关目录（焦点回触发按钮），否则专注态退出专注。
+ * 输入控件内的 Escape 留给控件自身（取消重命名/收起原生下拉）；组合输入
+ * （IME）过程中的 Escape 不作处理。目录面板自身的 Esc 处理会 stop 传播，
+ * 不会走到这里重复关闭。
+ */
+function onWindowKeydown(event: KeyboardEvent) {
+  if (event.key !== "Escape" || event.isComposing) return;
+  const target = event.target as HTMLElement | null;
+  if (target?.closest("input, textarea, select")) return;
+  if (tocOpen.value) {
+    event.preventDefault();
+    void closeToc();
+  } else if (readerFocused.value) {
+    event.preventDefault();
+    void toggleReaderFocus();
+  }
+}
+
+onMounted(() => window.addEventListener("keydown", onWindowKeydown));
+
 onUnmounted(() => {
+  window.removeEventListener("keydown", onWindowKeydown);
   planScrollHost?.value?.removeEventListener("scroll", onHostScroll);
   if (spyRaf) cancelAnimationFrame(spyRaf);
+  // 生成中对账定时器随组件卸载取消（闭包内还会比对 planId，双保险）
+  if (reconcileTimer) clearTimeout(reconcileTimer);
 });
 
 /** 当前打开的历史记录 id（阶段/章节重生成入口依赖；新生成流程无 id） */
@@ -203,6 +337,10 @@ const resultRowStatus = shallowRef<string | null>(null);
 const resultStorageIssue = ref<string | null>(null);
 /** 最近一次生成请求（保存到云端时取 goal / level / weeks 元数据） */
 const lastRequest = shallowRef<PlanRequest | null>(null);
+/** 本次提交是否等待结果到达反馈（只聚焦一次，历史查看不抢焦点） */
+const resultRevealPending = ref(false);
+/** 生成过程/结果的读屏状态播报 */
+const liveMessage = ref("");
 /**
  * 生成进度观测视图（useGenerationProgress store）：outline 事件铺骨架树、
  * PhaseDone 按阶段索引记账（去重），数据离开页面也不丢（模块级 store）。
@@ -241,7 +379,7 @@ watch(terminalPlanIds, async (ids) => {
       code: "generation-gone",
       message:
         "该生成任务已结束，但未能产出可用的计划内容（可能信息不足以成计划或行已被清理）。",
-      hint: "可调整目标后重新生成，或到历史记录中查看既有计划。",
+      hint: "可调整目标后重新生成，或回到列表查看既有计划。",
     };
     return;
   }
@@ -266,6 +404,23 @@ watch(terminalPlanIds, async (ids) => {
   } finally {
     unfollowPlan();
   }
+  // 到达反馈必须在 unfollow 之后再滚：generatingNow→false 会让参数表单
+  // 重新挂载、结果区位置此时才稳定；在 try 内提前滚动，落点会被表单回插
+  // 推偏（评审复验实测视口停在表单顶部）。removed/异常分支已在上方
+  // return/由错误卡接管，不会走到这里。
+  await nextTick();
+  scrollToWithinMain(
+    document.getElementById("plan-result-top"),
+    readerStickyOffset(16),
+  );
+  if (resultRevealPending.value && planView.value === "create") {
+    liveMessage.value = "学习计划已生成，已定位到结果标题";
+    await nextTick();
+    document
+      .getElementById("plan-result-title")
+      ?.focus({ preventScroll: true });
+  }
+  resultRevealPending.value = false;
 });
 
 /**
@@ -324,9 +479,22 @@ async function onSubmit(request: PlanRequest) {
   // 返回前后就可能到达，晚注册会丢首骨架
   await ensureProgressListener();
   const submitted = await generatePlan(request);
-  if (!submitted) return; // 提交失败：error 已置值，错误卡片展示
+  if (!submitted) {
+    // 提交失败：error 已置值，保留表单与输入，错误卡片在下方展示
+    liveMessage.value = "生成请求未提交，请查看错误信息";
+    return;
+  }
   // 参数卡收起为只读摘要条（单轴交互：焦点移交生成过程区）
+  resultRevealPending.value = true;
+  liveMessage.value = "已提交，正在下方生成学习计划";
   followPlan(submitted.planId);
+  // 到达反馈：把生成过程区带入视口（表单仍在原位，首屏无变化会让用户
+  // 以为没点上而重复提交）。只在 main 内滚动，尊重 reduced-motion。
+  await nextTick();
+  scrollToWithinMain(
+    document.getElementById("generation-flow"),
+    readerStickyOffset(12),
+  );
 }
 
 /** 查看历史计划：注入已保存的计划并切到查看视图（携带 id 供重生成入口） */
@@ -356,7 +524,7 @@ async function openPlanById(planId: string) {
   }
 }
 
-defineExpose({ openPlanById });
+defineExpose({ openPlanById, exitToPlanList });
 
 function openHistoryPlan(record: PlanRecord) {
   historyMode.value = true;
@@ -457,7 +625,14 @@ function onPlanRefreshed(plan: StudyPlan) {
       @open="openHistoryPlan"
     />
 
-    <div v-else class="mx-auto w-full max-w-6xl px-6 py-8 2xl:max-w-7xl">
+    <div
+      v-else
+      class="mx-auto w-full max-w-[880px] px-5 pb-16 sm:px-10"
+      :style="{ '--reader-font-size': `${readerFontSize}px` }"
+    >
+      <p class="sr-only" role="status" aria-live="polite">
+        {{ liveMessage }}
+      </p>
       <!-- 整计划重生成：仅「大纲未产出」（failed 且零阶段）时提供入口 -->
       <div
         v-if="
@@ -492,29 +667,70 @@ function onPlanRefreshed(plan: StudyPlan) {
           翻到空白的章节点「重新生成」即可单独补齐，不必重做整份计划。
         </p>
       </div>
-      <!-- 返回列表：位置与样式不变，只是滚动时不跟着走。
-           用 sticky 而不是 fixed：sticky 留在内容流原位（自动对齐内容区左缘，
-           不会压到侧栏），滚动时才吸附；top 留出间距，避免像之前那样紧贴顶部 -->
-      <div v-if="planView === 'create'" class="sticky top-3 z-20 -mt-1 mb-3">
-        <Button
-          variant="outline"
-          class="rounded-full border-border/70 bg-background/90 text-sm shadow-md backdrop-blur transition-colors hover:border-primary/40 hover:bg-muted hover:text-primary"
-          @click="exitToPlanList"
-        >
-          <ArrowLeft class="h-4 w-4" aria-hidden="true" />
-          返回列表
+      <!-- 返回列表工具栏：sticky 吸附滚动宿主顶部（在内容流内自动对齐
+           内容区左缘，不压侧栏），bg/backdrop 保证滚动时正文不透出 -->
+      <div v-if="planView === 'create'" class="reader-toolbar">
+        <Button variant="ghost" size="sm" class="h-10" @click="exitToPlanList">
+          <ArrowLeft class="h-4 w-4" aria-hidden="true" />学习计划
         </Button>
+        <div
+          v-if="result?.status === 'plan'"
+          class="flex items-center gap-1 sm:gap-2"
+        >
+          <label class="flex items-center gap-2 text-xs text-muted-foreground">
+            <span class="hidden sm:inline">字号</span>
+            <select
+              v-model.number="readerFontSize"
+              aria-label="正文字号"
+              class="h-10 rounded-lg border bg-card px-2 text-sm text-foreground"
+            >
+              <option
+                v-for="size in [16, 17, 18, 19, 20]"
+                :key="size"
+                :value="size"
+              >
+                {{ size }} px
+              </option>
+            </select>
+          </label>
+          <Button
+            variant="ghost"
+            size="sm"
+            class="h-10"
+            :aria-pressed="readerFocused"
+            :aria-label="readerFocused ? '退出专注阅读' : '专注阅读'"
+            @click="toggleReaderFocus"
+          >
+            <Minimize2
+              v-if="readerFocused"
+              class="h-4 w-4"
+              aria-hidden="true"
+            />
+            <Maximize2 v-else class="h-4 w-4" aria-hidden="true" />
+            <span class="hidden sm:inline">{{
+              readerFocused ? "退出专注" : "专注阅读"
+            }}</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            class="h-10"
+            :aria-expanded="tocOpen"
+            aria-controls="reader-toc"
+            @click="tocOpen ? closeToc() : openToc()"
+          >
+            <List class="h-4 w-4" aria-hidden="true" />目录
+          </Button>
+        </div>
       </div>
       <!-- 交互重构：单轴纵向流——参数卡在顶部（生成中收起为摘要条），
            其下依次过程卡/骨架树/结果；左右双栏并排取消，自上而下一条主轴 -->
-      <div class="mx-auto w-full max-w-3xl space-y-5">
+      <div class="mx-auto w-full max-w-[740px] space-y-5">
         <!-- 跨页打开详情：数据到达前的占位（乐观切视图防列表闪现） -->
         <LoadingState v-if="openingDetail" text="正在打开计划…" />
         <!-- 创建态页头（历史详情由 PlanResult hero 承担，不重复） -->
-        <div v-if="!historyMode">
-          <h2 class="font-display text-3xl font-semibold tracking-tight">
-            生成学习计划
-          </h2>
+        <div v-if="!historyMode && !result" class="pb-3">
+          <h1 class="page-heading">开启一段新的学习</h1>
           <p class="mt-1 text-sm text-muted-foreground">
             填好参数，Agent 为你编排分阶段路线，逐章生成并可随时补齐
           </p>
@@ -537,7 +753,7 @@ function onPlanRefreshed(plan: StudyPlan) {
             >
           </p>
         </div>
-        <section class="min-w-0 space-y-4">
+        <section id="generation-flow" class="min-w-0 space-y-4">
           <!-- 后台生成进行中（提交即返后的过程页：outline 铺骨架，phaseDone 推进；
                task-F: 骨架就绪后本卡退场——继续转圈属反词; 右栏首卡内边距
                p-6 与左侧 PlanForm 卡 p-6 基准一致（task-F 对齐） -->
@@ -622,17 +838,17 @@ function onPlanRefreshed(plan: StudyPlan) {
                   💡 {{ error.hint }}
                 </p>
               </div>
-              <!-- 骨架已铺开说明大纲已产出：部分成果已入库，引导去历史记录重生成 -->
+              <!-- 骨架已铺开说明大纲已产出：部分成果已入库，引导回列表重生成 -->
               <div v-if="genState?.phases.length" class="text-sm">
                 <p class="text-muted-foreground">
-                  已完成的阶段已保存在云端，可到历史记录中查看并重新生成失败部分。
+                  已完成的阶段已保存在云端，可回到列表打开这份计划，重新生成失败的部分。
                 </p>
                 <Button
                   variant="outline"
                   size="sm"
                   class="mt-2"
                   @click="planView = 'list'"
-                  >查看历史记录</Button
+                  >返回列表</Button
                 >
               </div>
               <Button variant="outline" size="sm" @click="dismissError"
@@ -659,17 +875,17 @@ function onPlanRefreshed(plan: StudyPlan) {
                   {{ result.error.message }}
                 </p>
               </div>
-              <!-- 骨架已铺开说明大纲已产出：部分成果已入库，引导去历史记录重生成 -->
+              <!-- 骨架已铺开说明大纲已产出：部分成果已入库，引导回列表重生成 -->
               <div v-if="genState?.phases.length" class="text-sm">
                 <p class="text-muted-foreground">
-                  已完成的阶段已保存在云端，可到历史记录中查看并重新生成失败部分。
+                  已完成的阶段已保存在云端，可回到列表打开这份计划，重新生成失败的部分。
                 </p>
                 <Button
                   variant="outline"
                   size="sm"
                   class="mt-2"
                   @click="planView = 'list'"
-                  >查看历史记录</Button
+                  >返回列表</Button
                 >
               </div>
               <Button variant="outline" size="sm" @click="dismissResultError"
@@ -812,37 +1028,35 @@ function onPlanRefreshed(plan: StudyPlan) {
          跟随外部阅读状态：当前阶段自动展开、其余折叠（滚动监读驱动，目录
          内不自选状态）；本组件根无 transform，fixed 恒等于视口定位 -->
     <div
-      v-if="planView === 'create' && result?.status === 'plan'"
-      class="group fixed right-3 top-1/2 z-30 -translate-y-1/2 select-none py-6 pr-1"
+      v-if="planView === 'create' && result?.status === 'plan' && tocOpen"
+      id="reader-toc"
+      ref="tocPanelEl"
+      role="dialog"
+      aria-label="阅读目录"
+      tabindex="-1"
+      class="fixed bottom-20 right-4 z-30 max-h-[65dvh] w-72 max-w-[calc(100vw-2rem)] overflow-y-auto rounded-2xl border bg-popover p-4 shadow-xl outline-none sm:right-8"
+      @keydown.esc.stop.prevent="closeToc"
     >
-      <!-- 折叠态：每阶段一小条；hover 面板遮计时保持整组可触发 -->
-      <div class="flex flex-col items-end gap-1.5">
+      <div class="mb-3 flex items-center justify-between border-b pb-3">
+        <span class="text-sm font-semibold">阅读目录</span>
         <button
-          v-for="(phase, pi) in result.plan.phases"
-          :key="pi"
-          class="w-4 rounded-full transition-[height,background-color] duration-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          :class="
-            pi === activePhase
-              ? 'h-2.5 bg-primary group-hover:bg-primary/60'
-              : 'h-1.5 bg-border/70 group-hover:bg-primary/30'
-          "
-          v-tip="`${pi + 1}. ${phase.name}`"
-          :aria-label="`跳转到阶段 ${pi + 1}：${phase.name}`"
-          @click="openPhaseFromToc(pi)"
-        />
+          class="flex h-10 w-10 items-center justify-center rounded-lg hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          aria-label="关闭目录"
+          @click="closeToc"
+        >
+          <X class="h-4 w-4" />
+        </button>
       </div>
-      <nav
-        class="invisible absolute right-0 top-1/2 max-h-[65vh] w-56 -translate-y-1/2 overflow-y-auto rounded-xl border bg-card/95 p-2.5 opacity-0 shadow-lg backdrop-blur transition-opacity duration-200 group-hover:visible group-hover:opacity-100"
-        aria-label="计划目录"
-      >
+      <nav aria-label="计划目录">
         <div
           v-for="(phase, pi) in result.plan.phases"
           :key="pi"
           class="mb-2 last:mb-0"
         >
           <button
-            class="w-full truncate rounded-lg px-2 py-1.5 text-left text-xs font-semibold transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            :class="pi === activePhase ? 'text-primary' : ''"
+            class="min-h-11 w-full rounded-lg px-3 py-2 text-left text-sm font-semibold transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            :class="pi === activePhase ? 'bg-accent text-primary' : ''"
+            :aria-current="pi === activePhase ? 'location' : undefined"
             v-tip="'跳转并展开该阶段'"
             @click="openPhaseFromToc(pi)"
           >
@@ -853,7 +1067,7 @@ function onPlanRefreshed(plan: StudyPlan) {
             <button
               v-for="(chapter, ci) in phase.chapters || []"
               :key="ci"
-              class="w-full truncate rounded-lg px-2 py-1 text-left text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              class="min-h-10 w-full rounded-lg px-2 py-2 text-left text-xs leading-5 text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               v-tip="chapter.title"
               @click="openChapterFromToc(pi, ci)"
             >

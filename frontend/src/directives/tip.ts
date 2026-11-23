@@ -67,11 +67,31 @@ function place(text: string, target: HTMLElement): void {
   const rect = target.getBoundingClientRect();
   const tw = el.offsetWidth;
   const th = el.offsetHeight;
-  let x = rect.left + rect.width / 2 - tw / 2;
-  x = Math.max(
-    VIEWPORT_MARGIN,
-    Math.min(x, window.innerWidth - tw - VIEWPORT_MARGIN),
-  );
+  // 目标贴近视口左右缘（折叠侧栏/窄屏图标）时水平居中必然被钳到边、
+  // 盖住邻近内容：改为在图标侧面垂直居中弹出
+  const centeredX = rect.left + rect.width / 2 - tw / 2;
+  if (
+    centeredX < VIEWPORT_MARGIN ||
+    centeredX + tw > window.innerWidth - VIEWPORT_MARGIN
+  ) {
+    const spaceRight = window.innerWidth - VIEWPORT_MARGIN - (rect.right + GAP);
+    const placeRight =
+      spaceRight >= tw || spaceRight >= rect.left - VIEWPORT_MARGIN - GAP;
+    const x = placeRight ? rect.right + GAP : rect.left - tw - GAP;
+    const y = Math.max(
+      VIEWPORT_MARGIN,
+      Math.min(
+        rect.top + rect.height / 2 - th / 2,
+        window.innerHeight - th - VIEWPORT_MARGIN,
+      ),
+    );
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+    el.classList.remove("praxis-tip--measure");
+    el.classList.add("praxis-tip--show");
+    return;
+  }
+  let x = centeredX;
   let y = rect.top - th - GAP;
   if (y < VIEWPORT_MARGIN) y = rect.bottom + GAP;
   el.style.left = `${x}px`;
