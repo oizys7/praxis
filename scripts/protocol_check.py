@@ -36,6 +36,9 @@ PYTHON_MODELS = {
     "StudyResource": "Resource",
     "GlossaryEntry": "GlossaryEntry",
     "StudyPlan": "StudyPlan",
+    "ChatMessage": "ChatMessage",
+    "ChapterAnnotation": "ChapterAnnotation",
+    "ChapterNote": "ChapterNote",
 }
 
 

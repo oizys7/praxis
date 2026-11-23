@@ -385,6 +385,25 @@ async def _plan_event_dicts(
                                     "name": phase.get("name", ""),
                                     "weekRange": phase.get("weekRange", ""),
                                     "chapterTitles": phase.get("chapterTitles") or [],
+                                    # 骨架树 / 周时间线的渐进渲染数据（研读改版）：
+                                    # 大纲给出的章节级元数据随 outline 事件先行下发，
+                                    # seed_outline 据此播种骨架行。旧 Python 载荷
+                                    # 无这些键时 Rust 侧按空数组兜底。
+                                    "objectives": phase.get("objectives") or [],
+                                    "chapterKinds": phase.get("chapterKinds") or [],
+                                    "chapterKnowledgePoints": (
+                                        phase.get("chapterKnowledgePoints") or []
+                                    ),
+                                    "chapterSummaries": (
+                                        phase.get("chapterSummaries") or []
+                                    ),
+                                    "chapterKeyTerms": (
+                                        phase.get("chapterKeyTerms") or []
+                                    ),
+                                    "chapterWeeks": phase.get("chapterWeeks") or [],
+                                    "chapterEstimatedHours": (
+                                        phase.get("chapterEstimatedHours") or []
+                                    ),
                                 }
                                 for phase in outline_data.get("phases") or []
                             ],

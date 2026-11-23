@@ -1,12 +1,14 @@
-"""graph.py 章级扇出装配全链路测试（mock 模式，不触网）。
+"""graph.py 装配全链路测试（mock 模式，不触网）。
 
-用例名与实现计划简报逐字对应（test_full_flow_mock_returns_plan /
-test_chapter_rework_only_regenerates_failed_chapter /
-test_structural_rework_redoes_all_chapters_and_extras / test_rework_terminates）。
+2026-11 研读改版后的拓扑：
+- 首展（大纲-only）：clarify → outline → wrap 扇出 → assemble → END，
+  不产正文、不进评审——test_full_flow_outline_only 锁定该口径；
+- 重生成（regen_scope 指定作用域）：章级扇出 → assemble → review →
+  章级定向回炉（最多一次）——回炉三例以 scope 驱动同一条链。
+
 review stub 经 build_graph(review=...) 注入，验证章级定向回炉拓扑：
-
-- 首展哨兵：包装 expand_chapter_node / expand_phase_wrap_node——给首展章
-  summary 打哨兵前缀，同时破坏「1:1」章正文触发章级失败；
+- 首展哨兵：包装 expand_chapter_node / expand_phase_wrap_node——给章
+  summary 打哨兵前缀，同时破坏目标章正文触发章级失败；
 - 回炉哨兵：包装 nodes._expand_chapter_draft / nodes._expand_phase_extras
   （带计数）——回炉轮直接调用这两个函数，是否含哨兵/计数即可区分
   「保留首展稿」与「被回炉重扩覆盖」，并验证「只重扩失败章」。
@@ -19,8 +21,9 @@ import app.nodes as nodes_module
 import pytest
 from app.config import settings
 from app.graph import agent_graph, build_graph
+from app.mock import build_mock_outline
 from app.nodes import AgentState
-from app.schemas import Chapter
+from app.schemas import ChapterDraft
 
 # camelCase 请求，形状等同 PlanRequest.model_dump(by_alias=True)
 REQUEST = {
@@ -124,39 +127,46 @@ def _patch_rework_expand(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
 
 
 # ---------------------------------------------------------------------------
-# 全链路：mock 模式走完整章级扇出拓扑
+# 全链路：大纲-only 首展（mock 模式，不进评审、不产正文）
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_full_flow_mock_returns_plan(monkeypatch):
-    """mock 模式全链路：clarify → outline → 章级并行扩展+warp → 拼装 → 评审放行 → END。"""
+async def test_full_flow_outline_only(monkeypatch):
+    """mock 全链路首展：clarify → outline → wrap 扇出 → 拼装 → END。
+
+    研读改版口径：章节骨架直接来自大纲（contentMd 恒空、week/estimatedHours
+    齐备）、不产 chapter_drafts、不进评审（result 无 passed 键）。
+    """
     monkeypatch.setattr(settings, "allow_mock_llm", True)
 
     result = await agent_graph.ainvoke({"request": REQUEST})
 
     plan = result["plan"]
     assert plan["phases"], "计划至少包含一个阶段"
-    assert plan["phases"][0]["chapters"], "首个阶段至少包含一章"
-    assert plan["phases"][0]["project"], "首阶段的轻装项目合入重组"
-    assert result["passed"] is True, "mock 评审应直接放行"
-    # 章级扇出完整：每章草稿复合键齐备（"阶段:章"）
-    chapter_keys = set(result["chapter_drafts"])
-    assert chapter_keys == {
-        f"{p}:{c}"
-        for p, phase in enumerate(plan["phases"])
-        for c in range(len(phase["chapters"]))
-    }
+    outline = build_mock_outline(REQUEST)
+    for p_index, phase in enumerate(plan["phases"]):
+        assert phase["chapters"], "首个阶段至少包含一章（骨架）"
+        assert phase["project"], "轻装项目合入重组"
+        for c_index, chapter in enumerate(phase["chapters"]):
+            assert chapter["contentMd"] == "", "大纲-only 不产正文"
+            assert chapter["week"] == outline["phases"][p_index]["chapterWeeks"][c_index]
+            assert (
+                chapter["estimatedHours"]
+                == outline["phases"][p_index]["chapterEstimatedHours"][c_index]
+            )
+    assert "passed" not in result, "大纲-only 不进评审（无评审状态）"
+    assert not result.get("chapter_drafts"), "首展不再产章草稿"
 
 
 # ---------------------------------------------------------------------------
-# 章级定向回炉：仅失败章被重扩，未点名章保留首展稿
+# 章级定向回炉：仅失败章被重扩，未点名章保留首展稿（经 regen_scope 驱动）
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_chapter_rework_only_regenerates_failed_chapter(monkeypatch):
-    """assemble 标定失败章「1:1」：回炉后仅该章被重扩，其余章保留首展稿。"""
+    """重生成链标定失败章「1:1」：回炉后仅该章被重扩，其余章保留原稿。"""
     monkeypatch.setattr(settings, "allow_mock_llm", True)
     _patch_sentinel_expand(monkeypatch)
     calls = _patch_rework_expand(monkeypatch)
@@ -175,8 +185,15 @@ async def test_chapter_rework_only_regenerates_failed_chapter(monkeypatch):
         }
 
     graph = build_graph(review=_failing_review)
+    outline = build_mock_outline(REQUEST)
 
-    result = await graph.ainvoke({"request": REQUEST})
+    result = await graph.ainvoke(
+        {
+            "request": REQUEST,
+            "outline": outline,
+            "regen_scope": {"phase": 1, "chapters": None},
+        }
+    )
 
     assert result["revised"] is True, "章级定向回炉后应标记已修订"
     assert calls["chapter"] == 1, "只重扩失败章（恰 1 次）"
@@ -186,15 +203,14 @@ async def test_chapter_rework_only_regenerates_failed_chapter(monkeypatch):
     assert result["chapter_drafts"]["1:1"]["contentMd"] != "太短"
     # 未失败章保留首展稿（首展哨兵仍在）
     assert result["chapter_drafts"]["1:0"]["summary"].startswith(_SENTINEL)
-    assert result["chapter_drafts"]["0:0"]["summary"].startswith(_SENTINEL)
-    assert result["phase_extras"], "首展轻装全保留（未标记缺失）"
+    assert result["phase_extras"], "既有轻装全保留（未标记缺失）"
     assert not any(
         a.startswith(_REWORK_SENTINEL)
         for extras in result["phase_extras"].values()
         for a in extras["assignments"]
     ), "轻装未被回炉重做"
     # 重组采用重扩后的新稿
-    assert result["plan"]["phases"][1]["chapters"][1]["contentMd"], (
+    assert result["plan"]["phases"][0]["chapters"][1]["contentMd"], (
         "回炉后拼装应采用失败章的新稿"
     )
 
@@ -206,7 +222,7 @@ async def test_chapter_rework_only_regenerates_failed_chapter(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_structural_rework_redoes_all_chapters_and_extras(monkeypatch):
-    """评审点名阶段 0（章完好）：回炉重扩全部章并连带重做轻装。"""
+    """评审点名目标阶段（章完好）：回炉重扩全部章并连带重做轻装。"""
     monkeypatch.setattr(settings, "allow_mock_llm", True)
     _patch_sentinel_expand(monkeypatch, break_key=None)  # 无失败章
     calls = _patch_rework_expand(monkeypatch)
@@ -224,16 +240,22 @@ async def test_structural_rework_redoes_all_chapters_and_extras(monkeypatch):
         }
 
     graph = build_graph(review=_failing_review)
+    outline = build_mock_outline(REQUEST)
 
-    result = await graph.ainvoke({"request": REQUEST})
+    result = await graph.ainvoke(
+        {
+            "request": REQUEST,
+            "outline": outline,
+            "regen_scope": {"phase": 0, "chapters": None},
+        }
+    )
 
     assert result["revised"] is True
     assert calls["chapter"] == 2, "该阶段全部章重扩"
     assert calls["extras"] == 1, "结构回炉连带轻装重做（恰一次）"
-    # 阶段 0 全部章 + 轻装被回炉覆盖；阶段 1 保留首展稿
+    # 全部章 + 轻装被回炉覆盖
     assert result["chapter_drafts"]["0:0"]["summary"].startswith(_REWORK_SENTINEL)
     assert result["chapter_drafts"]["0:1"]["summary"].startswith(_REWORK_SENTINEL)
-    assert result["chapter_drafts"]["1:0"]["summary"].startswith(_SENTINEL)
     assert result["phase_extras"]["0"]["assignments"][0].startswith(_REWORK_SENTINEL)
     assert all(
         result["plan"]["phases"][0]["chapters"][i]["summary"].startswith(
@@ -241,9 +263,6 @@ async def test_structural_rework_redoes_all_chapters_and_extras(monkeypatch):
         )
         for i in range(2)
     ), "重组采用回炉新稿"
-    assert result["plan"]["phases"][1]["chapters"][0]["summary"].startswith(
-        _SENTINEL
-    ), "未点名阶段保留首展稿"
 
 
 # ---------------------------------------------------------------------------
@@ -266,34 +285,67 @@ async def test_rework_terminates(monkeypatch):
             "passed": False,
             "review_notes": ["始终不通过"],
             "suggestions": [],
-            "pending_phase_indexes": [0, 1, 2],
+            "pending_phase_indexes": [0],
         }
 
     graph = build_graph(review=_always_failing_review)
+    outline = build_mock_outline(REQUEST)
 
-    result = await graph.ainvoke({"request": REQUEST})
+    result = await graph.ainvoke(
+        {
+            "request": REQUEST,
+            "outline": outline,
+            "regen_scope": {"phase": 0, "chapters": None},
+        }
+    )
 
     assert result["revised"] is True
     assert calls_review["review"] == 1, "回炉后不再进评审（图侧保证最多回炉一次）"
-    # 回炉轮：阶段 0/2 结构性（各 2 章 + 1 轻），阶段 1 只重扩失败章 1:1
-    assert calls["chapter"] == 5
-    assert calls["extras"] == 2
+    # 回炉轮：结构性回炉（该阶段全部章 + 1 轻）
+    assert calls["chapter"] == 2
+    assert calls["extras"] == 1
 
 
 # ---------------------------------------------------------------------------
-# 章级扇出 payload 形状自检（哨兵包装的入参完整性）
+# 扇出拓扑自检：首展只发 wrap，重生成按作用域发章级 Send
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
+async def test_fan_out_topology_outline_only_vs_regen(monkeypatch):
+    """大纲-only 只发 expand_phase_wrap；重生成按作用域发 expand_chapter。"""
+    monkeypatch.setattr(settings, "allow_mock_llm", True)
+    outline = build_mock_outline(REQUEST)
+
+    # 首展：全部 Send 都指向 wrap（章节骨架由 assemble 直接拼装）
+    sends = graph_module._fan_out_chapters({"request": REQUEST, "outline": outline})
+    assert sends, "首展至少分发一个 wrap 实例"
+    assert all(send.node == "expand_phase_wrap" for send in sends)
+    assert len(sends) == len(outline["phases"]), "每阶段恰好一个 wrap 实例"
+
+    # 单章重生成：只发目标章的 expand_chapter、不发 wrap
+    chapter_sends = graph_module._fan_out_chapters(
+        {
+            "request": REQUEST,
+            "outline": outline,
+            "regen_scope": {"phase": 1, "chapters": [1]},
+        }
+    )
+    assert [s.node for s in chapter_sends] == ["expand_chapter"]
+    assert chapter_sends[0].arg["chapter_index"] == 1
+    assert chapter_sends[0].arg["phase_index"] == 1
+    assert chapter_sends[0].arg["emit_chapter_start"] is True
+
+
+@pytest.mark.asyncio
 async def test_fan_out_payload_shape(monkeypatch):
-    """首展 Send payload 携带章索引与计划上下文（章级扇出契约）。"""
+    """重生成 Send payload 携带章索引与计划上下文（章级扇出契约）。"""
     monkeypatch.setattr(settings, "allow_mock_llm", True)
     seen: list[dict[str, Any]] = []
 
     async def _capturing_chapter(payload: dict[str, Any]) -> dict[str, Any]:
         seen.append(dict(payload))
-        chapter = Chapter(
+        chapter = ChapterDraft(
             title=payload["phase_outline"]["chapterTitles"][payload["chapter_index"]]
         )
         return {
@@ -305,10 +357,17 @@ async def test_fan_out_payload_shape(monkeypatch):
         }
 
     monkeypatch.setattr(graph_module, "expand_chapter_node", _capturing_chapter)
+    outline = build_mock_outline(REQUEST)
 
     # agent_graph 是导入期预编译图（不随 patch 变化），需经 build_graph 重编译
     graph = build_graph()
-    await graph.ainvoke({"request": REQUEST})
+    await graph.ainvoke(
+        {
+            "request": REQUEST,
+            "outline": outline,
+            "regen_scope": {"phase": 0, "chapters": None},
+        }
+    )
 
     assert seen, "章实例应被分发"
     stage_titles = set()

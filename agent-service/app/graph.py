@@ -1,18 +1,24 @@
-"""LangGraph 状态图定义：章级扇出拓扑（骨架 → 章级并行扩展 → 拼装 → 评审/章级回炉）。
+"""LangGraph 状态图定义：大纲-only 首展 + 章级扇出重生成（2026-11 研读改版）。
 
 流程：
 - intake 分流：state 带 regen_scope（重生成）→ 直接按作用域扇出，跳过
   clarify/outline；否则 → clarify
 - clarify 发现信息缺口 → END（返回澄清问题给用户）
-- clarify 通过 → outline（骨架规划）→ 条件边 Send 双路分发：
-  - expand_chapter：每章一个实例（每章 1 次 LLM 调用，一次只写一章正文）
-  - expand_phase_wrap：每阶段一个实例（轻量调用，只产 practice/assignments/project）
+- clarify 通过 → outline（骨架规划，含每章 week/estimatedHours）→ 条件边：
+  - 首次生成（大纲-only）：只 Send expand_phase_wrap（每阶段 1 个轻量实例产
+    practice/assignments/project）；章节骨架由 assemble 直接按大纲并行数组
+    拼装，contentMd 恒空——正文属研读页按需生成（走 regen 通道），不再首展
+  - 重生成（regen_scope 存在）：按作用域 Send 双路分发——
+    expand_chapter：每目标章一个实例（每章 1 次 LLM 调用，一次只写一章正文）；
+    expand_phase_wrap：全阶段重生成时每阶段一个轻量实例
 - 两路实例各写各键 → assemble（按 (阶段索引, 章索引) 重组 + 程序化校验）
-- assemble 未修订 → review（LLM 评审）：
+- 大纲-only assemble → END（不进评审：评审的回炉入口会生成正文，违背
+  「首展不产正文」裁定；空正文是合法态，由程序化结构校验把关）
+- 重生成 assemble 未修订 → review（LLM 评审）：
   - 有待回炉阶段 → Send expand_revision 章级定向回炉（只重扩失败章；
     结构性问题回炉该阶段全部章）→ 回到 assemble
   - 无待回炉阶段 → END
-- assemble 已修订过 → END（图侧条件边保证最多回炉一次，防死循环）
+- 重生成 assemble 已修订过 → END（图侧条件边保证最多回炉一次，防死循环）
 
 章级扇出的动机：一次吐整阶段（2-6 章长 markdown）是 LLM 解析失败/截断
 重灾区，按章单调用保证质量；outlines 已产出每章标题，天然支持章级 Send 扇出。
@@ -48,15 +54,17 @@ def _route_after_clarify(state: dict[str, Any]) -> str:
 
 
 def _fan_out_chapters(state: dict[str, Any]) -> list[Send]:
-    """扇出条件边：按骨架章级分发 Send（并行扩展）。
+    """outline 之后的条件边：分发 Send（重生成章级 + 首展阶段轻装）。
 
-    双路分发：每章一个 expand_chapter 实例（payload 携带 request /
-    phase_outline / phase_index / chapter_index / plan_context），
-    加每阶段一个 expand_phase_wrap 实例（轻量收尾内容，不含章节正文）。
-    plan_context 由 build_plan_context 从大纲构造（相邻阶段名 / 标题 / 概述）。
+    首次生成（大纲-only）：只发每阶段一个 expand_phase_wrap 轻量实例
+    （practice / assignments / project 不含章节正文，保留阶段收尾内容）；
+    章节骨架由 assemble 直接按大纲拼装，不走 expand_chapter。
 
-    重生成（state.regen_scope 存在）时按作用域过滤：只发目标阶段的 Send，
+    重生成（state.regen_scope 存在）时按作用域分发：每目标章一个
+    expand_chapter 实例（payload 携带 request / phase_outline / phase_index /
+    chapter_index / plan_context），全阶段重生成加每阶段一个 wrap 实例；
     单章重生成只发那一个 expand_chapter、且不发 wrap（不动阶段轻装）。
+    plan_context 由 build_plan_context 从大纲构造（相邻阶段名 / 标题 / 概述）。
     """
     outline = state.get("outline") or {}
     phases = outline.get("phases") or []
@@ -77,6 +85,19 @@ def _fan_out_chapters(state: dict[str, Any]) -> list[Send]:
             continue
         phase = phases[index]
         plan_context = build_plan_context(outline, index)
+        if scope_phase is None:
+            # 首次生成：只产阶段轻装，章节骨架由 assemble 按大纲直接拼装
+            sends.append(
+                Send(
+                    "expand_phase_wrap",
+                    {
+                        "request": request,
+                        "phase_outline": phase,
+                        "phase_index": index,
+                    },
+                )
+            )
+            continue
         titles = phase.get("chapterTitles") or []
         chapter_indexes = (
             [c for c in scope_chapters if 0 <= c < len(titles)]
@@ -93,9 +114,8 @@ def _fan_out_chapters(state: dict[str, Any]) -> list[Send]:
                         "phase_index": index,
                         "chapter_index": chapter_index,
                         "plan_context": plan_context,
-                        # 重生成链需要「本章开始生成」信号做逐章动画；
-                        # 首次生成不需要（Rust 侧对 chapterStart 会忽略）
-                        "emit_chapter_start": scope_phase is not None,
+                        # 重生成链需要「本章开始生成」信号做逐章动画
+                        "emit_chapter_start": True,
                     },
                 )
             )
@@ -132,8 +152,12 @@ def _route_after_intake(state: dict[str, Any]) -> list[Send] | str:
 
 
 def _route_after_assemble(state: dict[str, Any]) -> str:
-    """assemble 之后的条件边：已修订过（回炉后重拼）→ 结束；否则进入评审。"""
-    return "end" if state.get("revised") else "review"
+    """assemble 之后的条件边：大纲-only 首展或已修订过（回炉后重拼）→ 结束；
+    重生成拼装 → 评审。大纲-only 不进评审：评审的回炉入口（expand_revision）
+    会生成正文，违背「首展不产正文」裁定。"""
+    if state.get("revised") or not state.get("regen_scope"):
+        return "end"
+    return "review"
 
 
 def _route_after_review(state: dict[str, Any]) -> list[Send] | str:

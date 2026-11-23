@@ -40,6 +40,8 @@
         "contentMd",
         "kind",
         "keyTerms",
+        "week",
+        "estimatedHours",
         "visualizations",
         "exercises"
       ],
@@ -92,6 +94,21 @@
         "glossary"
       ],
       "extra": []
+    },
+    "ChatMessage": {
+      "required": ["role", "content"],
+      "fields": ["role", "content"],
+      "extra": ["id", "createdAt"]
+    },
+    "ChapterAnnotation": {
+      "required": ["quote"],
+      "fields": ["quote", "comment"],
+      "extra": ["id", "createdAt", "phaseIndex", "chapterIndex"]
+    },
+    "ChapterNote": {
+      "required": [],
+      "fields": ["contentMd"],
+      "extra": ["updatedAt"]
     }
   }
 }

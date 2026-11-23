@@ -32,6 +32,19 @@ pub struct OutlinePhasePayload {
     /// 与 chapter_titles 等长的知识点列表
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chapter_knowledge_points: Vec<Vec<String>>,
+    /// 与 chapter_titles 等长的章节概述列表（研读改版：大纲先行下发，
+    /// seed_outline 据此播种章节骨架行；旧 Python 载荷缺省为空）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chapter_summaries: Vec<String>,
+    /// 与 chapter_titles 等长的每章核心术语列表
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chapter_key_terms: Vec<Vec<String>>,
+    /// 与 chapter_titles 等长的所在周列表（1..weeks，周时间线数据源）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chapter_weeks: Vec<u32>,
+    /// 与 chapter_titles 等长的每章预计学时列表
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chapter_estimated_hours: Vec<u32>,
     /// 阶段目标
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub objectives: Vec<String>,
@@ -188,6 +201,13 @@ pub struct ChapterDef {
     /// 本章核心术语（2-4 个）：计算属性列全计划术语表，不单独存储
     #[serde(default)]
     pub key_terms: Vec<String>,
+    /// 本章所在周（1..weeks，由大纲分配；研读改版周时间线数据源）。
+    /// None = 旧数据缺省，wire 上省略（upsert 时 COALESCE 保留库中原值）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub week: Option<u32>,
+    /// 本章预计投入学时（由大纲分配；None = 旧数据缺省，wire 上省略）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_hours: Option<u32>,
     /// 过程动画（至多一段）：仅「执行过程不可见」的算法/数据结构章才有
     #[serde(default)]
     pub visualizations: Vec<VisualizationDef>,
@@ -557,6 +577,18 @@ pub enum StreamEvent {
         phase_index: u32,
         chapter_index: u32,
     },
+    /// 章节正文增量（2026-11 研读改版）：Python 流式解析工具参数后逐 token
+    /// 放出的 contentMd 文本片段，供研读页打字机效果。仅重生成链出现；
+    /// 增量只是渐进展示，最终以 chapter 事件的完整正文为准（解析重试时
+    /// 增量会重来一遍，消费方须以 chapter 事件覆盖）。不落库。
+    ChapterDelta {
+        /// wire 完整性保留（Python 回显）；Rust 消费以入口校验后的目标值为准，
+        /// 本字段不读——防御性豁免 dead_code（与 ChapterStart.phase_index 同口径）
+        #[allow(dead_code)]
+        phase_index: u32,
+        chapter_index: u32,
+        text: String,
+    },
     /// 终态：统一包络（plan / clarification / error），必为最后一行
     Done { response: PlanResponse },
 }
@@ -637,6 +669,150 @@ pub struct PlanProgressEnvelope {
     pub payload: PlanProgressEvent,
 }
 
+// ---------------------------------------------------------------------------
+// 研读页数据（2026-11 研读功能包1）：聊天 / 标注 / 笔记 / 章节正文增量
+// 跨端契约见 protocol/protocol.json 的 ChatMessage / ChapterAnnotation /
+// ChapterNote（fields/extra 机制）；存储层与命令层见 study_store / commands。
+// ---------------------------------------------------------------------------
+
+/// 研读聊天消息（契约 ChatMessage）：role/content 为跨端字段，
+/// id/createdAt 为端特有字段（extra）——Rust 落库生成，出站 Python 载荷
+/// 与前端读回时按 Some 携带（None 时序列化跳过，Python 侧 Pydantic 忽略多余字段）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatMessageDef {
+    /// user | assistant（Python 侧 Literal 校验，未知值 422）
+    pub role: String,
+    pub content: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// ISO 8601 时间戳
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<String>,
+}
+
+/// 章节选区标注（契约 ChapterAnnotation）：quote 必填、comment 可选
+/// （纯划线为空串）；id/createdAt/phaseIndex/chapterIndex 为端特有字段（extra）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChapterAnnotationDef {
+    pub id: String,
+    pub phase_index: u32,
+    pub chapter_index: u32,
+    /// 选中的原文片段
+    pub quote: String,
+    /// 标注批注（纯划线为空串）
+    #[serde(default)]
+    pub comment: String,
+    /// ISO 8601 创建时间
+    #[serde(default)]
+    pub created_at: String,
+}
+
+/// 章节级 markdown 笔记（契约 ChapterNote）：每章至多一行（复合主键 upsert），
+/// contentMd 空串 = 清空笔记；updatedAt 为端特有字段（extra）。
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ChapterNoteDef {
+    pub content_md: String,
+    /// ISO 8601 最后更新时间（读回携带）
+    #[serde(default)]
+    pub updated_at: String,
+}
+
+/// Rust -> Python 的研读聊天请求（POST /api/chat，NDJSON 流式响应）；
+/// 镜像 agent-service/app/schemas.py::ChatRequest（CamelModel，camelCase）。
+/// 上下文由 Rust 读库回填（章节正文 + 计划标题/目标 + 本章历史）。
+/// 仅 Serialize：Rust 是唯一发送方。
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatRequest {
+    /// 计划 id（关联回显用；Python 不校验存在性）
+    pub plan_id: String,
+    pub phase_index: u32,
+    pub chapter_index: u32,
+    pub plan_title: String,
+    pub plan_goal: String,
+    pub chapter_title: String,
+    /// 章节正文全文（可为空串：正文未生成的章也可提问，Python 提示词有兜底口径）
+    pub chapter_content_md: String,
+    /// 本章历史对话（时间升序，不含本次提问）
+    pub messages: Vec<ChatMessageDef>,
+    pub question: String,
+}
+
+/// Python 聊天流式端点的入站事件（消费方向：Python -> Rust，NDJSON 逐行）。
+/// chatDelta/chatDone/chatError 与生成链事件集相互独立；chatDone / chatError
+/// 必为最后一行（二者互斥），缺终态 = 流异常中断。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+#[allow(clippy::enum_variant_names)] // wire 类型名与 Python 事件字面量逐字对齐，前缀是契约的一部分
+pub enum ChatStreamEvent {
+    /// 回答文本增量（token 级，可多条；与 chatDone 的完整回答拼接一致）
+    ChatDelta { text: String },
+    /// 正常终态：完整回答（role 恒 assistant）
+    ChatDone { message: ChatMessageDef },
+    /// 失败终态（未配置 Key / 模型调用失败 / 服务内部错误）
+    ChatError { code: String, message: String },
+}
+
+/// 聊天 NDJSON 行 -> 入站事件：空行 / 坏 JSON / 未知 type 一律 None（坏行跳过）。
+pub fn parse_chat_ndjson_line(line: &str) -> Option<ChatStreamEvent> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    serde_json::from_str(line).ok()
+}
+
+/// Rust -> 前端的章节正文增量事件（'chapter-delta' 全局事件载荷）：
+/// 仅重生成链出现，不落库，最终以 chapter 事件（入库）为准。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChapterDeltaEvent {
+    pub plan_id: String,
+    pub phase_index: u32,
+    pub chapter_index: u32,
+    pub text: String,
+}
+
+/// Rust -> 前端的聊天增量事件（'chat-delta' 全局事件载荷）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatDeltaEvent {
+    pub plan_id: String,
+    pub phase_index: u32,
+    pub chapter_index: u32,
+    pub text: String,
+}
+
+/// Rust -> 前端的聊天完成事件（'chat-done' 全局事件载荷）：
+/// message 已由 Rust 落库（含 id/createdAt），前端可直接入列。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatDoneEvent {
+    pub plan_id: String,
+    pub phase_index: u32,
+    pub chapter_index: u32,
+    pub message: ChatMessageDef,
+}
+
+/// Rust -> 前端的聊天失败事件（'chat-error' 全局事件载荷）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatErrorEvent {
+    pub plan_id: String,
+    pub phase_index: u32,
+    pub chapter_index: u32,
+    /// service | validation | internal（与生成链错误码同口径）
+    pub code: String,
+    pub message: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -701,6 +877,8 @@ mod tests {
                     summary: "深入 Rust 内存模型".into(),
                     kind: "concept".into(),
                     key_terms: vec!["所有权".into(), "借用".into()],
+                    week: Some(1),
+                    estimated_hours: Some(6),
                     content_md: "## 所有权与借用\n\n```mermaid\nflowchart LR\n```".into(),
                     visualizations: Vec::new(),
                     exercises: Vec::new(),
@@ -738,6 +916,9 @@ mod tests {
             chapter["contentMd"],
             "## 所有权与借用\n\n```mermaid\nflowchart LR\n```"
         );
+        // 研读改版：week/estimatedHours camelCase 走线（Some 才序列化）
+        assert_eq!(chapter["week"], 1);
+        assert_eq!(chapter["estimatedHours"], 6);
         assert_eq!(phase["project"]["estimatedHours"], 12);
         // 章型与术语：camelCase 走线，术语表挂在计划级
         assert_eq!(chapter["kind"], "concept");
@@ -1256,5 +1437,257 @@ mod tests {
             serde_json::json!([1, 2, 3, 4, 5, 6, 7]),
             "PlanRecord.studyDays camelCase wire（Task E）"
         );
+    }
+
+    /// 研读改版：Chapter.week/estimatedHours 可选字段——缺省反序列化为 None
+    /// （旧数据兼容），None 序列化跳过（wire 不出现 null 键），Some 原样走线
+    #[test]
+    fn chapter_week_fields_optional_and_omitted_when_none() {
+        // 旧 wire：无 week/estimatedHours 字段应可反序列化
+        let old: ChapterDef = serde_json::from_str(r#"{"title":"旧章","contentMd":""}"#)
+            .expect("旧章节 wire 应可反序列化");
+        assert_eq!(old.week, None);
+        assert_eq!(old.estimated_hours, None);
+
+        // None 序列化：键不出现（与既有 status=None 的跳过语义一致）
+        let value = serde_json::to_value(ChapterDef {
+            title: "骨架章".into(),
+            ..ChapterDef::default()
+        })
+        .unwrap();
+        assert!(
+            value.get("week").is_none(),
+            "week=None 不得序列化进 wire"
+        );
+        assert!(value.get("estimatedHours").is_none());
+
+        // Some 原样走线 + 回转
+        let filled: ChapterDef =
+            serde_json::from_str(r#"{"title":"章","week":3,"estimatedHours":8}"#).unwrap();
+        assert_eq!(filled.week, Some(3));
+        assert_eq!(filled.estimated_hours, Some(8));
+    }
+
+    /// 大纲阶段载荷（研读改版）：章节级元数据并行数组 camelCase 走线；
+    /// 空/缺省数组不序列化，旧载荷反序列化为空 vec
+    #[test]
+    fn outline_phase_payload_carries_chapter_meta_arrays() {
+        let payload: OutlinePhasePayload = serde_json::from_str(
+            r#"{"name":"阶段一","chapterTitles":["甲章"]}"#,
+        )
+        .expect("旧形态大纲载荷应可反序列化");
+        assert!(payload.chapter_summaries.is_empty());
+        assert!(payload.chapter_key_terms.is_empty());
+        assert!(payload.chapter_weeks.is_empty());
+        assert!(payload.chapter_estimated_hours.is_empty());
+
+        let value = serde_json::to_value(OutlinePhasePayload {
+            name: "阶段一".into(),
+            week_range: "第 1-2 周".into(),
+            chapter_titles: vec!["甲章".into(), "乙章".into()],
+            project_brief: None,
+            chapter_summaries: vec!["甲章概述".into(), "乙章概述".into()],
+            chapter_key_terms: vec![vec!["所有权".into()], vec!["借用".into()]],
+            chapter_weeks: vec![1, 2],
+            chapter_estimated_hours: vec![6, 8],
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(value["chapterSummaries"][1], "乙章概述");
+        assert_eq!(value["chapterKeyTerms"][0][0], "所有权");
+        assert_eq!(value["chapterWeeks"], serde_json::json!([1, 2]));
+        assert_eq!(value["chapterEstimatedHours"], serde_json::json!([6, 8]));
+    }
+
+    /// 章节正文增量事件（研读改版）：chapterDelta + camelCase 字段解析
+    #[test]
+    fn parse_ndjson_line_accepts_chapter_delta_event() {
+        let event = parse_ndjson_line(
+            r#"{"type":"chapterDelta","phaseIndex":1,"chapterIndex":0,"text":"所有权是"}"#,
+        )
+        .expect("chapterDelta 事件行应解析成功");
+        match event {
+            StreamEvent::ChapterDelta {
+                phase_index,
+                chapter_index,
+                text,
+            } => {
+                assert_eq!(phase_index, 1);
+                assert_eq!(chapter_index, 0);
+                assert_eq!(text, "所有权是");
+            }
+            other => panic!("应为 ChapterDelta 事件，实际：{other:?}"),
+        }
+    }
+
+    /// 聊天流式事件（研读改版）：chatDelta/chatDone/chatError 依次解析；
+    /// chatDone 携带完整消息（role/content camelCase）
+    #[test]
+    fn parse_chat_ndjson_line_accepts_three_events() {
+        let delta = parse_chat_ndjson_line(r#"{"type":"chatDelta","text":"所有权是"}"#)
+            .expect("chatDelta 行应解析成功");
+        assert!(matches!(delta, ChatStreamEvent::ChatDelta { ref text } if text == "所有权是"));
+
+        let done = parse_chat_ndjson_line(
+            r#"{"type":"chatDone","message":{"role":"assistant","content":"完整回答"}}"#,
+        )
+        .expect("chatDone 行应解析成功");
+        match done {
+            ChatStreamEvent::ChatDone { message } => {
+                assert_eq!(message.role, "assistant");
+                assert_eq!(message.content, "完整回答");
+            }
+            other => panic!("应为 ChatDone 事件，实际：{other:?}"),
+        }
+
+        let error = parse_chat_ndjson_line(
+            r#"{"type":"chatError","code":"service","message":"未配置 Key"}"#,
+        )
+        .expect("chatError 行应解析成功");
+        match error {
+            ChatStreamEvent::ChatError { code, message } => {
+                assert_eq!(code, "service");
+                assert_eq!(message, "未配置 Key");
+            }
+            other => panic!("应为 ChatError 事件，实际：{other:?}"),
+        }
+
+        // 坏行/未知 type 一律 None
+        assert!(parse_chat_ndjson_line("").is_none());
+        assert!(parse_chat_ndjson_line("{not-json").is_none());
+        assert!(parse_chat_ndjson_line(r#"{"type":"unknown"}"#).is_none());
+    }
+
+    /// 聊天请求出站 wire（Rust -> Python）：camelCase 逐字段对齐
+    /// agent-service/app/schemas.py::ChatRequest
+    #[test]
+    fn chat_request_serializes_camel_case() {
+        let body = ChatRequest {
+            plan_id: "uuid-1".into(),
+            phase_index: 0,
+            chapter_index: 2,
+            plan_title: "Rust 入门".into(),
+            plan_goal: "三个月能写异步服务".into(),
+            chapter_title: "所有权与借用".into(),
+            chapter_content_md: "## 所有权与借用\n\n正文…".into(),
+            messages: vec![ChatMessageDef {
+                role: "user".into(),
+                content: "上一问".into(),
+                id: Some("m-1".into()),
+                created_at: Some("2026-11-23T00:00:00Z".into()),
+            }],
+            question: "所有权和借用有什么区别？".into(),
+        };
+        let value = serde_json::to_value(&body).unwrap();
+        assert_eq!(value["planId"], "uuid-1");
+        assert_eq!(value["phaseIndex"], 0);
+        assert_eq!(value["chapterIndex"], 2);
+        assert_eq!(value["chapterContentMd"], "## 所有权与借用\n\n正文…");
+        assert_eq!(value["messages"][0]["role"], "user");
+        assert_eq!(value["question"], "所有权和借用有什么区别？");
+    }
+
+    /// 聊天出站事件载荷（'chat-delta' / 'chat-done' / 'chat-error'）与
+    /// 章节增量事件（'chapter-delta'）的 camelCase wire 快照
+    #[test]
+    fn chat_and_chapter_delta_emit_events_serializes_camel_case() {
+        let delta = serde_json::to_value(ChatDeltaEvent {
+            plan_id: "uuid-1".into(),
+            phase_index: 0,
+            chapter_index: 2,
+            text: "所有权是".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            delta,
+            serde_json::json!({"planId": "uuid-1", "phaseIndex": 0,
+                "chapterIndex": 2, "text": "所有权是"})
+        );
+
+        let chapter_delta = serde_json::to_value(ChapterDeltaEvent {
+            plan_id: "uuid-1".into(),
+            phase_index: 1,
+            chapter_index: 0,
+            text: "正文增量".into(),
+        })
+        .unwrap();
+        assert!(
+            chapter_delta.get("type").is_none(),
+            "chapter-delta 载荷不带 type 标签"
+        );
+        assert_eq!(chapter_delta["planId"], "uuid-1");
+
+        let done = serde_json::to_value(ChatDoneEvent {
+            plan_id: "uuid-1".into(),
+            phase_index: 0,
+            chapter_index: 2,
+            message: ChatMessageDef {
+                role: "assistant".into(),
+                content: "完整回答".into(),
+                id: Some("m-2".into()),
+                created_at: Some("2026-11-23T00:00:00Z".into()),
+            },
+        })
+        .unwrap();
+        assert_eq!(done["message"]["role"], "assistant");
+        assert_eq!(done["message"]["id"], "m-2");
+
+        let error = serde_json::to_value(ChatErrorEvent {
+            plan_id: "uuid-1".into(),
+            phase_index: 0,
+            chapter_index: 2,
+            code: "service".into(),
+            message: "模型调用失败".into(),
+        })
+        .unwrap();
+        assert_eq!(error["code"], "service");
+        assert_eq!(error["message"], "模型调用失败");
+    }
+
+    /// 跨端契约类型 wire（ChatMessage / ChapterAnnotation / ChapterNote）：
+    /// 字段名与 protocol.json 的 fields/extra 一致（camelCase + 回转无损）
+    #[test]
+    fn study_workspace_contract_types_wire() {
+        // ChatMessage：role/content 必在；id/createdAt（extra）None 时跳过
+        let bare = serde_json::to_value(ChatMessageDef {
+            role: "user".into(),
+            content: "问".into(),
+            id: None,
+            created_at: None,
+        })
+        .unwrap();
+        assert_eq!(bare, serde_json::json!({"role": "user", "content": "问"}));
+
+        // ChapterAnnotation：quote 必填、comment 缺省空串；端特有字段齐备
+        let annotation = serde_json::to_value(ChapterAnnotationDef {
+            id: "a-1".into(),
+            phase_index: 0,
+            chapter_index: 1,
+            quote: "所有权在作用域结束时释放".into(),
+            comment: "".into(),
+            created_at: "2026-11-23T00:00:00Z".into(),
+        })
+        .unwrap();
+        assert_eq!(annotation["quote"], "所有权在作用域结束时释放");
+        assert_eq!(annotation["comment"], "");
+        assert_eq!(annotation["phaseIndex"], 0);
+        assert_eq!(annotation["chapterIndex"], 1);
+        assert_eq!(annotation["createdAt"], "2026-11-23T00:00:00Z");
+        let parsed: ChapterAnnotationDef =
+            serde_json::from_value(serde_json::to_value(&annotation).unwrap()).unwrap();
+        assert_eq!(parsed.id, "a-1");
+
+        // ChapterNote：contentMd 空串合法（清空笔记）；updatedAt 走 camelCase
+        let note = serde_json::to_value(ChapterNoteDef {
+            content_md: "".into(),
+            updated_at: "2026-11-23T00:00:00Z".into(),
+        })
+        .unwrap();
+        assert_eq!(
+            note,
+            serde_json::json!({"contentMd": "", "updatedAt": "2026-11-23T00:00:00Z"})
+        );
+        let note_parsed: ChapterNoteDef = serde_json::from_value(note).unwrap();
+        assert_eq!(note_parsed.content_md, "");
     }
 }

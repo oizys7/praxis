@@ -141,8 +141,8 @@ async def test_generation_payload_invalid_422(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_plan_event_sequence(monkeypatch):
-    """plan 任务 finished 后：[outline, chapter×M, phase×N, done] 且 done.status=plan；
-    mermaid / blob 等键集断言直接引用 mock 产物（不硬编形状）。"""
+    """plan 任务（大纲-only）finished 后：[outline, phase×N, done] 且 done.status=plan；
+    章节骨架随 phase 事件下发（contentMd 恒空、week/estimatedHours 齐备）。"""
     monkeypatch.setattr(settings, "allow_mock_llm", True)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -153,31 +153,24 @@ async def test_plan_event_sequence(monkeypatch):
 
     events = await _drain_until_terminal(task_id)
     types = [e["type"] for e in events]
-    # 序列形状：outline → chapter×M（每章一条，可乱序）→ phase×N → done 必为末尾
+    # 序列形状：outline → phase×N → done 必为末尾（研读改版：首展不再产章事件）
     outline = events[0]
-    chapter_events = [e for e in events if e["type"] == "chapter"]
     phase_events = [e for e in events if e["type"] == "phase"]
     assert types == (
-        ["outline"]
-        + ["chapter"] * len(chapter_events)
-        + ["phase"] * len(phase_events)
-        + ["done"]
+        ["outline"] + ["phase"] * len(phase_events) + ["done"]
     ), types
     assert outline["phaseCount"] >= 2
     assert outline["title"], "outline 事件必须携带计划标题"
-    expected_chapters = sum(len(p["chapterTitles"]) for p in outline["phases"])
-    assert len(chapter_events) == expected_chapters, "每章恰好一条 chapter 事件"
     assert len(phase_events) == outline["phaseCount"], "每阶段恰好一条 phase 事件"
     for e in phase_events:
         assert 0 <= e["index"] < outline["phaseCount"], "phase index 落在大纲范围内"
         assert e["phase"]["chapters"], "每阶段章节列表必须非空"
     done = events[-1]
     assert done["type"] == "done"
-    assert done["response"]["status"] == "plan", "终态必须携带 plan 包络"
+    assert done["response"]["status"] == "plan", "大纲-only 成功终态仍为 plan"
     assert done["response"]["plan"], "plan 终态必须携带计划体"
 
-    # 键集断言：chapter 与 WS 重生成单章链同构；phase 与重组语义同构。
-    # outline 额外携带完整大纲（outline 键）：Rust 存 plans.outline_json，
+    # 键集断言：outline 额外携带完整大纲（outline 键）：Rust 存 plans.outline_json，
     # 重生成据此还原章型 / 知识点 / 版本事实，缺了它 regen 上下文会退化。
     assert set(outline) == {
         "type",
@@ -190,34 +183,23 @@ async def test_plan_event_sequence(monkeypatch):
     full_phase = outline["outline"]["phases"][0]
     assert full_phase["chapterKinds"], "完整大纲必须携带章型"
     assert full_phase["chapterKnowledgePoints"], "完整大纲必须携带知识点"
-    # techFacts 由真实路径的版本探测注入（mock 不联网、不探测，故此处不产生）；
-    # 读取方一律 `.get("techFacts") or []`，两种形态都能工作。
-    for e in chapter_events:
-        assert set(e) == {
-            "type",
-            "index",
-            "phaseIndex",
-            "chapter",
-            # 生成输入留档：素材（重生成复用）+ 提示词变量快照（可复原提示词）
-            "researchSnippets",
-            "promptTrace",
-        }
-        chapter = e["chapter"]
-        assert set(chapter) == {
-            "title",
-            "summary",
-            "contentMd",
-            "kind",
-            "keyTerms",
-            "visualizations",
-            "exercises",
-        }
-        assert "```mermaid" in chapter["contentMd"], "正文必须内联 mermaid 码块"
-        assert (
-            chapter["title"] in outline["phases"][e["phaseIndex"]]["chapterTitles"]
-        ), "章题与骨架一致"
+    assert full_phase["chapterWeeks"], "完整大纲必须携带周分配（周时间线数据源）"
+    assert full_phase["chapterEstimatedHours"], "完整大纲必须携带每章学时"
+    # outline 事件 phases 载荷（渐进骨架渲染）：章节级元数据并行数组先行下发
+    for skeleton in outline["phases"]:
+        assert len(skeleton["chapterWeeks"]) == len(skeleton["chapterTitles"])
+        assert len(skeleton["chapterEstimatedHours"]) == len(skeleton["chapterTitles"])
+        assert len(skeleton["chapterSummaries"]) == len(skeleton["chapterTitles"])
+        assert len(skeleton["chapterKeyTerms"]) == len(skeleton["chapterTitles"])
     for e in phase_events:
         assert set(e) == {"type", "index", "phase"}
+        for chapter in e["phase"]["chapters"]:
+            assert chapter["contentMd"] == "", "大纲-only 首展正文恒空"
+            assert isinstance(chapter["week"], int) and chapter["week"] >= 1
+            assert chapter["week"] <= VALID_REQUEST["weeks"], "周次落在 1..weeks"
+            assert chapter["estimatedHours"] >= 1, "每章学时为正"
+            assert chapter["summary"], "章节概述来自大纲"
+            assert isinstance(chapter["keyTerms"], list)
 
 
 @pytest.mark.asyncio
@@ -297,15 +279,22 @@ async def test_regen_chapter_task(monkeypatch):
     assert [e["type"] for e in events] == ["chapterStart", "chapter", "phase", "done"]
     chapter_event = events[1]
     assert chapter_event["index"] == 1 and chapter_event["phaseIndex"] == 1
-    assert set(chapter_event["chapter"]) == {
+    chapter = chapter_event["chapter"]
+    assert set(chapter) == {
         "title",
         "summary",
         "contentMd",
         "kind",
         "keyTerms",
+        # 研读改版：周/学时由大纲回填，随单章事件一并下发
+        "week",
+        "estimatedHours",
         "visualizations",
         "exercises",
     }
+    outline_phase = outline["phases"][1]
+    assert chapter["week"] == outline_phase["chapterWeeks"][1]
+    assert chapter["estimatedHours"] == outline_phase["chapterEstimatedHours"][1]
     assert events[-1]["response"]["status"] == "plan"
 
 

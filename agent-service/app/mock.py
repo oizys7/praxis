@@ -149,12 +149,35 @@ _POINT_FILLER = (
 
 def _week_ranges(weeks: int) -> list[str]:
     """三阶段周区间：seg 均分、区间连续覆盖全部周数（weeks 过小时钳制到合法区间）。"""
+    return [
+        f"第 {start}-{end} 周" for start, end in _phase_week_bounds(weeks)
+    ]
+
+
+def _phase_week_bounds(weeks: int) -> list[tuple[int, int]]:
+    """三阶段的 (起始周, 结束周) 数值区间（与 _week_ranges 同一套钳制口径）。"""
     seg = max(1, weeks // 3)
     bounds = [(1, seg), (seg + 1, seg * 2), (seg * 2 + 1, weeks)]
     return [
-        f"第 {min(start, weeks)}-{max(min(start, weeks), min(end, weeks))} 周"
+        (min(start, weeks), max(min(start, weeks), min(end, weeks)))
         for start, end in bounds
     ]
+
+
+def _chapter_weeks(week_start: int, week_end: int, count: int) -> list[int]:
+    """把阶段的周区间均摊到各章：周次随章序单调不减、允许多章共用一周。"""
+    span = max(1, week_end - week_start + 1)
+    count = max(1, count)
+    return [week_start + (index * span) // count for index in range(count)]
+
+
+def _chapter_hours(weekly_hours: int, week_start: int, week_end: int, count: int) -> list[int]:
+    """把阶段的可用学时（每周小时 × 阶段周数）均摊到各章，每章至少 1 学时。"""
+    span = max(1, week_end - week_start + 1)
+    count = max(1, count)
+    total = max(count, weekly_hours * span)
+    base, remainder = divmod(total, count)
+    return [base + (1 if index < remainder else 0) for index in range(count)]
 
 
 def _deep_dive_content(topic: str, goal: str) -> str:
@@ -391,20 +414,35 @@ def build_mock_outline(request: dict[str, Any]) -> dict[str, Any]:
     focus = f"（偏好：{'、'.join(interests)}）" if interests else ""
 
     ranges = _week_ranges(weeks)
-    phases = [
-        {
-            "name": stage["name"],
-            "weekRange": ranges[index],
-            "objectives": [obj.format(goal=goal) for obj in stage["objectives"]],
-            "chapterTitles": list(stage["chapterTitles"]),
-            "chapterKinds": [_kind_for(i) for i in range(len(stage["chapterTitles"]))],
-            "chapterKnowledgePoints": [
-                _mock_knowledge_points(title) for title in stage["chapterTitles"]
-            ],
-            "projectBrief": stage["projectBrief"],
-        }
-        for index, stage in enumerate(_STAGES)
-    ]
+    week_bounds = _phase_week_bounds(weeks)
+    phases = []
+    for index, stage in enumerate(_STAGES):
+        titles = list(stage["chapterTitles"])
+        start, end = week_bounds[index]
+        phases.append(
+            {
+                "name": stage["name"],
+                "weekRange": ranges[index],
+                "objectives": [obj.format(goal=goal) for obj in stage["objectives"]],
+                "chapterTitles": titles,
+                "chapterKinds": [_kind_for(i) for i in range(len(titles))],
+                "chapterKnowledgePoints": [
+                    _mock_knowledge_points(title) for title in titles
+                ],
+                # 研读改版：大纲携带章节级元数据（概述 / 术语 / 周 / 学时），
+                # mock 与真实链路同形状，供骨架树与周时间线直接渲染
+                "chapterSummaries": [
+                    f"本章围绕「{title}」展开，结合「{goal}」的目标场景梳理主线内容。"
+                    for title in titles
+                ],
+                "chapterKeyTerms": [[title] for title in titles],
+                "chapterWeeks": _chapter_weeks(start, end, len(titles)),
+                "chapterEstimatedHours": _chapter_hours(
+                    hours, start, end, len(titles)
+                ),
+                "projectBrief": stage["projectBrief"],
+            }
+        )
 
     return {
         "title": f"「{goal}」学习计划（Mock 演示版）",

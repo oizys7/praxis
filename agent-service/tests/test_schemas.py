@@ -9,7 +9,7 @@ def test_study_phase_camel_case():
 
 
 def test_chapter_markdown_shape():
-    """Chapter 唯一形状：{title, summary, contentMd}，无结构化字段残留。"""
+    """Chapter wire 形状：{title, summary, contentMd} + 大纲元数据（week/estimatedHours）。"""
     from app.schemas import Chapter
 
     c = Chapter(title="t", summary="s", content_md="## 正文").model_dump(by_alias=True)
@@ -19,12 +19,17 @@ def test_chapter_markdown_shape():
         "contentMd",
         "kind",
         "keyTerms",
+        "week",
+        "estimatedHours",
         "visualizations",
         "exercises",
     }
     assert c["kind"] == "concept", "章型缺省为 concept"
     assert c["keyTerms"] == []
     assert c["contentMd"] == "## 正文"
+    assert c["week"] is None and c["estimatedHours"] is None, (
+        "周/学时缺省 None（大纲-only 生成的回填字段，旧数据可省略）"
+    )
     # 结构化字段随 markdown 化退役：Chapter 不再有 main_knowledge / deep_dives 字段
     assert not any("knowledge" in name for name in Chapter.model_fields)
     assert not any("dive" in name for name in Chapter.model_fields)

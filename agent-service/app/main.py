@@ -3,6 +3,7 @@
 端点：
 - POST /api/regenerate/stream：阶段/章节级重生成流式推送（phase/chapter/done 事件，
   供 Rust 侧 upsert 已入库的失败阶段/章节）
+- POST /api/chat：研读页按章伴学问答（chatDelta/chatDone/chatError NDJSON 流式）
 - GET  /api/config：返回当前生效配置（设置页读取）
 - POST /api/config：热更新配置（设置页保存后由 Rust 推送，无需重启）
 - GET  /health：健康检查（Tauri 端 ping_agent 探测在线状态）
@@ -25,15 +26,18 @@ from typing import Any
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import ValidationError
 
-from app import tasks
+from app import prompts, tasks
 from app.config import settings
-from app.errors import register_error_handlers
-from app.llm import probe_llm, reset_chat_model_cache
+from app.errors import AgentServiceError, register_error_handlers
+from app.llm import get_chat_model, has_llm_config, probe_llm, reset_chat_model_cache
 from app.logging_config import setup_logging, uvicorn_log_config
+from app.nodes import _NO_KEY_HINT
 from app.schemas import (
     AgentSettingsModel,
+    ChatRequest,
     GenerationSubmit,
     HealthResponse,
     RegenRequest,
@@ -127,6 +131,131 @@ async def _stream_regen_events(payload: RegenRequest) -> AsyncIterator[str]:
     """NDJSON 薄包装：透传 tasks._regen_event_dicts 的 event dict（wire 不变）。"""
     async for event in tasks._regen_event_dicts(payload):
         yield _ndjson_line(event)
+
+
+# ---------------------------------------------------------------------------
+# 研读页伴学问答（2026-11）：POST /api/chat，NDJSON 流式（token 级推送）
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/chat")
+async def chat(payload: ChatRequest) -> StreamingResponse:
+    """章节伴学聊天流式端点（NDJSON，chatDone / chatError 必为最后一行）。
+
+    事件序列（application/x-ndjson，每行一个 JSON 对象）：
+    - {"type": "chatDelta", "text": "…"}：回答文本增量（token 级，可多条）；
+    - {"type": "chatDone", "message": {role: "assistant", content: "…"}}：
+      正常终态，message 为完整回答（与增量拼接结果一致）；
+    - {"type": "chatError", "code": "service|validation", "message": "…"}：
+      失败终态（未配置 Key / 模型调用失败），必为最后一行。
+
+    业务失败不抛 4xx（与生成链路的包络哲学一致）：走 chatError 事件收尾。
+    请求体校验失败（422）仍由 FastAPI 默认处理——Rust 侧按非 2xx 归一。
+    聊天历史持久化由 Rust 负责（chapter_chats 表）：本端点只依据请求携带的
+    messages 上下文作答，成功后由调用方把本轮问答落库。
+    """
+    logger.info(
+        "收到研读聊天请求：planId=%s phaseIndex=%s chapterIndex=%s history=%d",
+        payload.plan_id,
+        payload.phase_index,
+        payload.chapter_index,
+        len(payload.messages),
+    )
+    return StreamingResponse(
+        _stream_chat_events(payload), media_type="application/x-ndjson"
+    )
+
+
+def _chat_history_text(messages: list) -> str:
+    """把历史对话渲染为提示词文本段（无历史时给占位说明）。"""
+    if not messages:
+        return "（本章暂无历史对话）"
+    role_labels = {"user": "学习者", "assistant": "助手"}
+    return "\n".join(
+        f"{role_labels.get(msg.role, msg.role)}：{msg.content}" for msg in messages
+    )
+
+
+def _chat_context(payload: ChatRequest) -> dict[str, str]:
+    """聊天提示词变量：上下文缺省时给可读占位，正文为空按提示词第 5 条口径。"""
+    content = payload.chapter_content_md.strip()
+    return {
+        "plan_title": payload.plan_title.strip() or "（未提供计划标题）",
+        "plan_goal": payload.plan_goal.strip() or "（未提供学习目标）",
+        "chapter_title": payload.chapter_title.strip() or "（未提供章节标题）",
+        "chapter_content_md": content
+        or "（本章正文尚未生成：仅依据计划上下文与章节标题作答，"
+        "并提醒学习者先在正文区生成该章内容）",
+        "history": _chat_history_text(payload.messages),
+        "question": payload.question.strip(),
+    }
+
+
+async def _chat_reply_stream(payload: ChatRequest) -> AsyncIterator[str]:
+    """逐段产出回答文本增量（mock / 真实 LLM 双路径）。
+
+    mock 模式：确定性分片回复（验证流式链路，同输入同输出，不调 LLM）。
+    真实路径：普通文本补全（无结构化输出）直接 astream，chunk.content 逐段产出。
+    """
+    if settings.allow_mock_llm:
+        reply = (
+            f"（离线演示回答）关于「{payload.chapter_title or '本章'}」，"
+            f"针对你的提问「{payload.question[:40]}」，"
+            "正文区域生成内容后，这里会基于该章正文给出扎根原文的解答。"
+        )
+        for index in range(0, len(reply), 16):
+            yield reply[index : index + 16]
+        return
+    if not has_llm_config():
+        raise AgentServiceError(_NO_KEY_HINT)
+
+    template = prompts.load_prompt("chat")
+    variables = _chat_context(payload)
+    messages = [
+        SystemMessage(content=template["system"]),
+        HumanMessage(content=prompts.render(template["human"], **variables)),
+    ]
+    async for chunk in get_chat_model().astream(messages):
+        content = chunk.content
+        if isinstance(content, str) and content:
+            yield content
+        elif isinstance(content, list):
+            # 多模态分块形态（本链路纯文本，防御性取文本块）
+            for block in content:
+                text = block.get("text") if isinstance(block, dict) else None
+                if isinstance(text, str) and text:
+                    yield text
+
+
+async def _stream_chat_events(payload: ChatRequest) -> AsyncIterator[str]:
+    """chat NDJSON 事件管道：chatDelta×N → chatDone；业务失败 → chatError 收尾。
+
+    意外异常同样翻译为 chatError（流式响应内无法改状态码，终态事件是
+    消费方判断成败的唯一凭借——与生成链 done(error) 同哲学）。
+    """
+    full_text_parts: list[str] = []
+    try:
+        async for text in _chat_reply_stream(payload):
+            full_text_parts.append(text)
+            yield _ndjson_line({"type": "chatDelta", "text": text})
+    except AgentServiceError as exc:
+        logger.warning("研读聊天业务失败：%s", exc)
+        yield _ndjson_line(
+            {"type": "chatError", "code": "service", "message": str(exc)}
+        )
+        return
+    except Exception as exc:  # 流内异常必须落终态事件（ruff: E722 由 except Exception 明确）
+        logger.exception("研读聊天意外失败")
+        yield _ndjson_line(
+            {"type": "chatError", "code": "internal", "message": f"服务内部错误：{exc}"}
+        )
+        return
+    yield _ndjson_line(
+        {
+            "type": "chatDone",
+            "message": {"role": "assistant", "content": "".join(full_text_parts)},
+        }
+    )
 
 
 # ---------------------------------------------------------------------------

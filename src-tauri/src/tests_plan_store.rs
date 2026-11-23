@@ -45,6 +45,8 @@ fn sample_chapter(title: &str) -> ChapterDef {
         summary: format!("{title}·摘要"),
         kind: "concept".into(),
         key_terms: vec![format!("{title}术语")],
+        week: Some(1),
+        estimated_hours: Some(4),
         content_md: format!(
             "## {title}\n\n本章围绕「{title}」展开。\n\n```mermaid\nflowchart TD\n    A --> B\n```\n"
         ),
@@ -1040,6 +1042,8 @@ async fn test_settle_terminal_skeleton_only_fails(pool: PgPool) {
 }
 
 /// 含失败章收尾：一章 complete、一章 failed → 总状态 partial，保留已生成内容。
+/// （2026-11 研读改版：正文三值口径只挂在 partial/error 终态上；done(plan)
+/// 是大纲-only 成功终态，见 test_settle_terminal_plan_outline_only_completes）
 #[sqlx::test]
 #[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
 async fn test_settle_terminal_failed_chapter_sets_partial(pool: PgPool) {
@@ -1062,7 +1066,7 @@ async fn test_settle_terminal_failed_chapter_sets_partial(pool: PgPool) {
         .await
         .unwrap();
 
-    commands::settle_terminal_with_hours(&pool, plan_id, "plan", None)
+    commands::settle_terminal_with_hours(&pool, plan_id, "partial", None)
         .await
         .expect("settle_terminal 失败");
     let status: String = sqlx::query_scalar("SELECT status FROM plans")
@@ -1072,15 +1076,18 @@ async fn test_settle_terminal_failed_chapter_sets_partial(pool: PgPool) {
     assert_eq!(status, "partial", "有可用章节也有失败章时应保留为 partial");
 }
 
-/// 零内容收尾：未播种也未扩展任何阶段 → plans 置 failed（plan/error 终态同口径；
-/// clarification 仍删 generating 行，既有三态语义防回归）
+/// 大纲-only 成功终态（2026-11 研读改版回归钉）：done(plan) 即使章行全部
+/// pending（正文按需生成、尚无内容）也直接置 complete——骨架完整即成功，
+/// 章行保持 pending 供研读页逐章生成，不得被内容口径压成 failed。
 #[sqlx::test]
 #[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
-async fn test_settle_terminal_zero_content_fails(pool: PgPool) {
+async fn test_settle_terminal_plan_outline_only_completes(pool: PgPool) {
     prepare_schema(&pool).await;
     let plan_id = new_generating_plan(&pool).await;
+    plan_store::seed_outline(&pool, plan_id, &sample_outline(&["阶段甲"], &[2]), &[])
+        .await
+        .unwrap();
 
-    // 终态为 plan 但零内容：同样按失败收尾（宁可失败态可删，不留假 complete）
     commands::settle_terminal_with_hours(&pool, plan_id, "plan", None)
         .await
         .expect("settle_terminal 失败");
@@ -1088,7 +1095,41 @@ async fn test_settle_terminal_zero_content_fails(pool: PgPool) {
         .fetch_one(&pool)
         .await
         .unwrap();
-    assert_eq!(status, "failed", "零内容的 plan 终态应翻 failed");
+    assert_eq!(
+        status, "complete",
+        "大纲-only 的 plan 终态应直接 complete（章行保持 pending）"
+    );
+    let chapter_statuses: Vec<String> = sqlx::query_scalar(
+        "SELECT c.status FROM chapters c JOIN phases p ON c.phase_id = p.id
+         WHERE p.plan_id = $1 ORDER BY c.idx",
+    )
+    .bind(plan_id)
+    .fetch_all(&pool)
+    .await
+    .unwrap();
+    assert!(
+        chapter_statuses.iter().all(|s| s == "pending"),
+        "章行不得被失败收尾翻牌，保持 pending 待按需生成：{chapter_statuses:?}"
+    );
+}
+
+/// 零内容收尾：未播种也未扩展任何阶段 → plans 置 failed（error 终态按章内容
+/// 三值口径收尾；clarification 仍删 generating 行，既有三态语义防回归）
+#[sqlx::test]
+#[ignore = "需要 config.json database.testUrl（见文件头运行方式），无库环境下跳过"]
+async fn test_settle_terminal_zero_content_fails(pool: PgPool) {
+    prepare_schema(&pool).await;
+    let plan_id = new_generating_plan(&pool).await;
+
+    // error 终态且零内容：按失败收尾（宁可失败态可删，不留假 complete）
+    commands::settle_terminal_with_hours(&pool, plan_id, "error", None)
+        .await
+        .expect("settle_terminal 失败");
+    let status: String = sqlx::query_scalar("SELECT status FROM plans")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(status, "failed", "零内容的 error 终态应翻 failed");
 }
 
 /// clarification 终态：删 generating 行（既有语义防回归）

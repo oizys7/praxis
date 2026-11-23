@@ -129,9 +129,17 @@ async def test_regen_chapter_stream(monkeypatch):
         "contentMd",
         "kind",
         "keyTerms",
+        # 研读改版：周/学时由大纲回填，空章节首次生成与重生成同通道
+        "week",
+        "estimatedHours",
         "visualizations",
         "exercises",
     }, "Chapter 键集含章型与术语"
+    assert chapter["week"] == outline["phases"][1]["chapterWeeks"][chapter_index]
+    assert (
+        chapter["estimatedHours"]
+        == outline["phases"][1]["chapterEstimatedHours"][chapter_index]
+    )
     content = chapter["contentMd"]
     assert len(content.strip()) >= 1000, "章节 markdown 正文不得少于 1000 字"
     assert "```mermaid" in content, "正文必须内联 mermaid 码块"

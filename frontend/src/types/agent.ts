@@ -57,12 +57,16 @@ export type PhaseStatus = "pending" | "generating" | "complete" | "failed";
 export interface Chapter {
   title: string;
   summary: string;
-  /** 章节 markdown 正文全文；空串表示有意义的空正文（骨架章 / 生成中） */
+  /** 章节 markdown 正文全文；空串表示有意义的空正文（骨架章 / 待按需生成 / 生成中） */
   contentMd: string;
   /** 章型：concept / practice / project / review（缺省或未知按 concept 渲染） */
   kind?: string;
   /** 本章核心术语（2-4 个）：全计划术语表的来源，不参与渲染判定 */
   keyTerms?: string[];
+  /** 本章所在周（1..weeks，大纲分配；研读改版周时间线数据源；旧数据缺省 null） */
+  week?: number | null;
+  /** 本章预计投入学时（大纲分配；旧数据缺省 null） */
+  estimatedHours?: number | null;
   /** 过程动画（至多一段）：只给状态序列，渲染器在前端预置 */
   visualizations?: Visualization[];
   /** 结构化自测题：与正文「自检清单」同一批题，带知识点归属 */
@@ -114,8 +118,10 @@ export interface GlossaryEntry {
 
 /**
  * 大纲阶段载荷（outline 事件的 phases 载荷 / RegenOutline.phases 共用）：
- * 仅骨架级字段，与 src-tauri/src/protocol.rs::OutlinePhasePayload 逐字对齐；
- * seed_outline 按此播种骨架行。
+ * 与 src-tauri/src/protocol.rs::OutlinePhasePayload 对齐；
+ * seed_outline 按此播种骨架行。研读改版后携带章节级元数据并行数组
+ * （与 chapterTitles 等长同序；旧 Python 载荷缺省为空），周时间线由
+ * chapterWeeks 直接派生。
  */
 export interface OutlinePhasePayload {
   name: string;
@@ -123,6 +129,14 @@ export interface OutlinePhasePayload {
   chapterTitles: string[];
   /** 项目简介仅 regenerate_chapter 的重建请求载荷携带；outline 事件恒缺省 */
   projectBrief?: string;
+  /** 以下并行数组与 chapterTitles 等长同序；缺省为空 */
+  objectives?: string[];
+  chapterKinds?: string[];
+  chapterKnowledgePoints?: string[][];
+  chapterSummaries?: string[];
+  chapterKeyTerms?: string[][];
+  chapterWeeks?: number[];
+  chapterEstimatedHours?: number[];
 }
 
 /** 学习计划中的一个阶段：章节 / 实操 / 作业 / 项目（status 见 PhaseStatus） */
@@ -186,6 +200,75 @@ export type PlanProgressEnvelope = {
 export type PlanSubmitResult = {
   planId: string;
 };
+
+// ---------------------------------------------------------------------------
+// 研读页（2026-11 功能包1）：聊天 / 标注 / 笔记 / 事件载荷
+// 跨端契约见 protocol/protocol.json（fields/extra 机制）；与
+// src-tauri/src/protocol.rs 的 *Def 结构、agent-service/app/schemas.py 对齐。
+// ---------------------------------------------------------------------------
+
+/** 研读聊天消息（role/content 跨端字段；id/createdAt 为端特有 extra） */
+export interface ChatMessage {
+  /** user | assistant */
+  role: "user" | "assistant";
+  content: string;
+  /** 落库后由 Rust 生成（chat-done 事件与 list_chat_messages 读回携带） */
+  id?: string;
+  /** ISO 8601 时间戳 */
+  createdAt?: string;
+}
+
+/** 章节选区标注（quote 必填；comment 可选 = 纯划线；端特有字段见 extra） */
+export interface ChapterAnnotation {
+  id: string;
+  phaseIndex: number;
+  chapterIndex: number;
+  quote: string;
+  comment: string;
+  /** ISO 8601 创建时间 */
+  createdAt?: string;
+}
+
+/** 章节级 markdown 笔记（一章至多一行；contentMd 空串 = 清空） */
+export interface ChapterNote {
+  contentMd: string;
+  /** ISO 8601 最后更新时间 */
+  updatedAt?: string;
+}
+
+/** 'chapter-delta' 全局事件载荷：章节正文 token 级增量（打字机效果数据源）。
+ * 仅重生成链出现，不落库——最终以 chapter 事件 / DB 回读的完整正文为准。 */
+export interface ChapterDeltaEvent {
+  planId: string;
+  phaseIndex: number;
+  chapterIndex: number;
+  text: string;
+}
+
+/** 'chat-delta' 全局事件载荷：研读聊天回答文本增量 */
+export interface ChatDeltaEvent {
+  planId: string;
+  phaseIndex: number;
+  chapterIndex: number;
+  text: string;
+}
+
+/** 'chat-done' 全局事件载荷：聊天正常终态（message 已由 Rust 落库） */
+export interface ChatDoneEvent {
+  planId: string;
+  phaseIndex: number;
+  chapterIndex: number;
+  message: ChatMessage;
+}
+
+/** 'chat-error' 全局事件载荷：聊天失败终态（code：service | validation | internal） */
+export interface ChatErrorEvent {
+  planId: string;
+  phaseIndex: number;
+  chapterIndex: number;
+  code: string;
+  message: string;
+}
 
 /** 推荐学习资源 */
 export interface StudyResource {

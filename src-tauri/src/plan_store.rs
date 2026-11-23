@@ -198,8 +198,9 @@ pub async fn upsert_phase(
     Ok(())
 }
 
-/// 大纲就绪后播种骨架（单事务）：phases(status='pending') + chapters（标题骨架，
-/// status='pending'）+ resources；不播种 project（大纲阶段只有 project_brief，
+/// 大纲就绪后播种骨架（单事务）：phases(status='pending'，含 objectives) +
+/// chapters（标题 + 概述/术语/周/学时骨架，status='pending'）+ resources；
+/// 不播种 project（大纲阶段只有 project_brief，
 /// 无法填充完整结构，project 留待 upsert_phase 整体写入）。
 /// 幂等守卫：仅当该计划 phases 表为空时才播种（防 regenerate 与竞态覆盖已有完成
 /// 数据）；regenerate 路径绝不触发 seed（守卫亦兜底）。
@@ -228,27 +229,47 @@ pub async fn seed_outline(
 
     for (i, outline) in phases.iter().enumerate() {
         let phase_id: Uuid = sqlx::query_scalar(
-            "INSERT INTO phases (plan_id, idx, name, week_range, status)
-             VALUES ($1, $2, $3, $4, $5) RETURNING id",
+            "INSERT INTO phases (plan_id, idx, name, week_range, objectives, status)
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
         )
         .bind(plan_id)
         .bind(i32::try_from(i).unwrap_or(0))
         .bind(&outline.name)
         .bind(&outline.week_range)
+        .bind(sqlx::types::Json(&outline.objectives))
         .bind(plan_state::PhaseStatus::Pending.as_str())
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| fail("播种阶段骨架", e))?;
 
         for (j, title) in outline.chapter_titles.iter().enumerate() {
+            // 章节级元数据随骨架一次播种（研读改版）：概述 / 术语 / 周 / 学时
+            // 均取自大纲并行数组，越界安全取空/NULL——旧 Python 载荷缺省为空
+            let summary = outline
+                .chapter_summaries
+                .get(j)
+                .map(String::as_str)
+                .unwrap_or("");
+            let key_terms = outline.chapter_key_terms.get(j).cloned().unwrap_or_default();
+            let week = outline.chapter_weeks.get(j).and_then(|w| {
+                i32::try_from(*w).ok()
+            });
+            let estimated_hours = outline
+                .chapter_estimated_hours
+                .get(j)
+                .and_then(|h| i32::try_from(*h).ok());
             sqlx::query(
-                "INSERT INTO chapters (phase_id, idx, title, summary, status)
-                 VALUES ($1, $2, $3, '', $4)",
+                "INSERT INTO chapters (phase_id, idx, title, summary, status, key_terms, week, estimated_hours)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
             )
             .bind(phase_id)
             .bind(i32::try_from(j).unwrap_or(0))
             .bind(title)
+            .bind(summary)
             .bind(plan_state::ChapterStatus::Pending.as_str())
+            .bind(sqlx::types::Json(&key_terms))
+            .bind(week)
+            .bind(estimated_hours)
             .execute(&mut *tx)
             .await
             .map_err(|e| fail("播种章节骨架", e))?;
@@ -838,6 +859,20 @@ pub async fn reset_plan_for_regeneration(pool: &PgPool, plan_id: Uuid) -> Result
             "清理旧学习日程",
             "DELETE FROM study_schedule WHERE plan_id = $1",
         ),
+        // 研读页三表（2026-11）：聊天/标注/笔记都按 (阶段, 章) 索引定位，
+        // 整计划重生成产出全新大纲后旧索引不再对应，与学习日程同口径清理
+        (
+            "清理旧章节聊天",
+            "DELETE FROM chapter_chats WHERE plan_id = $1",
+        ),
+        (
+            "清理旧章节标注",
+            "DELETE FROM chapter_annotations WHERE plan_id = $1",
+        ),
+        (
+            "清理旧章节笔记",
+            "DELETE FROM chapter_notes WHERE plan_id = $1",
+        ),
         ("清理旧推荐资源", "DELETE FROM resources WHERE plan_id = $1"),
         ("清理旧阶段与章节", "DELETE FROM phases WHERE plan_id = $1"),
     ] {
@@ -1219,6 +1254,8 @@ fn chapter_row_status(content_md: &str) -> &'static str {
 /// 写入单个章节行（冲突即更新 title/summary/content_md/status）。
 /// 调用方须在事务内执行；返传物理章节行 id。upsert_phase（整阶段替换重插）与
 /// upsert_chapter（单章骨架填充/重生成）共用同一套写入语义，避免两份实现漂移。
+/// week / estimated_hours（研读改版）：唯一权威是大纲——正文重生成不得改动它们，
+/// 冲突更新用 COALESCE 保留库中原值；首次插入取载荷值（None 即 NULL）。
 async fn insert_chapter_row(
     tx: &mut Transaction<'static, sqlx::Postgres>,
     phase_id: Uuid,
@@ -1227,8 +1264,8 @@ async fn insert_chapter_row(
 ) -> Result<Uuid, AgentError> {
     let chapter_id: Uuid = sqlx::query_scalar(
         "INSERT INTO chapters (phase_id, idx, title, summary, content_md, status, kind,
-                               key_terms, visualizations, exercises)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                               key_terms, visualizations, exercises, week, estimated_hours)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
          ON CONFLICT (phase_id, idx) DO UPDATE SET
              title = EXCLUDED.title,
              summary = EXCLUDED.summary,
@@ -1237,7 +1274,9 @@ async fn insert_chapter_row(
              kind = EXCLUDED.kind,
              key_terms = EXCLUDED.key_terms,
              visualizations = EXCLUDED.visualizations,
-             exercises = EXCLUDED.exercises
+             exercises = EXCLUDED.exercises,
+             week = COALESCE(EXCLUDED.week, chapters.week),
+             estimated_hours = COALESCE(EXCLUDED.estimated_hours, chapters.estimated_hours)
          RETURNING id",
     )
     .bind(phase_id)
@@ -1250,6 +1289,10 @@ async fn insert_chapter_row(
     .bind(sqlx::types::Json(&chapter.key_terms))
     .bind(sqlx::types::Json(&chapter.visualizations))
     .bind(sqlx::types::Json(&chapter.exercises))
+    .bind(chapter.week.map(|w| i32::try_from(w).unwrap_or(0)))
+    .bind(chapter
+        .estimated_hours
+        .map(|h| i32::try_from(h).unwrap_or(0)))
     .fetch_one(&mut **tx)
     .await
     .map_err(|e| fail("写入章节", e))?;
@@ -1291,6 +1334,10 @@ struct ChapterRows {
     kind: String,
     /// 本章核心术语（JSONB 数组，用于汇总术语表）
     key_terms: Vec<String>,
+    /// 本章所在周（可空；null = 旧数据/未分配，wire 上省略）
+    week: Option<u32>,
+    /// 本章预计投入学时（可空；null = 旧数据/未分配）
+    estimated_hours: Option<u32>,
     /// 过程动画（JSONB 数组）
     visualizations: Vec<VisualizationDef>,
     /// 结构化自测题（JSONB 数组）
@@ -1334,7 +1381,7 @@ pub async fn load_study_plan(
     let mut chapters_by_phase: HashMap<Uuid, Vec<ChapterRows>> = HashMap::new();
     for crow in sqlx::query(
         "SELECT c.phase_id, c.title, c.summary, c.status, c.content_md, c.kind, c.key_terms,
-                c.visualizations, c.exercises,
+                c.week, c.estimated_hours, c.visualizations, c.exercises,
                 EXISTS (
                     SELECT 1 FROM study_schedule s
                     WHERE s.plan_id = p.plan_id
@@ -1351,6 +1398,9 @@ pub async fn load_study_plan(
     .await
     .map_err(|e| fail("查询章节列表", e))?
     {
+        let week: Option<i32> = crow.try_get("week").map_err(db_err)?;
+        let estimated_hours: Option<i32> =
+            crow.try_get("estimated_hours").map_err(db_err)?;
         chapters_by_phase
             .entry(crow.try_get("phase_id").map_err(db_err)?)
             .or_default()
@@ -1364,6 +1414,8 @@ pub async fn load_study_plan(
                     .try_get::<sqlx::types::Json<Vec<String>>, _>("key_terms")
                     .map_err(db_err)?
                     .0,
+                week: week.filter(|w| *w > 0).map(|w| w as u32),
+                estimated_hours: estimated_hours.filter(|h| *h > 0).map(|h| h as u32),
                 visualizations: crow
                     .try_get::<sqlx::types::Json<Vec<VisualizationDef>>, _>("visualizations")
                     .map_err(db_err)?
@@ -1526,6 +1578,8 @@ fn reassemble_chapter(row: ChapterRows) -> ChapterDef {
         content_md: row.content_md,
         kind: row.kind,
         key_terms: row.key_terms,
+        week: row.week,
+        estimated_hours: row.estimated_hours,
         visualizations: row.visualizations,
         exercises: row.exercises,
         done: Some(row.done),
@@ -1559,6 +1613,8 @@ mod tests {
             content_md: format!("## {title}\n\n```mermaid\nflowchart LR\n```"),
             kind: "concept".into(),
             key_terms: vec![title.into()],
+            week: Some(1),
+            estimated_hours: Some(4),
             visualizations: Vec::new(),
             exercises: Vec::new(),
             done: false,
@@ -1646,6 +1702,8 @@ mod tests {
                 content_md: String::new(),
                 kind: "concept".into(),
                 key_terms: Vec::new(),
+                week: None,
+                estimated_hours: None,
                 visualizations: Vec::new(),
                 exercises: Vec::new(),
                 done: false,

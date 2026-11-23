@@ -19,6 +19,7 @@ mod secret;
 mod settings;
 mod sidecar;
 mod startup;
+mod study_store;
 
 #[cfg(test)]
 mod tests_app_config;
@@ -74,6 +75,15 @@ fn main() {
             commands::query_month_calendar,
             commands::query_year_heatmap,
             commands::startup_status,
+            // 研读页（2026-11 功能包1）：按需生成 + 伴学聊天 + 标注/笔记
+            commands::generate_chapter_content,
+            commands::chat_stream,
+            commands::list_chat_messages,
+            commands::save_annotation,
+            commands::list_annotations,
+            commands::delete_annotation,
+            commands::get_chapter_note,
+            commands::save_chapter_note,
         ])
         .setup(|app| {
             use tauri::Manager;

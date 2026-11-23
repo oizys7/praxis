@@ -31,6 +31,7 @@ import json
 import logging
 import operator
 import re
+from collections.abc import Callable
 from typing import Annotated, Any, TypedDict
 
 from langgraph.config import get_stream_writer
@@ -38,7 +39,7 @@ from langgraph.config import get_stream_writer
 from app import prompts, validators
 from app.config import settings
 from app.errors import AgentServiceError
-from app.llm import has_llm_config, invoke_structured
+from app.llm import has_llm_config, invoke_chapter_streamed, invoke_structured
 from app.mock import (
     build_mock_chapter,
     build_mock_extras,
@@ -46,7 +47,7 @@ from app.mock import (
 )
 from app.resource_check import verify_resources
 from app.schemas import (
-    Chapter,
+    ChapterDraft,
     ClarificationOutput,
     Level,
     PhaseExtrasOutput,
@@ -463,6 +464,7 @@ async def _expand_chapter_draft(
     *,
     plan_context: str,
     review_notes: str,
+    on_delta: Callable[[str], None] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """扩展单个章节（mock / 真实 LLM 双路径）。
 
@@ -473,9 +475,16 @@ async def _expand_chapter_draft(
     章级扇出主链（首展 / 定向回炉 / regen 端点单章路径）共用本函数，
     保证三条路径注入给 LLM 的上下文形状一致。
     首展 Send 多实例与定向回炉 gather 共用 _EXPAND_SEMAPHORE。
+
+    on_delta：contentMd 的流式文本回调（token 级，研读页打字机效果的数据源）。
+    传入时走 invoke_chapter_streamed（工具参数增量解析）；provider 不支持流式
+    或解析不出增量时回调不会被触发，正文随最终结构化结果整段到达——调用方
+    以最终 chapter 事件为准，delta 只是渐进展示。mock 模式无流式。
     """
     if settings.allow_mock_llm:
-        return build_mock_chapter(request, phase_outline, chapter_index), {
+        chapter = build_mock_chapter(request, phase_outline, chapter_index)
+        _merge_outline_chapter_meta(phase_outline, chapter_index, chapter)
+        return chapter, {
             "researchSnippets": [],
             "promptTrace": {"promptKey": "mock", "variables": {}},
         }
@@ -531,14 +540,39 @@ async def _expand_chapter_draft(
         or "（未启用联网检索，按你的知识范围组织内容）",
     }
     async with _EXPAND_SEMAPHORE:
-        chapter = await invoke_structured(Chapter, "chapter", variables)
+        if on_delta is not None:
+            chapter = await invoke_chapter_streamed(
+                ChapterDraft, "chapter", variables, on_delta=on_delta
+            )
+        else:
+            chapter = await invoke_structured(ChapterDraft, "chapter", variables)
     # 章型以大纲为准：模型可能自行改写 kind，这里强制回写，
     # 保证「生成形态 / 校验规则 / 前端徽标」看到的是同一个值
     chapter.kind = kind
-    return chapter.model_dump(mode="json", by_alias=True), {
+    result = chapter.model_dump(mode="json", by_alias=True)
+    # 周 / 学时以大纲为准回填（ChapterDraft 不请模型复述这两个字段）
+    _merge_outline_chapter_meta(phase_outline, chapter_index, result)
+    return result, {
         "researchSnippets": snippets,
         "promptTrace": {"promptKey": "chapter", "variables": variables},
     }
+
+
+def _merge_outline_chapter_meta(
+    phase_outline: dict[str, Any], chapter_index: int, chapter: dict[str, Any]
+) -> None:
+    """把大纲的章节级元数据（周 / 预计学时）回填进章节 dict（越界安全）。
+
+    week / estimatedHours 的唯一权威是大纲的并行数组；正文生成（含重生成）
+    不得改动它们，因此统一在产出点回写。缺失（旧大纲）时保持 None，
+    wire 上省略，前端按无时间线数据处理。
+    """
+    weeks = phase_outline.get("chapterWeeks") or []
+    hours = phase_outline.get("chapterEstimatedHours") or []
+    chapter["week"] = weeks[chapter_index] if chapter_index < len(weeks) else None
+    chapter["estimatedHours"] = (
+        hours[chapter_index] if chapter_index < len(hours) else None
+    )
 
 
 async def _expand_phase_extras(
@@ -599,6 +633,32 @@ def _chapter_failed(chapter: dict[str, Any]) -> bool:
     return len(content) < validators.MIN_CHAPTER_CONTENT_CHARS
 
 
+def _outline_skeleton_chapter(
+    phase_outline: dict[str, Any], chapter_index: int
+) -> dict[str, Any]:
+    """大纲-only 首展的章节骨架：元数据取自大纲并行数组，正文留空。
+
+    contentMd 空串是「尚未生成」的合法态（研读页点开按需生成）；
+    week / estimatedHours 由 _merge_outline_chapter_meta 回填，缺失（旧大纲）
+    保持 None。glossary / 周时间线因此都由骨架数据直接派生。
+    """
+    titles = phase_outline.get("chapterTitles") or []
+    summaries = phase_outline.get("chapterSummaries") or []
+    terms = phase_outline.get("chapterKeyTerms") or []
+    chapter_terms = terms[chapter_index] if chapter_index < len(terms) else []
+    chapter = {
+        "title": titles[chapter_index] if chapter_index < len(titles) else "",
+        "summary": summaries[chapter_index] if chapter_index < len(summaries) else "",
+        "contentMd": "",
+        "kind": _chapter_kind(phase_outline, chapter_index),
+        "keyTerms": [str(t) for t in (chapter_terms or []) if str(t).strip()],
+        "visualizations": [],
+        "exercises": [],
+    }
+    _merge_outline_chapter_meta(phase_outline, chapter_index, chapter)
+    return chapter
+
+
 # ---------------------------------------------------------------------------
 # 端点级重生成封装：POST /api/regenerate/stream 两条路径直接复用本节函数
 # （build_plan_context / Semaphore / 解析错误反馈重试与图内扩展完全同源）
@@ -622,19 +682,32 @@ async def expand_chapter_node(payload: dict[str, Any]) -> dict[str, Any]:
     phase_index: int = payload["phase_index"]
     chapter_index: int = payload["chapter_index"]
 
-    if payload.get("emit_chapter_start"):
+    # custom stream 直发通道：chapterStart（重生成链逐章动画）与 chapterDelta
+    # （contentMd token 级增量）都经它直达事件层，图拓扑不变。
+    # 首次生成不再扩章（大纲-only），delta 只出现在重生成链。
+    try:
+        writer = get_stream_writer()
+    except Exception:  # noqa: BLE001 —— 单测直调节点，不在图上下文时没有 writer
+        writer = None
+    if payload.get("emit_chapter_start") and writer is not None:
         # 重生成链的逐章动画：进图前 Rust 只把阶段置 generating，「这一章开始转了」
-        # 需要一个明确信号。走 LangGraph custom stream 直达事件层，图拓扑不变。
-        try:
-            writer = get_stream_writer()
-        except Exception:  # noqa: BLE001 —— 单测直调节点，不在图上下文时没有 writer
-            writer = None
-        if writer is not None:
+        # 需要一个明确信号。
+        writer(
+            {
+                "type": "chapterStart",
+                "phaseIndex": phase_index,
+                "chapterIndex": chapter_index,
+            }
+        )
+
+    def _emit_delta(text: str) -> None:
+        if writer is not None and text:
             writer(
                 {
-                    "type": "chapterStart",
+                    "type": "chapterDelta",
                     "phaseIndex": phase_index,
                     "chapterIndex": chapter_index,
+                    "text": text,
                 }
             )
 
@@ -647,6 +720,8 @@ async def expand_chapter_node(payload: dict[str, Any]) -> dict[str, Any]:
             plan_context=payload["plan_context"],
             # 首展不是回炉：注入占位意见，chapter.yaml 据此跳过意见落实
             review_notes=_FIRST_EXPAND_REVIEW_NOTES,
+            # 无图上下文（单测直调）时没有 delta 接收方，保持整段调用路径
+            on_delta=_emit_delta if writer is not None else None,
         )
     except Exception as exc:  # 单章任何失败都必须在本地收口，不波及别的章
         # 未配置 Key 属全局配置问题（不是偶发失败）：直接上抛，
@@ -738,6 +813,24 @@ async def expand_revision_node(state: AgentState) -> dict[str, Any]:
     # 注入给重生成调用的评审意见（失败备注在 gather 之后才追加，互不污染）
     review_notes_text = "\n".join(notes) or _FIRST_EXPAND_REVIEW_NOTES
 
+    # 回炉重扩同样发 contentMd 增量（研读页打字机对回炉路径同样生效）；
+    # 不在图上下文（单测直调）时 writer 为 None，回调退化为空操作
+    try:
+        revision_writer = get_stream_writer()
+    except Exception:  # noqa: BLE001 —— 同 expand_chapter_node
+        revision_writer = None
+
+    def _emit_revision_delta(phase_index: int, chapter_index: int, text: str) -> None:
+        if revision_writer is not None and text:
+            revision_writer(
+                {
+                    "type": "chapterDelta",
+                    "phaseIndex": phase_index,
+                    "chapterIndex": chapter_index,
+                    "text": text,
+                }
+            )
+
     # 统一 job 形状：(种类, 阶段索引, 章索引)。extras 任务用 -1 占位章索引，
     # 下方 _redo 据种类分支调用对应生成器，产出统一四元组便于单次 gather 收集。
     jobs: list[tuple[str, int, int]] = []
@@ -767,6 +860,11 @@ async def expand_revision_node(state: AgentState) -> dict[str, Any]:
                 chapter_index,
                 plan_context=build_plan_context(outline, phase_index),
                 review_notes=review_notes_text,
+                on_delta=(
+                    (lambda text: _emit_revision_delta(phase_index, chapter_index, text))
+                    if revision_writer is not None
+                    else None
+                ),
             )
             return kind, phase_index, chapter_index, chapter, trace
         extras = await _expand_phase_extras(
@@ -830,13 +928,18 @@ async def expand_revision_node(state: AgentState) -> dict[str, Any]:
 async def assemble_node(state: AgentState) -> dict[str, Any]:
     """拼装节点：按大纲阶段序 + 章索引重组 StudyPlan，并跑程序化校验。
 
-    - 章草稿按 chapter_drafts 复合键在各自阶段内按章索引升序合入；
-    - 阶段轻装（practice / assignments / project）取自 phase_extras；
-      extras 缺失时回炉 wrap 调用重试一次（防轻调用丢失，失败不阻止拼装，
-      由 validators 罚项 + 下一轮回炉恢复）；
-    - 同时标定章级失败章集合（contentMd trim 空或低于硬底线）写入
-      failed_chapter_keys，供 expand_revision 只重扩失败章；
-    重组出的 phase 事件由 tasks 层统一从 plan 增量抽取推送。
+    两种拼装口径（2026-11 研读改版）：
+    - 大纲-only（regen_scope 为空，首次生成）：章节骨架直接由大纲并行数组
+      构造（title/summary/kind/keyTerms/week/estimatedHours），contentMd 恒空——
+      正文属按需生成，不在首展链路；轻装（practice/assignments/project）仍由
+      wrap 轻调用产出；
+    - 内容拼装（regen_scope 存在，重生成链）：章草稿按 chapter_drafts 复合键
+      合入（回炉轮只含重扩成功的章）；标定章级失败章集合供定向回炉。
+
+    - 阶段轻装取自 phase_extras；extras 缺失时回炉 wrap 调用重试一次
+      （防轻调用丢失，失败不阻止拼装，由 validators 罚项 + 下一轮回炉恢复）；
+    - 大纲-only 跳过章内容校验与失败章标定（空正文是合法态）；重组出的
+      phase 事件由 tasks 层统一从 plan 增量抽取推送。
     """
     req = _request_of(state)
     outline = state.get("outline") or {}
@@ -844,10 +947,11 @@ async def assemble_node(state: AgentState) -> dict[str, Any]:
     chapter_drafts: dict[str, dict[str, Any]] = state.get("chapter_drafts") or {}
     extras_map: dict[str, dict[str, Any]] = dict(state.get("phase_extras") or {})
 
-    # 重生成作用域（None = 首次生成整计划）：只拼装与校验目标范围。
+    # 重生成作用域（None = 大纲-only 首次生成）：只拼装与校验目标范围。
     # 范围外的阶段既不补空占位也不判失败——否则单章重生成会把该阶段其余
     # 缺失章判成失败并连带回炉，把「修一章」放大成「整阶段重写」。
     scope = state.get("regen_scope") or {}
+    outline_only = not scope
     scope_phase: int | None = scope.get("phase")
     scope_chapters_raw = scope.get("chapters")
     scope_chapters: list[int] | None = (
@@ -899,18 +1003,23 @@ async def assemble_node(state: AgentState) -> dict[str, Any]:
             chapter_indexes = [c for c in scope_chapters if 0 <= c < len(titles)]
         for chapter_index in chapter_indexes:
             key = _chapter_key(index, chapter_index)
-            chapter = chapter_drafts.get(key)
-            if chapter is None:
-                # 通底：章实例缺失不阻断拼装，占位交由 validators 罚项 + 回炉重建
-                chapter = {
-                    "title": titles[chapter_index],
-                    "summary": "",
-                    "contentMd": "",
-                    "kind": _chapter_kind(phase_outline, chapter_index),
-                    "keyTerms": [],
-                }
-            if _chapter_failed(chapter):
-                failed_keys.append(key)
+            if outline_only:
+                # 大纲-only：章节骨架直接来自大纲并行数组，正文留空待按需生成
+                chapter = _outline_skeleton_chapter(phase_outline, chapter_index)
+            else:
+                chapter = chapter_drafts.get(key)
+                if chapter is None:
+                    # 通底：章实例缺失不阻断拼装，占位交由 validators 罚项 + 回炉重建
+                    chapter = {
+                        "title": titles[chapter_index],
+                        "summary": "",
+                        "contentMd": "",
+                        "kind": _chapter_kind(phase_outline, chapter_index),
+                        "keyTerms": [],
+                    }
+                    _merge_outline_chapter_meta(phase_outline, chapter_index, chapter)
+                if _chapter_failed(chapter):
+                    failed_keys.append(key)
             chapters.append(chapter)
         extras = extras_map.get(str(index))
         phases.append(
@@ -969,6 +1078,7 @@ async def assemble_node(state: AgentState) -> dict[str, Any]:
         knowledge_points,
         scope_phase=scope_phase,
         scope_chapters=scope_chapters,
+        outline_only=outline_only,
     )
     if duplicates:
         issues.append(

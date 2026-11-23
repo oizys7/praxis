@@ -164,6 +164,48 @@ pub(crate) const DDL_STUDY_SCHEDULE_TABLE: &str = "CREATE TABLE IF NOT EXISTS st
 pub(crate) const DDL_STUDY_SCHEDULE_DATE_IDX: &str =
     "CREATE INDEX IF NOT EXISTS idx_study_schedule_date ON study_schedule (date)";
 
+// ---- 研读页数据（2026-11 功能包1）：聊天 / 标注 / 笔记，全部按章定位 ----
+// 三张表都以 (plan_id, phase_idx, chapter_idx) 打头复合主键/定位，随计划级联清理。
+
+/// 章节聊天记录表：一章一串有序消息，seq 为章内自增序号（追加写入不覆盖）。
+/// 复合主键 (plan, phase, chapter, seq)：读回按 seq 升序还原对话顺序。
+pub(crate) const DDL_CHAPTER_CHATS_TABLE: &str = "CREATE TABLE IF NOT EXISTS chapter_chats (
+          plan_id UUID NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+          phase_idx INT NOT NULL,
+          chapter_idx INT NOT NULL,
+          seq INT NOT NULL,
+          role TEXT NOT NULL,
+          content TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          PRIMARY KEY (plan_id, phase_idx, chapter_idx, seq)
+        )";
+
+/// 章节选区标注表：一章多条标注，id 由前端生成（uuid 文本）。
+/// 复合主键 (plan, phase, chapter, id)：保存即 upsert（同 id 编辑回写）。
+pub(crate) const DDL_CHAPTER_ANNOTATIONS_TABLE: &str = "CREATE TABLE IF NOT EXISTS chapter_annotations (
+          id TEXT NOT NULL,
+          plan_id UUID NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+          phase_idx INT NOT NULL,
+          chapter_idx INT NOT NULL,
+          quote TEXT NOT NULL,
+          comment TEXT NOT NULL DEFAULT '',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          PRIMARY KEY (plan_id, phase_idx, chapter_idx, id)
+        )";
+
+/// 章节笔记表：一章至多一行（markdown 全文，空串 = 清空），保存即 upsert。
+pub(crate) const DDL_CHAPTER_NOTES_TABLE: &str = "CREATE TABLE IF NOT EXISTS chapter_notes (
+          plan_id UUID NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+          phase_idx INT NOT NULL,
+          chapter_idx INT NOT NULL,
+          content_md TEXT NOT NULL DEFAULT '',
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          PRIMARY KEY (plan_id, phase_idx, chapter_idx)
+        )";
+
 // ---- markdown 化演进（任务 18，幂等）----
 
 /// 章节正文列：完整 markdown 全文（NOT NULL DEFAULT ''：行存在即含此列，
@@ -186,6 +228,15 @@ pub(crate) const DDL_CHAPTERS_EXERCISES_COL: &str =
 
 pub(crate) const DDL_CHAPTERS_KEY_TERMS_COL: &str =
     "ALTER TABLE chapters ADD COLUMN IF NOT EXISTS key_terms JSONB NOT NULL DEFAULT '[]'::jsonb";
+
+/// 章节所在周列（研读改版 2026-11，可空）：大纲分配的 1..weeks 周次，
+/// 周时间线数据源；旧行/缺失为 NULL（wire 上省略，前端按无时间线处理）
+pub(crate) const DDL_CHAPTERS_WEEK_COL: &str =
+    "ALTER TABLE chapters ADD COLUMN IF NOT EXISTS week INT";
+
+/// 章节预计学时列（研读改版 2026-11，可空）：大纲分配的每章投入学时
+pub(crate) const DDL_CHAPTERS_ESTIMATED_HOURS_COL: &str =
+    "ALTER TABLE chapters ADD COLUMN IF NOT EXISTS estimated_hours INT";
 
 /// 资源真实地址列（2026-10-22 资源可信化）：空串表示模型没有给出地址
 pub(crate) const DDL_RESOURCES_URL_COL: &str =
@@ -336,6 +387,8 @@ const COMMENT_STATEMENTS: &[&str] = &[
     "COMMENT ON COLUMN chapters.key_terms IS '本章核心术语数组（JSONB），用于汇总全计划术语表'",
     "COMMENT ON COLUMN chapters.created_at IS '创建时间'",
     "COMMENT ON COLUMN chapters.updated_at IS '修改时间（触发器自动维护）'",
+    "COMMENT ON COLUMN chapters.week IS '本章所在周（1..weeks，大纲分配；null = 旧数据/未分配）'",
+    "COMMENT ON COLUMN chapters.estimated_hours IS '本章预计投入学时（大纲分配；null = 旧数据/未分配）'",
     // ---- resources ----
     "COMMENT ON TABLE resources IS '推荐学习资源表：计划级资源清单，随所属计划级联删除'",
     "COMMENT ON COLUMN resources.id IS '资源主键（UUID）'",
@@ -360,6 +413,32 @@ const COMMENT_STATEMENTS: &[&str] = &[
     "COMMENT ON COLUMN study_schedule.done IS '该行是否打卡（每章独立勾选；仅允许 date≤今天）'",
     "COMMENT ON COLUMN study_schedule.created_at IS '创建时间'",
     "COMMENT ON COLUMN study_schedule.updated_at IS '修改时间（触发器自动维护）'",
+    // ---- chapter_chats / chapter_annotations / chapter_notes（研读页，随计划级联删除）----
+    "COMMENT ON TABLE chapter_chats IS '章节聊天记录表：研读页按章对话的有序消息（seq 为章内序号），随所属计划级联删除'",
+    "COMMENT ON COLUMN chapter_chats.plan_id IS '所属计划 id（ON DELETE CASCADE）'",
+    "COMMENT ON COLUMN chapter_chats.phase_idx IS '阶段序号（plans 内定位阶段）'",
+    "COMMENT ON COLUMN chapter_chats.chapter_idx IS '章节序号（阶段内定位章节）'",
+    "COMMENT ON COLUMN chapter_chats.seq IS '章内消息序号（追加写入，读回按升序还原对话）'",
+    "COMMENT ON COLUMN chapter_chats.role IS '发言方：user | assistant'",
+    "COMMENT ON COLUMN chapter_chats.content IS '消息文本'",
+    "COMMENT ON COLUMN chapter_chats.created_at IS '创建时间'",
+    "COMMENT ON COLUMN chapter_chats.updated_at IS '修改时间（触发器自动维护）'",
+    "COMMENT ON TABLE chapter_annotations IS '章节选区标注表：研读页的划线与批注（一章多条，id 由前端生成），随所属计划级联删除'",
+    "COMMENT ON COLUMN chapter_annotations.id IS '标注 id（前端生成的 uuid 文本；保存即 upsert）'",
+    "COMMENT ON COLUMN chapter_annotations.plan_id IS '所属计划 id（ON DELETE CASCADE）'",
+    "COMMENT ON COLUMN chapter_annotations.phase_idx IS '阶段序号（plans 内定位阶段）'",
+    "COMMENT ON COLUMN chapter_annotations.chapter_idx IS '章节序号（阶段内定位章节）'",
+    "COMMENT ON COLUMN chapter_annotations.quote IS '选中的原文片段'",
+    "COMMENT ON COLUMN chapter_annotations.comment IS '标注批注（空串 = 纯划线标注）'",
+    "COMMENT ON COLUMN chapter_annotations.created_at IS '创建时间'",
+    "COMMENT ON COLUMN chapter_annotations.updated_at IS '修改时间（触发器自动维护）'",
+    "COMMENT ON TABLE chapter_notes IS '章节笔记表：研读页的章节级 markdown 笔记（一章至多一行，保存即 upsert），随所属计划级联删除'",
+    "COMMENT ON COLUMN chapter_notes.plan_id IS '所属计划 id（ON DELETE CASCADE）'",
+    "COMMENT ON COLUMN chapter_notes.phase_idx IS '阶段序号（plans 内定位阶段）'",
+    "COMMENT ON COLUMN chapter_notes.chapter_idx IS '章节序号（阶段内定位章节）'",
+    "COMMENT ON COLUMN chapter_notes.content_md IS '笔记 markdown 内容（空串 = 清空笔记）'",
+    "COMMENT ON COLUMN chapter_notes.created_at IS '创建时间'",
+    "COMMENT ON COLUMN chapter_notes.updated_at IS '修改时间（触发器自动维护）'",
 ];
 
 // ---------------------------------------------------------------------------
@@ -403,6 +482,10 @@ pub(crate) const DDL_STATEMENTS: &[&str] = &[
     DDL_PLANS_GROUP_ID_COL,
     DDL_PLAN_GROUPS_SORT_IDX,
     DDL_GENERATION_ARTIFACTS_CREATED_IDX,
+    // 4.8 研读页数据三表（2026-11）：聊天 / 标注 / 笔记，均只依赖 plans 表
+    DDL_CHAPTER_CHATS_TABLE,
+    DDL_CHAPTER_ANNOTATIONS_TABLE,
+    DDL_CHAPTER_NOTES_TABLE,
     // 5. 任务 18 演进：chapters 正文列 + 退役子表 DROP（统一收尾，
     //    历史 DB 与全新 DB 都收敛到同一终态）
     DDL_CHAPTERS_CONTENT_MD_COL,
@@ -412,6 +495,9 @@ pub(crate) const DDL_STATEMENTS: &[&str] = &[
     DDL_CHAPTERS_KEY_TERMS_COL,
     DDL_CHAPTERS_VISUALIZATIONS_COL,
     DDL_CHAPTERS_EXERCISES_COL,
+    // 5.1 研读改版演进列（2026-11）：chapters 周与学时（可空，旧行保持 NULL）
+    DDL_CHAPTERS_WEEK_COL,
+    DDL_CHAPTERS_ESTIMATED_HOURS_COL,
     DDL_DROP_CONCEPTS_TABLE,
     DDL_DROP_KNOWLEDGE_POINTS_TABLE,
     DDL_DROP_DIAGRAMS_TABLE,
@@ -442,6 +528,10 @@ pub(crate) const DDL_STATEMENTS: &[&str] = &[
     "CREATE OR REPLACE TRIGGER trg_chapters_set_updated_at BEFORE UPDATE ON chapters FOR EACH ROW EXECUTE FUNCTION set_updated_at()",
     "CREATE OR REPLACE TRIGGER trg_resources_set_updated_at BEFORE UPDATE ON resources FOR EACH ROW EXECUTE FUNCTION set_updated_at()",
     "CREATE OR REPLACE TRIGGER trg_study_schedule_set_updated_at BEFORE UPDATE ON study_schedule FOR EACH ROW EXECUTE FUNCTION set_updated_at()",
+    // 7.1 研读页三表触发器（2026-11）：表在第 4.8 段创建，列随建表自带
+    "CREATE OR REPLACE TRIGGER trg_chapter_chats_set_updated_at BEFORE UPDATE ON chapter_chats FOR EACH ROW EXECUTE FUNCTION set_updated_at()",
+    "CREATE OR REPLACE TRIGGER trg_chapter_annotations_set_updated_at BEFORE UPDATE ON chapter_annotations FOR EACH ROW EXECUTE FUNCTION set_updated_at()",
+    "CREATE OR REPLACE TRIGGER trg_chapter_notes_set_updated_at BEFORE UPDATE ON chapter_notes FOR EACH ROW EXECUTE FUNCTION set_updated_at()",
 ];
 
 /// 执行全部 DDL（逐条跑，任一失败即整体失败并归一为 Db 错误）。
@@ -572,11 +662,27 @@ mod tests {
             backfill_updated < fn_pos,
             "触发器必须在 updated_at 补列之后"
         );
-        // 序列末条恰为最后一个触发器 CREATE
+        // 研读页三表（2026-11）：建表在 plans 之后；触发器在末段且晚于既有触发器
+        let plans_table = find("CREATE TABLE IF NOT EXISTS plans");
+        for table in ["chapter_chats", "chapter_annotations", "chapter_notes"] {
+            let table_pos = find(&format!("CREATE TABLE IF NOT EXISTS {table}"));
+            let trg = find(&format!(
+                "CREATE OR REPLACE TRIGGER trg_{table}_set_updated_at"
+            ));
+            assert!(
+                plans_table < table_pos,
+                "{table} 建表必须在 plans 之后（外键依赖）"
+            );
+            assert!(
+                trg > trg_marks,
+                "{table} 触发器应在既有触发器之后（函数与补列先就位）"
+            );
+        }
+        // 序列末条恰为最后一个触发器 CREATE（研读页 chapter_notes）
         assert!(
             DDL_STATEMENTS[DDL_STATEMENTS.len() - 1]
-                .contains("CREATE OR REPLACE TRIGGER trg_study_schedule_set_updated_at"),
-            "序列末条应为 study_schedule 触发器"
+                .contains("CREATE OR REPLACE TRIGGER trg_chapter_notes_set_updated_at"),
+            "序列末条应为 chapter_notes 触发器"
         );
     }
 
@@ -596,6 +702,9 @@ mod tests {
             "chapters",
             "resources",
             "study_schedule",
+            "chapter_chats",
+            "chapter_annotations",
+            "chapter_notes",
         ] {
             assert!(
                 COMMENT_STATEMENTS

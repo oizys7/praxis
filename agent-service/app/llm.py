@@ -14,7 +14,9 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import re
 from collections.abc import Callable
 from typing import TypeVar, cast
 
@@ -361,6 +363,299 @@ async def invoke_structured(
             "模型响应超时、被限流或服务端异常，请稍后重试，或在设置页更换模型"
         ) from exc
 
+    if empty_tool_call:
+        raise AgentServiceError(
+            "模型连续返回空参数的工具调用，请重新生成或在设置页更换模型"
+        ) from None
+    raise AgentServiceError(
+        "模型返回内容无法解析为结构化数据，请重新生成"
+    ) from last_parse_error
+
+
+# ---------------------------------------------------------------------------
+# 章节流式生成：contentMd 的 token 级增量（研读页打字机效果的数据源）
+# ---------------------------------------------------------------------------
+
+
+class _JsonStringFieldStreamExtractor:
+    """从工具调用参数 JSON 文本流中增量抽取目标字符串字段的解码文本。
+
+    章节正文经 function-calling 的 tool 参数（JSON 串）返回；各 provider 的
+    SDK 都以参数片段（args delta）形式流式吐出。本状态机消费这些原始片段：
+
+        SEEK_KEY：找 `"contentMd"` + 可选空白 + `:` + 可选空白 + `"`；
+        IN_STRING：解码 JSON 转义（\\n / \\" / \\\\ / \\uXXXX 及代理对），
+                   边解码边放行已无歧义的文本；
+        DONE：值字符串闭合（未转义的 `"`），此后输入全部忽略。
+
+    容错约定：字段从未出现 / JSON 形状意外 / 流中断 → 状态机停在当前态、
+    不产出任何文本，调用方的整段兜底路径照常工作——**提取器绝不上抛**，
+    它只负责「能提取多少提多少」，正确性仍由最终结构化解析保证。
+    """
+
+    _SEEK = 0
+    _IN_STRING = 1
+    _DONE = 2
+
+    def __init__(self, field: str, on_text: Callable[[str], None]) -> None:
+        self._field = f'"{field}"'
+        self._on_text = on_text
+        self.reset()
+
+    def reset(self) -> None:
+        """回到初始态（解析重试时每轮一次：上一轮的增量不应续到下一轮）。"""
+        self._state = self._SEEK
+        # SEEK 阶段的原始片段累积（正则匹配需要跨片段的上下文）
+        self._seek_buf = ""
+        # IN_STRING 阶段的解码工作区
+        self._escape_pending = False  # 上一字符是反斜杠，等转义尾字符
+        # \u 转义的 hex 计数；None = 不在 \u 转义中（0 是合法中间态，不能当哨兵）
+        self._unicode_pending: int | None = None
+        self._unicode_buf = ""
+        self._surrogate = -1  # 待配对的高代理码点（-1 = 无）
+        self._pending_out: list[str] = []
+
+    # ---- 对外 ----
+
+    def feed(self, fragment: str) -> None:
+        """消费一段原始 JSON 文本；产出的解码文本经 on_text 回调放出。"""
+        if self._state == self._DONE or not fragment:
+            return
+        if self._state == self._SEEK:
+            remainder = self._feed_seek(fragment)
+            if remainder is None:
+                return
+            fragment = remainder
+        self._feed_string(fragment)
+        if self._pending_out:
+            text = "".join(self._pending_out)
+            self._pending_out.clear()
+            if text:
+                self._on_text(text)
+
+    # ---- SEEK：定位字段值字符串的开引号 ----
+
+    def _feed_seek(self, fragment: str) -> str | None:
+        """在原始片段中找字段值字符串的起点；找到则返回值起点之后的残余片段
+        （交 IN_STRING 处理），未找到返回 None（片段全部累积为跨片段上下文）。"""
+        # 只保留「模式长度 - 1」的历史即可跨片段匹配，防长参数内存膨胀
+        self._seek_buf = (self._seek_buf + fragment)[-64:]
+        match = re.search(
+            re.escape(self._field) + r"\s*:\s*\"", self._seek_buf, re.DOTALL
+        )
+        if match is None:
+            return None
+        remainder = self._seek_buf[match.end() :]
+        self._seek_buf = ""
+        self._state = self._IN_STRING
+        return remainder
+
+    # ---- IN_STRING：逐字符解码转义并放行 ----
+
+    def _feed_string(self, fragment: str) -> None:
+        for char in fragment:
+            if self._state == self._DONE:
+                break
+            if self._unicode_pending is not None:
+                self._feed_unicode_hex(char)
+                continue
+            if self._escape_pending:
+                self._escape_pending = False
+                simple = {'"': '"', "\\": "\\", "/": "/", "n": "\n", "t": "\t",
+                          "r": "\r", "b": "\b", "f": "\f"}
+                if char in simple:
+                    self._emit(simple[char])
+                elif char == "u":
+                    self._unicode_pending = 0
+                    self._unicode_buf = ""
+                else:
+                    # 非法转义：JSON 解析最终会失败，这里按字面放行不中断
+                    self._emit(char)
+                continue
+            if char == "\\":
+                self._escape_pending = True
+            elif char == '"':
+                self._state = self._DONE
+                self._flush_pending()
+            else:
+                self._emit(char)
+
+    def _feed_unicode_hex(self, char: str) -> None:
+        if char in "0123456789abcdefABCDEF":
+            self._unicode_buf += char
+            self._unicode_pending = (self._unicode_pending or 0) + 1
+            if self._unicode_pending < 4:
+                return
+            self._unicode_pending = None
+            code = int(self._unicode_buf, 16)
+            self._unicode_buf = ""
+            if 0xD800 <= code <= 0xDBFF:
+                # 高代理：缓冲等低代理配对；等不到就替换符兜底
+                self._surrogate = code
+            elif 0xDC00 <= code <= 0xDFFF and self._surrogate >= 0:
+                combined = 0x10000 + ((self._surrogate - 0xD800) << 10) + (code - 0xDC00)
+                self._surrogate = -1
+                self._emit(chr(combined))
+            else:
+                if self._surrogate >= 0:
+                    self._emit("\ufffd")
+                    self._surrogate = -1
+                self._emit(chr(code))
+        else:
+            # hex 断流：按字面放行已缓冲内容，退出 \u 模式（最终解析会兜底）
+            self._unicode_pending = None
+            if self._unicode_buf:
+                self._emit(self._unicode_buf)
+                self._unicode_buf = ""
+
+    def _emit(self, text: str) -> None:
+        if text:
+            self._pending_out.append(text)
+
+    def _flush_pending(self) -> None:
+        if self._surrogate >= 0:
+            self._emit("\ufffd")
+            self._surrogate = -1
+        if self._pending_out:
+            text = "".join(self._pending_out)
+            self._pending_out.clear()
+            if text:
+                self._on_text(text)
+
+
+async def invoke_chapter_streamed(
+    model_cls: type[TModel],
+    prompt_key: str,
+    variables: dict[str, str],
+    *,
+    on_delta: Callable[[str], None],
+    content_field: str = "contentMd",
+) -> TModel:
+    """流式章节生成：边收工具参数边放出 contentMd 的解码增量，最终返回结构化模型。
+
+    与 invoke_structured 同一套提示词与解析重试语义，差别只在传输层：
+    直接 bind_tools + astream，把 tool_call_chunks 的 args 原始片段喂给
+    _JsonStringFieldStreamExtractor，从中抽出目标字段的已解码文本增量。
+
+    - on_delta 每攒到一段无歧义文本就回调一次（典型 token 粒度）；provider
+      不支持工具参数流式（args 一次性到达 / 无 tool_call_chunks）时回调
+      不会触发，正文随返回值整段到达——调用方以返回值为准，增量只是
+      渐进展示（解析重试时增量会重来一遍，前端以最终整段覆盖）。
+    - 结构化解析 / 解析失败反馈重试 / 传输异常翻译与 invoke_structured 同源
+      （bind_tools 不带 tool_choice：与 with_structured_output 的 function_calling
+      默认一致，空工具调用走同一套重试文案）。
+    - bind_tools 不可用（极端 SDK 差异）时整段降级到 invoke_structured。
+
+    raise AgentServiceError: 解析重试耗尽，或模型调用超时 / 网络失败。
+    """
+    template = prompts.load_prompt(prompt_key)
+    messages = [
+        SystemMessage(content=template["system"]),
+        HumanMessage(content=prompts.render(template["human"], **variables)),
+    ]
+    try:
+        model = get_chat_model()
+        bound = model.bind_tools([model_cls])
+    except Exception:  # 工具绑定不支持的极端场景整段兜底（正确性由 invoke_structured 保证）
+        logger.warning("bind_tools 不可用，章节生成退回整段结构化调用", exc_info=True)
+        return await invoke_structured(model_cls, prompt_key, variables)
+
+    attempts = _parse_attempts(prompt_key)
+    last_parse_error: ValidationError | OutputParserException | None = None
+    empty_tool_call = False
+    attempt_messages = messages
+    for attempt in range(1, attempts + 1):
+        extractor = _JsonStringFieldStreamExtractor(content_field, on_delta)
+        args_parts: list[str] = []
+        try:
+            async for chunk in bound.astream(attempt_messages):
+                for tool_call in getattr(chunk, "tool_call_chunks", None) or []:
+                    fragment = tool_call.get("args") if isinstance(tool_call, dict) else None
+                    if fragment:
+                        args_parts.append(fragment)
+                        extractor.feed(fragment)
+            raw_args = "".join(args_parts)
+            if not raw_args:
+                empty_tool_call = True
+                logger.warning(
+                    "结构化输出为空 tool_call（第 %d/%d 次，model=%s）",
+                    attempt,
+                    attempts,
+                    model_cls.__name__,
+                )
+                attempt_messages = [
+                    *messages,
+                    HumanMessage(
+                        content=(
+                            "你上一次的工具调用未提供任何参数（结果为空）。"
+                            "请重新调用并按 schema 完整填写全部必填字段；"
+                            "其余要求保持不变。"
+                        )
+                    ),
+                ]
+                continue
+            data = json.loads(raw_args)
+            return model_cls.model_validate(data)
+        except (ValidationError, OutputParserException) as exc:
+            last_parse_error = exc
+            if isinstance(exc, ValidationError):
+                summary = _validation_summary(exc)
+                feedback = (
+                    "你上一次的工具调用参数未通过数据校验，具体错误：\n"
+                    f"{summary}\n"
+                    "请重新生成并严格满足全部字段的类型与必填约束；"
+                    "其余要求保持不变。"
+                )
+            else:
+                summary = _parser_error_summary(exc)
+                feedback = (
+                    "你上一次的工具调用返回的 JSON 无法解析（常见原因：输出被截断、"
+                    "引号未闭合或混入了 schema 之外的文字）。\n"
+                    f"解析器报错：{summary}\n"
+                    "请确保输出是完整合法的 JSON；若内容过长，请在不丢失必备小节"
+                    "的前提下精简篇幅。其余要求保持不变。"
+                )
+            logger.warning(
+                "流式章节解析失败（第 %d/%d 次，model=%s）：%s",
+                attempt,
+                attempts,
+                model_cls.__name__,
+                summary,
+            )
+            attempt_messages = [*messages, HumanMessage(content=feedback)]
+        except json.JSONDecodeError as exc:
+            last_parse_error = OutputParserException(str(exc))
+            logger.warning(
+                "流式章节工具参数非法 JSON（第 %d/%d 次）：%s",
+                attempt,
+                attempts,
+                _parser_error_summary(OutputParserException(str(exc))),
+            )
+            attempt_messages = [
+                *messages,
+                HumanMessage(
+                    content=(
+                        "你上一次的工具调用返回的 JSON 无法解析。请重新输出完整"
+                        "合法的 JSON；若内容过长，请在不丢失必备小节的前提下"
+                        "精简篇幅。其余要求保持不变。"
+                    )
+                ),
+            ]
+        except (
+            httpx.TimeoutException,
+            TimeoutError,
+            openai.APIConnectionError,
+            # 限流 429 / 服务端 5xx / 参数 400（如上下文超限）：SDK 内部重试
+            # 耗尽后抛出——与 invoke_structured 同口径，直接翻译不重试
+            openai.APIStatusError,
+            anthropic.APIError,
+        ) as exc:
+            logger.warning(
+                "LLM 调用失败（provider=%s）：%s", settings.llm_provider, exc
+            )
+            raise AgentServiceError(
+                "模型响应超时、被限流或服务端异常，请稍后重试，或在设置页更换模型"
+            ) from exc
     if empty_tool_call:
         raise AgentServiceError(
             "模型连续返回空参数的工具调用，请重新生成或在设置页更换模型"

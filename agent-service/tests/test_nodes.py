@@ -37,6 +37,7 @@ from app.mock import (
 from app.nodes import AgentState
 from app.schemas import (
     Chapter,
+    ChapterDraft,
     PhaseExtrasOutput,
     PhaseProject,
     PlanRequest,
@@ -149,7 +150,7 @@ async def test_expand_chapter_parallel_safe(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_expand_chapter_real_path_variables(monkeypatch):
-    """真实路径：invoke_structured 收到 Chapter 提示词与首展占位评审意见。"""
+    """真实路径：invoke_structured 收到 chapter 提示词与首展占位评审意见。"""
     monkeypatch.setattr(settings, "allow_mock_llm", False)
     monkeypatch.setattr(nodes, "has_llm_config", lambda: True)
     captured: dict[str, Any] = {}
@@ -158,7 +159,7 @@ async def test_expand_chapter_real_path_variables(monkeypatch):
         captured["model_cls"] = model_cls
         captured["prompt_key"] = prompt_key
         captured["variables"] = variables
-        return Chapter(title="核心概念入门", summary="概述", content_md="# 正文")
+        return ChapterDraft(title="核心概念入门", summary="概述", content_md="# 正文")
 
     monkeypatch.setattr(nodes, "invoke_structured", _stub)
     outline = build_mock_outline(REQUEST)
@@ -174,7 +175,8 @@ async def test_expand_chapter_real_path_variables(monkeypatch):
         }
     )
 
-    assert captured["model_cls"] is nodes.Chapter
+    # 研读改版：单章 LLM 输出模型为 ChapterDraft（week/estimatedHours 不请模型复述）
+    assert captured["model_cls"] is nodes.ChapterDraft
     assert captured["prompt_key"] == "chapter"
     assert set(captured["variables"]) == _template_vars("chapter"), (
         "chapter 注入变量与提示词占位符不一致："
@@ -193,18 +195,19 @@ async def test_expand_chapter_real_path_variables(monkeypatch):
         variables["sibling_chapter_titles"] == f"- {phase_outline['chapterTitles'][1]}"
     )
     assert set(result) == {"chapter_drafts", "chapter_traces"}
-    # 章型以大纲为准强制回写：大纲未给 chapterKinds → 兜底 concept
-    assert result["chapter_drafts"] == {
-        "0:0": {
-            "title": "核心概念入门",
-            "summary": "概述",
-            "contentMd": "# 正文",
-            "kind": "concept",
-            "keyTerms": [],
-            # 新增的两组结构化字段：替身没给内容，序列化出来是空数组
-            "visualizations": [],
-            "exercises": [],
-        }
+    # 章型以大纲为准强制回写：大纲未给 chapterKinds → 兜底 concept；
+    # 周/学时以大纲为准回填（mock 大纲已给出并行数组）
+    draft = result["chapter_drafts"]["0:0"]
+    assert draft == {
+        "title": "核心概念入门",
+        "summary": "概述",
+        "contentMd": "# 正文",
+        "kind": "concept",
+        "keyTerms": [],
+        "week": phase_outline["chapterWeeks"][0],
+        "estimatedHours": phase_outline["chapterEstimatedHours"][0],
+        "visualizations": [],
+        "exercises": [],
     }
 
 
@@ -446,7 +449,11 @@ async def test_expand_revision_structural_redoes_all_chapters_and_extras(monkeyp
 
 @pytest.mark.asyncio
 async def test_assemble_node_sorts_and_validates(monkeypatch):
-    """章级重组：复合键乱序也能按 (阶段序, 章序) 重组；mock 数据零校验问题。"""
+    """章级重组：复合键乱序也能按 (阶段序, 章序) 重组；mock 数据零校验问题。
+
+    研读改版后全计划内容拼装只存在于重生成链，这里按全阶段重生成作用域
+    （scope={"phase": 0, "chapters": None}）驱动内容拼装路径。
+    """
     monkeypatch.setattr(settings, "allow_mock_llm", True)
     outline = build_mock_outline(REQUEST)
     drafts, extras = _drafts_and_extras(outline)
@@ -457,6 +464,7 @@ async def test_assemble_node_sorts_and_validates(monkeypatch):
         chapter_drafts=reversed_drafts,
         phase_extras=extras,
         review_notes=["备注一", "备注二"],
+        regen_scope={"phase": 0, "chapters": None},
     )
 
     result = await nodes.assemble_node(state)
@@ -467,23 +475,25 @@ async def test_assemble_node_sorts_and_validates(monkeypatch):
         "pending_phase_indexes",
         "failed_chapter_keys",
         "phase_extras",
-        # 作用域下 phase 事件要用真实阶段索引（首次生成为 None → 事件层回退 enumerate）
+        # 作用域下 phase 事件要用真实阶段索引（enumerate 会从 0 起错位）
         "phase_event_index",
     }
     plan = result["plan"]
-    assert len(plan["phases"]) == len(outline["phases"]), "阶段按大纲序重组"
-    for index, phase in enumerate(plan["phases"]):
-        assert phase["name"] == outline["phases"][index]["name"], "阶段名与大纲一致"
-        titles = outline["phases"][index]["chapterTitles"]
-        assert [c["title"] for c in phase["chapters"]] == list(titles), (
-            "章节按章索引升序重组"
-        )
-        assert phase["practice"] and phase["project"], "轻装（practice/project）合入"
+    titles = outline["phases"][0]["chapterTitles"]
+    assert len(plan["phases"]) == 1, "作用域下只拼目标阶段"
+    assert result["phase_event_index"] == 0, "事件索引用真实值而非 enumerate"
+    phase = plan["phases"][0]
+    assert phase["name"] == outline["phases"][0]["name"], "阶段名与大纲一致"
+    assert [c["title"] for c in phase["chapters"]] == list(titles), (
+        "章节按章索引升序重组"
+    )
+    assert phase["practice"] and phase["project"], "轻装（practice/project）合入"
     assert plan["title"] == outline["title"]
     assert plan["overview"] == outline["overview"]
     assert plan["estimatedTotalHours"] == outline["estimatedTotalHours"]
     assert plan["resources"] == outline["resources"]
     assert plan["reviewNotes"] == "备注一\n备注二", "评审备注合并为字符串"
+    assert plan["glossary"], "术语表由章级 keyTerms 汇总"
     assert result["validation_issues"] == [], "mock 计划应零校验问题"
     assert result["pending_phase_indexes"] == []
     assert result["failed_chapter_keys"] == []
@@ -498,7 +508,12 @@ async def test_assemble_node_reports_failed_chapter_and_phase(monkeypatch):
     drafts, extras = _drafts_and_extras(outline)
     drafts["1:1"] = {**drafts["1:1"], "contentMd": "太短"}  # 破坏：第 2 阶段第 2 章短
 
-    state = _state(outline=outline, chapter_drafts=drafts, phase_extras=extras)
+    state = _state(
+        outline=outline,
+        chapter_drafts=drafts,
+        phase_extras=extras,
+        regen_scope={"phase": 1, "chapters": None},
+    )
 
     result = await nodes.assemble_node(state)
 
@@ -521,7 +536,12 @@ async def test_assemble_extras_retry_failure_still_flags_phase(monkeypatch):
     del extras["0"]  # 破坏：第 1 阶段轻装缺失且补放失败
 
     result = await nodes.assemble_node(
-        _state(outline=outline, chapter_drafts=drafts, phase_extras=dict(extras))
+        _state(
+            outline=outline,
+            chapter_drafts=drafts,
+            phase_extras=dict(extras),
+            regen_scope={"phase": 0, "chapters": None},
+        )
     )
 
     assert result["phase_extras"] == {}, "补放失败不产增量"
@@ -537,12 +557,20 @@ async def test_assemble_missing_chapter_becomes_placeholder_and_pending(monkeypa
     drafts, extras = _drafts_and_extras(outline)
     del drafts["2:1"]  # 破坏：第 3 阶段第 2 章实例缺失
 
-    state = _state(outline=outline, chapter_drafts=drafts, phase_extras=extras)
+    state = _state(
+        outline=outline,
+        chapter_drafts=drafts,
+        phase_extras=extras,
+        regen_scope={"phase": 2, "chapters": None},
+    )
 
     result = await nodes.assemble_node(state)
 
-    missing = result["plan"]["phases"][2]["chapters"][1]
+    missing = result["plan"]["phases"][0]["chapters"][1]
     assert missing["contentMd"] == "", "缺失实例以空章占位"
+    assert missing["week"] == outline["phases"][2]["chapterWeeks"][1], (
+        "占位章回填大纲的周分配"
+    )
     assert result["failed_chapter_keys"] == ["2:1"]
     assert result["pending_phase_indexes"] == [2]
 
@@ -555,7 +583,12 @@ async def test_assemble_extras_missing_retries_once(monkeypatch):
     drafts, extras = _drafts_and_extras(outline)
     del extras["1"]  # 破坏：第 2 阶段轻装缺失
 
-    state = _state(outline=outline, chapter_drafts=drafts, phase_extras=dict(extras))
+    state = _state(
+        outline=outline,
+        chapter_drafts=drafts,
+        phase_extras=dict(extras),
+        regen_scope={"phase": 1, "chapters": None},
+    )
 
     result = await nodes.assemble_node(state)
 
@@ -563,9 +596,9 @@ async def test_assemble_extras_missing_retries_once(monkeypatch):
     assert set(retried) == {"1"}, "补放增量只含缺失阶段"
     assert retried["1"]["project"]["name"].strip(), "补放产物含合法项目"
     assert (
-        result["plan"]["phases"][1]["project"]["name"]
+        result["plan"]["phases"][0]["project"]["name"]
         == (retried["1"]["project"]["name"])
-    ), "补放结果直接合入计划"
+    ), "补放结果直接合入计划（作用域下 plan.phases[0] 即真实阶段 1）"
     assert result["pending_phase_indexes"] == [], "补放成功后无阶段罚项"
 
 
@@ -590,12 +623,51 @@ async def test_assemble_extras_retry_real_path_uses_light_prompt(monkeypatch):
     del extras["0"]
 
     result = await nodes.assemble_node(
-        _state(outline=outline, chapter_drafts=drafts, phase_extras=dict(extras))
+        _state(
+            outline=outline,
+            chapter_drafts=drafts,
+            phase_extras=dict(extras),
+            regen_scope={"phase": 0, "chapters": None},
+        )
     )
 
     assert calls == [(nodes.PhaseExtrasOutput, "phase_extras")], "恰一次轻量补放"
     assert result["phase_extras"]["0"]["project"]["name"] == "补放项目"
     assert result["plan"]["phases"][0]["project"]["name"] == "补放项目"
+
+
+@pytest.mark.asyncio
+async def test_assemble_outline_only_builds_skeleton(monkeypatch):
+    """大纲-only 首展（研读改版）：章节骨架由大纲并行数组构造，正文恒空。
+
+    contentMd 空是合法态：不标失败章、不进 pending、结构校验零问题；
+    周/学时/概述/术语全部来自大纲，周时间线由前端按 week 派生。
+    """
+    monkeypatch.setattr(settings, "allow_mock_llm", True)
+    outline = build_mock_outline(REQUEST)
+    extras = {
+        str(i): build_mock_extras(REQUEST, p, i)
+        for i, p in enumerate(outline["phases"])
+    }
+
+    result = await nodes.assemble_node(
+        _state(outline=outline, phase_extras=extras, review_notes=[])
+    )
+
+    plan = result["plan"]
+    for p_index, phase in enumerate(plan["phases"]):
+        phase_outline = outline["phases"][p_index]
+        assert phase["practice"] and phase["project"], "轻装仍随首展产出"
+        for c_index, chapter in enumerate(phase["chapters"]):
+            assert chapter["contentMd"] == "", "大纲-only 不产正文"
+            assert chapter["week"] == phase_outline["chapterWeeks"][c_index]
+            assert chapter["estimatedHours"] == phase_outline["chapterEstimatedHours"][c_index]
+            assert chapter["summary"] == phase_outline["chapterSummaries"][c_index]
+            assert chapter["keyTerms"] == phase_outline["chapterKeyTerms"][c_index]
+    assert result["failed_chapter_keys"] == [], "空正文是大纲-only 的合法态，不标失败"
+    assert result["pending_phase_indexes"] == []
+    assert result["validation_issues"] == [], "结构校验（阶段/章数/目标/项目/学时）零问题"
+    assert plan["glossary"], "术语表由骨架 keyTerms 汇总"
 
 
 # ---------------------------------------------------------------------------

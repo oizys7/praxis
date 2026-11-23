@@ -320,11 +320,50 @@ class Exercise(CamelModel):
 
 
 class Chapter(CamelModel):
-    """阶段内的学习章节：完整 markdown 正文（图示内联 ```mermaid 码块）。
+    """阶段内的学习章节（wire 模型）：完整 markdown 正文（图示内联 ```mermaid 码块）。
 
     kind 决定正文的形态要求（概念章讲原理、实操章重步骤、项目章要验收、
     复习章做回顾），由大纲给定、生成时原样遵循，校验按类型分叉。
     key_terms 是本章核心术语（2-4 个），供 assemble 汇总为全计划术语表。
+    week / estimated_hours 由大纲分配（研读改版后大纲-only 生成的一等字段），
+    周维度时间线由前端按全部章节的 week 派生，StudyPlan 不另设时间线字段。
+    章节正文按需生成（contentMd 为空是合法的「尚未生成」态），生成链路复用
+    重生成通道；LLM 单章输出的结构化形状见 ChapterDraft（不含本模型新增两字段，
+    周与时长以大纲为准，不请模型复述）。
+    """
+
+    title: str = Field(..., description="章节标题")
+    summary: str = Field(default="", description="章节概述")
+    content_md: str = Field(default="", description="章节 markdown 正文全文；空串=尚未生成")
+    kind: str = Field(
+        default="concept", description="章型：concept / practice / project / review"
+    )
+    key_terms: list[str] = Field(
+        default_factory=list, description="本章核心术语（2-4 个）"
+    )
+    # 大纲分配的周与时长（1..weeks；None=旧数据缺省，wire 上可省略）
+    week: int | None = Field(
+        default=None, ge=1, description="本章所在周（1 起始，由大纲按 weeklyHours 分配）"
+    )
+    estimated_hours: int | None = Field(
+        default=None, ge=0, description="本章预计投入学时（由大纲分配）"
+    )
+    visualizations: list[Visualization] = Field(
+        default_factory=list,
+        description="过程动画（至多一段）：只用于「执行过程不可见」的算法/数据结构章",
+    )
+    exercises: list[Exercise] = Field(
+        default_factory=list,
+        description="结构化自测题：每个知识点至少一题，且至少一题是情景判断题",
+    )
+
+
+class ChapterDraft(CamelModel):
+    """单章 LLM 输出（仅图内流转，不入响应协议）：chapter.yaml 结构化输出的形状。
+
+    与 wire 模型 Chapter 的差异只有 week / estimated_hours 两个字段——它们
+    由大纲分配、生成时禁止改动，因此不进 LLM 的输出 schema（请模型复述只会
+    引入漂移）；expand_chapter 拿到本模型后按大纲并行数组回填这两字段。
     """
 
     title: str = Field(..., description="章节标题")
@@ -338,11 +377,11 @@ class Chapter(CamelModel):
     )
     visualizations: list[Visualization] = Field(
         default_factory=list,
-        description="过程动画（至多一段）：只用于「执行过程不可见」的算法/数据结构章",
+        description="过程动画（至多一段）",
     )
     exercises: list[Exercise] = Field(
         default_factory=list,
-        description="结构化自测题：每个知识点至少一题，且至少一题是情景判断题",
+        description="结构化自测题",
     )
 
 
@@ -399,6 +438,66 @@ class StudyPlan(CamelModel):
 
 
 # ---------------------------------------------------------------------------
+# 研读页数据（聊天 / 标注 / 笔记，2026-11 研读功能包1）
+# 说明：ChatMessage 是 /api/chat 请求载荷的一部分（Rust -> Python）；
+# ChapterAnnotation / ChapterNote 仅在 Rust <-> 前端两端流转（按章持久化在
+# Rust 侧新表），Python 侧声明模型只为承接 protocol.json 的跨端契约校验。
+# ---------------------------------------------------------------------------
+
+
+class ChatMessage(CamelModel):
+    """研读聊天消息（跨端契约 ChatMessage）。
+
+    role 仅取 user / assistant；id 与 createdAt 为端特有字段（extra）：
+    Rust 落库时生成，Python 的 /api/chat 载荷不携带也不需要。
+    """
+
+    role: Literal["user", "assistant"] = Field(..., description="发言方：user / assistant")
+    content: str = Field(..., min_length=1, description="消息文本")
+
+
+class ChatRequest(CamelModel):
+    """研读聊天请求（Rust -> Python，POST /api/chat，NDJSON 流式响应）。
+
+    上下文按章给定：该章 contentMd + 计划标题/目标；历史由 Rust 从
+    chapter_chats 表读出后随请求携带。planId 仅作关联回显，Python 不校验
+    其存在性（计划数据由调用方读库后随请求传入，服务无库依赖）。
+    """
+
+    plan_id: str = Field(default="", description="计划 id（关联回显用）")
+    phase_index: int = Field(default=0, ge=0, description="目标阶段索引（0-based）")
+    chapter_index: int = Field(default=0, ge=0, description="目标章节索引（0-based）")
+    plan_title: str = Field(default="", description="计划标题（上下文）")
+    plan_goal: str = Field(default="", description="学习目标（上下文）")
+    chapter_title: str = Field(default="", description="章节标题（上下文）")
+    chapter_content_md: str = Field(default="", description="章节正文全文（可为空）")
+    messages: list[ChatMessage] = Field(
+        default_factory=list, description="本章历史对话（时间升序，不含本次提问）"
+    )
+    question: str = Field(..., min_length=1, description="本次提问")
+
+
+class ChapterAnnotation(CamelModel):
+    """章节选区标注（跨端契约 ChapterAnnotation，实际存储在 Rust 侧）。
+
+    quote 是选中的原文片段；comment 可选（纯划线标注 comment 为空串）。
+    id / createdAt / phaseIndex / chapterIndex 为端特有字段（extra）。
+    """
+
+    quote: str = Field(..., min_length=1, description="选中的原文片段")
+    comment: str = Field(default="", description="标注批注（可为空串）")
+
+
+class ChapterNote(CamelModel):
+    """章节级 markdown 笔记（跨端契约 ChapterNote，实际存储在 Rust 侧）。
+
+    contentMd 为空串表示清空笔记；updatedAt 为端特有字段（extra）。
+    """
+
+    content_md: str = Field(default="", description="笔记 markdown 内容（可为空串）")
+
+
+# ---------------------------------------------------------------------------
 # 图内流转内部模型（仅图内流转，不入响应协议）
 # ---------------------------------------------------------------------------
 
@@ -440,6 +539,72 @@ class PhaseOutline(CamelModel):
         default_factory=list, description="与 chapterTitles 等长的章型列表"
     )
     project_brief: str = Field(default="", description="阶段项目一句话简介")
+    # ---- 研读改版（2026-11）：大纲承接章节级元数据，正文按需生成 ----
+    # 以下四个并行数组与 chapterTitles 等长同序；旧 outline_json（无这些键）
+    # 反序列化为空列表，读取方按「缺失」处理，不影响旧计划重生成。
+    chapter_summaries: list[str] = Field(
+        default_factory=list, description="与 chapterTitles 等长的章节概述列表"
+    )
+    chapter_key_terms: list[list[str]] = Field(
+        default_factory=list, description="与 chapterTitles 等长的每章核心术语列表"
+    )
+    chapter_weeks: list[int] = Field(
+        default_factory=list,
+        description="与 chapterTitles 等长的所在周列表（1..weeks，按 weeklyHours 分配）",
+    )
+    chapter_estimated_hours: list[int] = Field(
+        default_factory=list,
+        description="与 chapterTitles 等长的每章预计学时列表",
+    )
+
+    @field_validator("chapter_key_terms", mode="before")
+    @classmethod
+    def _normalize_terms_matrix(cls, value: Any) -> Any:
+        """把「每章术语」归一成 list[list[str]]（与知识矩阵同一容错思路）。
+
+        模型偶发把嵌套数组写成扁平 list[str]（一章一个长串）或 None；
+        一章一个字符串包成单元素列表即可，不因形状瑕疵报废整份大纲。
+        """
+        if not isinstance(value, list):
+            return value
+        normalized: list[list[str]] = []
+        for item in value:
+            if isinstance(item, (list, tuple)):
+                normalized.append([str(entry) for entry in item if entry is not None])
+            elif isinstance(item, str):
+                normalized.append([item])
+            elif isinstance(item, dict):
+                normalized.append(_coerce_str_list(list(item.values())))
+            elif item is None:
+                normalized.append([])
+            else:
+                normalized.append([str(item)])
+        return normalized
+
+    @field_validator("chapter_weeks", "chapter_estimated_hours", mode="before")
+    @classmethod
+    def _normalize_int_list(cls, value: Any) -> Any:
+        """周 / 学时数组容错：数字字符串与非整数条目归一为 int（垃圾条目丢弃）。
+
+        LLM 偶发把周写成 "3" 或 3.0；这里逐条强转，转不动的丢弃（读取方
+        按「缺失」处理），绝不因一条脏数据报废整份大纲。
+        """
+        if not isinstance(value, list):
+            return value
+        normalized: list[int] = []
+        for item in value:
+            if isinstance(item, bool):
+                continue
+            if isinstance(item, int):
+                normalized.append(item)
+            elif isinstance(item, float) and item.is_integer():
+                normalized.append(int(item))
+            elif isinstance(item, str):
+                try:
+                    normalized.append(int(item.strip()))
+                except ValueError:
+                    continue
+        return normalized
     # 版本事实（计划级，outline 阶段探测后下发到每个阶段）。重生成必须能读回它，
     # 否则正文里只能写「版本待确认」。用裸 dict 承载：它只在图内与 plans.outline_json
     # 之间流转，不参与响应协议。

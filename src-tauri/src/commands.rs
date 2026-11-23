@@ -22,7 +22,7 @@ use std::pin::Pin;
 use std::sync::OnceLock;
 
 use serde::Serialize;
-use sqlx::PgPool;
+use sqlx::{PgPool, Row};
 use tauri::ipc::{Channel, JavaScriptChannelId};
 use tauri::Emitter;
 use tokio_tungstenite::tungstenite::Message;
@@ -39,13 +39,16 @@ use crate::error::AgentError;
 use crate::plan_state;
 use crate::plan_store::{self, PlanRequestRow};
 use crate::protocol::{
-    parse_ndjson_line, parse_ws_envelope, MonthCalendarDay, PlanProgressEnvelope,
+    parse_ndjson_line, parse_ws_envelope, ChapterAnnotationDef, ChapterDeltaEvent,
+    ChapterNoteDef, ChatDeltaEvent, ChatDoneEvent, ChatErrorEvent, ChatMessageDef,
+    ChatRequest, ChatStreamEvent, MonthCalendarDay, PlanProgressEnvelope,
     PlanProgressEvent, PlanRecord, PlanRequest, PlanResponse, PlanSummary, RegenOutline,
-    RegenRequest, StreamEvent, YearHeatmapDay,
+    RegenRequest, StreamEvent, YearHeatmapDay, parse_chat_ndjson_line,
 };
 use crate::schedule;
 use crate::settings::{load_settings, save_settings_to_disk, AgentSettings};
 use crate::sidecar::ensure_agent_running;
+use crate::study_store;
 
 /// 读取云端数据库配置（任务 28 起连 config.json `database.url`，config.yaml 链退居
 /// 迁移期保留——见 config.rs 与计划「环境变量 → 去向表」）。
@@ -367,14 +370,17 @@ pub struct PlanSubmitResult {
     pub plan_id: String,
 }
 
-/// done 终态对应的入库收尾（任务 22 失败语义修订；任务 24 增学时终值变体；
-/// 2026-10-16 用户定案：总计划校验以【章】为粒度）：
+/// done 终态对应的入库收尾（2026-11 研读改版口径修订）：
 /// - clarification → 删除 generating 行（保留既有三态语义防回归）；
-/// - 其余终态（plan / error / 防御性未知状态）：校验所有章脈状态，
-///   全部章芄生成成功（至少一章且无失败/滞留）→ complete；存在任一
-///   失败章或生成中滞留章 → failed（含 finalize_failed 的 pending 子行
-///   翻牌；complete 子行不动，失败部件可从详情页重生成）；零章行
-///   （纯骨架/未扩）→ failed；部分可用 → partial。见 plan_store::plan_status_of_chapters。
+/// - plan（大纲-only 生成链的成功终态）→ 计划行直接置 complete：研读改版后
+///   首展/整计划重生成只产大纲（章节正文按需生成，全 pending 是合法终态），
+///   不能按「章内容」把一份等着按需生成正文的全新计划判成 failed。章行状态
+///   保持 pending（可从研读页逐章生成），全章 complete 后由 upsert_chapter
+///   的既有联动把计划翻回 complete（该联动被 generating 守卫拦住的情形，
+///   用户逐章生成完成时计划行已非 generating，由该 CASE 的状态守卫决定）；
+/// - 其余终态（partial / error / 防御性未知状态）：沿用章级内容语义收尾
+///   （plan_status_of_chapters 三值口径），失败终态伴随 finalize_failed 把
+///   滞留 pending 子行翻 failed，前端可逐章重生成。
 /// - estimated_total_hours 为 Some 时随收尾覆写学时终值（done 包络携带的
 ///   plan.estimatedTotalHours 与 outline 期粗估差异修正，见 done 分派；
 ///   finalize_plan COALESCE 语义，None 保持原值）。
@@ -388,7 +394,18 @@ pub(crate) async fn settle_terminal_with_hours(
     if status == "clarification" {
         return plan_store::delete_plan_full(pool, plan_id).await;
     }
-    if status != "plan" && status != "partial" && status != "error" {
+    if status == "plan" {
+        // 大纲-only 成功终态：骨架完整即 complete（章行保持 pending 待按需生成）
+        return plan_store::finalize_plan(
+            pool,
+            plan_id,
+            plan_state::PlanStatus::Complete,
+            None,
+            estimated_total_hours,
+        )
+        .await;
+    }
+    if status != "partial" && status != "error" {
         warn!(status, "未知 done 终态状态，按内容语义收尾");
     }
     // 终态口径以库里的章内容为准（不信包络自称的结果）：一份被标成 plan 但
@@ -878,6 +895,11 @@ impl StreamEventSink for GenerationConsumer {
                     warn!(req_id = %self.req_id, "生成流出现非预期 chapterStart 事件，已忽略");
                     Ok(None)
                 }
+                // 生成链路（大纲-only）不发 chapterDelta（仅重生成链），防御性忽略
+                StreamEvent::ChapterDelta { .. } => {
+                    warn!(req_id = %self.req_id, "生成流出现非预期 chapterDelta 事件，已忽略");
+                    Ok(None)
+                }
                 StreamEvent::Done { response: envelope } => {
                     self.terminal = true;
                     if let Some(s) = &self.storage {
@@ -1000,9 +1022,13 @@ fn build_regen_body(
 /// regenerate 流事件分派：全阶段路径（chapter_index=None）处理 phase 事件
 /// （upsert_phase → PhaseDone{index, total=阶段总数}）；单章路径处理 chapter
 /// 事件（upsert_chapter → ChapterDone{phaseIndex, chapterIndex}，阶段联动由
-/// upsert_chapter 事务内推进）；对侧路径事件 warn 忽略防错；done 终态包络
-/// 直接回传（计划行收尾由 run_regen 统一做）。
+/// upsert_chapter 事务内推进）；chapterDelta（研读页打字机）经 'chapter-delta'
+/// 全局事件转发（planId 归属由本层补齐，不落库，最终以 chapter 事件为准）；
+/// 对侧路径事件 warn 忽略防错；done 终态包络直接回传（计划行收尾由 run_regen
+/// 统一做）。
 struct RegenSink<'a> {
+    /// 全局事件推送出口（'chapter-delta'；chat 类事件不经此 sink）
+    app: tauri::AppHandle,
     pool: &'a PgPool,
     plan_id: Uuid,
     progress: Option<&'a Channel<PlanProgressEvent>>,
@@ -1115,6 +1141,27 @@ impl StreamEventSink for RegenSink<'_> {
                             chapter_index: ci,
                         },
                     );
+                    Ok(None)
+                }
+                StreamEvent::ChapterDelta {
+                    phase_index: _,
+                    chapter_index,
+                    text,
+                } => {
+                    // 研读页打字机（2026-11）：正文增量经 'chapter-delta' 全局
+                    // 事件转发（planId 由本层补齐）。纯展示事件：不落库、不发
+                    // Channel（既有阅读器只认 chapterStart/chapterDone），目标
+                    // 索引以入口校验值为准（同 ChapterStart 口径）。
+                    let ci = self.chapter_index.unwrap_or(chapter_index);
+                    let payload = ChapterDeltaEvent {
+                        plan_id: self.plan_id.to_string(),
+                        phase_index: self.phase_index,
+                        chapter_index: ci,
+                        text,
+                    };
+                    if let Err(e) = self.app.emit("chapter-delta", &payload) {
+                        warn!(%self.req_id, error = %e, "chapter-delta 事件推送失败");
+                    }
                     Ok(None)
                 }
                 StreamEvent::Phase { index, .. } => {
@@ -1234,6 +1281,7 @@ async fn run_regen(
     // ③ 请求 + 消费：逐行空闲超时（重生成全阶段按章串行调用 LLM，
     //    "总超时"会把正常的长任务误判为超时；这里改看流是否还有新事件）
     let mut sink = RegenSink {
+        app: app.clone(),
         pool: &pool,
         plan_id,
         progress,
@@ -1417,6 +1465,340 @@ pub async fn regenerate_chapter(
         plan_id,
         phase_index,
         Some(chapter_index),
+    )
+    .await
+}
+
+// ---------------------------------------------------------------------------
+// 研读页（2026-11 功能包1）：按需章节生成 + 伴学聊天 + 标注/笔记
+// ---------------------------------------------------------------------------
+
+/// 按需生成章节正文（研读页「生成本章」入口，2026-11 研读改版）：
+/// 复用单章重生成链路（/api/regenerate/stream + regen_chapter 通道）——
+/// contentMd 为空的章节（大纲-only 新计划的常态）与已有正文的旧章走同一条
+/// 通道，越界校验 / 状态置 generating / chapterDelta 打字机事件 / 收尾口径
+/// 全部一致。与 [regenerate_chapter] 的差异只在调用语义（研读页 vs 阅读器），
+/// 实现完全同源，防第二份编排漂移。
+#[tauri::command]
+pub async fn generate_chapter_content(
+    app: tauri::AppHandle,
+    webview: tauri::Webview,
+    plan_id: String,
+    phase_index: u32,
+    chapter_index: u32,
+    channel: Option<JavaScriptChannelId>,
+) -> Result<PlanResponse, AgentError> {
+    run_regen(
+        app,
+        webview,
+        channel,
+        plan_id,
+        phase_index,
+        Some(chapter_index),
+    )
+    .await
+}
+
+/// 研读伴学聊天（NDJSON 流式）：读库组上下文（章节正文 + 计划标题/目标 +
+/// 本章最近历史）→ POST /api/chat → 逐行空闲超时消费，事件经全局通道推送：
+/// - 'chat-delta'：回答文本增量（ChatDeltaEvent：planId/phaseIndex/chapterIndex/text）；
+/// - 'chat-done'：正常终态，message 已落库（含 id/createdAt）；
+/// - 'chat-error'：失败终态（service/validation/internal + 可读 message）。
+/// 成功终态（chatDone）后把本轮问答落 chapter_chats 表（失败轮不落库）；
+/// 命令返回值与终态一致（Err 时前端以 chat-error 事件为准做 UI 复位）。
+#[tauri::command]
+pub async fn chat_stream(
+    app: tauri::AppHandle,
+    plan_id: String,
+    phase_index: u32,
+    chapter_index: u32,
+    question: String,
+) -> Result<(), AgentError> {
+    ensure_llm_ready(&app)?;
+    ensure_agent_running(&app).await?;
+    sync_saved_settings_once(&app).await;
+
+    let started = std::time::Instant::now();
+    let req_id = new_request_id();
+    let plan_uuid =
+        Uuid::parse_str(&plan_id).map_err(|_| AgentError::Service(format!("无效的计划 id：{plan_id}")))?;
+    let question = question.trim().to_string();
+    if question.is_empty() {
+        return Err(AgentError::Service("提问内容不能为空".into()));
+    }
+
+    let config = load_db_config();
+    let pool = db::pool(&config).await?;
+
+    // 上下文重建：计划标题/目标 + 章节标题/正文（章节行必须已播种）
+    let Some(meta) = plan_store::load_plan_request_meta(&pool, plan_uuid).await? else {
+        return Err(AgentError::Service(format!(
+            "计划不存在，无法发起研读聊天：{plan_uuid}"
+        )));
+    };
+    let plan_title: String = sqlx::query_scalar("SELECT title FROM plans WHERE id = $1")
+        .bind(plan_uuid)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|e| AgentError::Db(format!("查询计划标题失败：{e}")))?
+        .unwrap_or_default();
+    let chapter_row = sqlx::query(
+        "SELECT c.title, c.content_md FROM chapters c
+         JOIN phases p ON c.phase_id = p.id
+         WHERE p.plan_id = $1 AND p.idx = $2 AND c.idx = $3",
+    )
+    .bind(plan_uuid)
+    .bind(i32::try_from(phase_index).unwrap_or(0))
+    .bind(i32::try_from(chapter_index).unwrap_or(0))
+    .fetch_optional(&pool)
+    .await
+    .map_err(|e| AgentError::Db(format!("查询章节内容失败：{e}")))?;
+    let Some(chapter_row) = chapter_row else {
+        return Err(AgentError::Service(format!(
+            "章节不存在（阶段 {phase_index} 第 {} 章），无法发起研读聊天",
+            chapter_index + 1
+        )));
+    };
+    let chapter_title: String = chapter_row.try_get("title").map_err(db::db_err)?;
+    let chapter_content_md: String =
+        chapter_row.try_get("content_md").map_err(db::db_err)?;
+
+    // 历史：取最近 20 条（时间升序随请求携带；全部历史仍在库里）
+    let mut history =
+        study_store::list_chat_messages(&pool, plan_uuid, phase_index, chapter_index).await?;
+    if history.len() > CHAT_HISTORY_WINDOW {
+        history.drain(..history.len() - CHAT_HISTORY_WINDOW);
+    }
+
+    let body = ChatRequest {
+        plan_id: plan_uuid.to_string(),
+        phase_index,
+        chapter_index,
+        plan_title,
+        plan_goal: meta.goal,
+        chapter_title,
+        chapter_content_md,
+        messages: history,
+        question: question.clone(),
+    };
+
+    info!(%req_id, %plan_uuid, phase_index, chapter_index, "收到研读聊天请求");
+
+    // 流消费：非 2xx 归一错误；逐行空闲超时（同生成链的流健康判据）；
+    // 事件推送失败只告警——聊天主链路是流消费 + 落库，推送是展示通道
+    let mut response = post_stream("/api/chat", &body, STREAM_MAX_TIMEOUT, Some(&req_id)).await?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let mut body_bytes: Vec<u8> = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            body_bytes.extend_from_slice(&chunk);
+        }
+        let body = String::from_utf8_lossy(&body_bytes);
+        let snippet: String = body.chars().take(200).collect();
+        warn!(%req_id, http_status = %status, body = %snippet, "聊天流式端点返回非 2xx");
+        emit_chat_error(&app, plan_uuid, phase_index, chapter_index, "service",
+            &format!("Agent 服务返回 HTTP {status}"));
+        return Err(AgentError::Service(format!("Agent 服务返回 HTTP {status}")));
+    }
+
+    let mut buffer: Vec<u8> = Vec::new();
+    let mut answer = String::new();
+    let mut outcome: Result<(), AgentError> = Ok(());
+    loop {
+        let next = match tokio::time::timeout(STREAM_IDLE_TIMEOUT, next_line(&mut response, &mut buffer)).await {
+            Ok(result) => result?,
+            Err(_) => {
+                let message = format!(
+                    "聊天流已 {} 秒没有任何进展，已中断，请重试",
+                    STREAM_IDLE_TIMEOUT.as_secs()
+                );
+                warn!(%req_id, "聊天 NDJSON 流空闲超时");
+                emit_chat_error(&app, plan_uuid, phase_index, chapter_index, "service", &message);
+                outcome = Err(AgentError::Service(message));
+                break;
+            }
+        };
+        let Some(line) = next else {
+            // 流自然结束：没有终态事件属服务端异常流
+            if answer.is_empty() {
+                let message = "聊天流提前中断，未收到最终结果，请重试".to_string();
+                emit_chat_error(&app, plan_uuid, phase_index, chapter_index, "service", &message);
+                outcome = Err(AgentError::Service(message));
+            }
+            break;
+        };
+        let Some(event) = parse_chat_ndjson_line(&line) else {
+            warn!(%req_id, "聊天流中出现无法解析的事件行，已跳过");
+            continue;
+        };
+        match event {
+            ChatStreamEvent::ChatDelta { text } => {
+                answer.push_str(&text);
+                let payload = ChatDeltaEvent {
+                    plan_id: plan_uuid.to_string(),
+                    phase_index,
+                    chapter_index,
+                    text,
+                };
+                if let Err(e) = app.emit("chat-delta", &payload) {
+                    warn!(%req_id, error = %e, "chat-delta 事件推送失败");
+                }
+            }
+            ChatStreamEvent::ChatDone { message } => {
+                // 完整回答以服务端终态为准；成功轮才落库（失败轮不残留半句）
+                let content = message.content.clone();
+                let payload = ChatDoneEvent {
+                    plan_id: plan_uuid.to_string(),
+                    phase_index,
+                    chapter_index,
+                    message: ChatMessageDef {
+                        role: "assistant".into(),
+                        content: content.clone(),
+                        id: None,
+                        created_at: None,
+                    },
+                };
+                if let Err(e) = study_store::append_chat_exchange(
+                    &pool, plan_uuid, phase_index, chapter_index, &question, &content,
+                )
+                .await
+                {
+                    warn!(%req_id, error = %e, "聊天记录落库失败，不影响终态推送");
+                    emit_chat_error(&app, plan_uuid, phase_index, chapter_index, "internal",
+                        &format!("聊天记录保存失败：{e}"));
+                }
+                if let Err(e) = app.emit("chat-done", &payload) {
+                    warn!(%req_id, error = %e, "chat-done 事件推送失败");
+                }
+                break;
+            }
+            ChatStreamEvent::ChatError { code, message } => {
+                warn!(%req_id, code, message, "研读聊天业务失败");
+                emit_chat_error(&app, plan_uuid, phase_index, chapter_index, &code, &message);
+                outcome = Err(AgentError::Service(message));
+                break;
+            }
+        }
+    }
+    info!(
+        %req_id,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        ok = outcome.is_ok(),
+        "研读聊天结束"
+    );
+    outcome
+}
+
+/// 聊天事件推送的公共出口：code 归一 + chat-error 全局事件（失败时 UI 复位依据）。
+fn emit_chat_error(
+    app: &tauri::AppHandle,
+    plan_id: Uuid,
+    phase_index: u32,
+    chapter_index: u32,
+    code: &str,
+    message: &str,
+) {
+    let payload = ChatErrorEvent {
+        plan_id: plan_id.to_string(),
+        phase_index,
+        chapter_index,
+        code: code.to_string(),
+        message: message.to_string(),
+    };
+    if let Err(e) = app.emit("chat-error", &payload) {
+        warn!(error = %e, "chat-error 事件推送失败");
+    }
+}
+
+/// 聊天历史随请求携带的条数上限（更早的历史留在库里，提示词窗口可控）
+const CHAT_HISTORY_WINDOW: usize = 20;
+
+/// 读取本章聊天记录（seq 升序）
+#[tauri::command]
+pub async fn list_chat_messages(
+    plan_id: String,
+    phase_index: u32,
+    chapter_index: u32,
+) -> Result<Vec<ChatMessageDef>, AgentError> {
+    let config = load_db_config();
+    let pool = db::pool(&config).await?;
+    study_store::list_chat_messages(&pool, db::parse_id(&plan_id)?, phase_index, chapter_index)
+        .await
+}
+
+/// 保存选区标注（id 由前端生成；同 id 重复保存 = 编辑回写）
+#[tauri::command]
+pub async fn save_annotation(
+    plan_id: String,
+    annotation: ChapterAnnotationDef,
+) -> Result<(), AgentError> {
+    let config = load_db_config();
+    let pool = db::pool(&config).await?;
+    study_store::save_annotation(&pool, &annotation, db::parse_id(&plan_id)?).await
+}
+
+/// 读取本章全部标注（创建时间升序）
+#[tauri::command]
+pub async fn list_annotations(
+    plan_id: String,
+    phase_index: u32,
+    chapter_index: u32,
+) -> Result<Vec<ChapterAnnotationDef>, AgentError> {
+    let config = load_db_config();
+    let pool = db::pool(&config).await?;
+    study_store::list_annotations(&pool, db::parse_id(&plan_id)?, phase_index, chapter_index)
+        .await
+}
+
+/// 删除选区标注（幂等）
+#[tauri::command]
+pub async fn delete_annotation(
+    plan_id: String,
+    phase_index: u32,
+    chapter_index: u32,
+    annotation_id: String,
+) -> Result<(), AgentError> {
+    let config = load_db_config();
+    let pool = db::pool(&config).await?;
+    study_store::delete_annotation(
+        &pool,
+        db::parse_id(&plan_id)?,
+        phase_index,
+        chapter_index,
+        &annotation_id,
+    )
+    .await
+}
+
+/// 读取章节笔记（无笔记返回 None）
+#[tauri::command]
+pub async fn get_chapter_note(
+    plan_id: String,
+    phase_index: u32,
+    chapter_index: u32,
+) -> Result<Option<ChapterNoteDef>, AgentError> {
+    let config = load_db_config();
+    let pool = db::pool(&config).await?;
+    study_store::get_chapter_note(&pool, db::parse_id(&plan_id)?, phase_index, chapter_index)
+        .await
+}
+
+/// 保存章节笔记（一章至多一行，upsert；contentMd 空串 = 清空）
+#[tauri::command]
+pub async fn save_chapter_note(
+    plan_id: String,
+    phase_index: u32,
+    chapter_index: u32,
+    content_md: String,
+) -> Result<(), AgentError> {
+    let config = load_db_config();
+    let pool = db::pool(&config).await?;
+    study_store::save_chapter_note(
+        &pool,
+        db::parse_id(&plan_id)?,
+        phase_index,
+        chapter_index,
+        &content_md,
     )
     .await
 }
@@ -1935,6 +2317,7 @@ mod tests {
                     StreamEvent::Phase { .. } => "phase",
                     StreamEvent::Chapter { .. } => "chapter",
                     StreamEvent::ChapterStart { .. } => "chapterStart",
+                    StreamEvent::ChapterDelta { .. } => "chapterDelta",
                     StreamEvent::Done { .. } => "done",
                 };
                 self.events.push((seq, tag));

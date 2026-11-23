@@ -159,6 +159,7 @@ def validate_plan(
     *,
     scope_phase: int | None = None,
     scope_chapters: list[int] | None = None,
+    outline_only: bool = False,
 ) -> tuple[list[str], list[int], list[str]]:
     """校验 camelCase 计划 dict。
 
@@ -166,6 +167,12 @@ def validate_plan(
     此时 plan_dict 只含目标阶段的若干章，阶段级索引要回填成真实值，
     且计划级规则（阶段数、总学时漂移）不适用——它们衡量的是整份计划，
     而重生成只负责眼前这一段，跑它只会制造与本次无关的假失败。
+
+    outline_only（2026-11 研读改版）为大纲-only 首展口径：章节正文尚未生成，
+    contentMd 空是合法态——逐章内容规则（正文长度 / 必备小节 / mermaid /
+    具体名词密度 / 动画 / 自测题 / 覆盖率）全部跳过，只查结构
+    （阶段数 / 章节数 / 目标 / 项目 / 总学时漂移）。正文规则仍由重生成链
+    （按需生成走 regen 通道）按原口径执行。
 
     返回（问题描述列表, 不合格阶段索引列表, 不合格章复合键列表 "阶段:章"）。
     阶段索引仍覆盖全部不合格阶段（回炉入口）；章级键是它的精度提升——调用方
@@ -202,6 +209,7 @@ def validate_plan(
             points_by_phase.get(index),
             scope_chapters=scope_chapters,
             skip_phase_level=scope_chapters is not None,
+            outline_only=outline_only,
         )
 
     if not scoped:
@@ -223,6 +231,7 @@ def _check_phase(
     chapter_points: dict[int, list[str]] | None = None,
     scope_chapters: list[int] | None = None,
     skip_phase_level: bool = False,
+    outline_only: bool = False,
 ) -> None:
     """单阶段校验：章节正文 / 项目 / 目标（markdown 化后的规则 2-6）。
 
@@ -231,6 +240,9 @@ def _check_phase(
 
     skip_phase_level=单章重生成：项目/作业等阶段级产物这次根本不生产，
     校验它们只会把「修一章」误判成「阶段结构性问题」并连带回炉整个阶段。
+
+    outline_only=大纲-only 首展：正文尚未生成是合法态，逐章内容规则
+    （_check_chapter）整段跳过，只保留章节数规模防线。
     """
     label = f"第 {index + 1} 阶段「{phase.get('name', '')}」"
 
@@ -243,18 +255,21 @@ def _check_phase(
         failed.add(index)
         return
 
-    for local_index, chapter in enumerate(chapters):
-        chapter_index = scope_chapters[local_index] if scope_chapters else local_index
-        _check_chapter(
-            chapter,
-            f"{label}第 {chapter_index + 1} 章",
-            issues,
-            failed,
-            failed_chapters,
-            index,
-            chapter_index,
-            (chapter_points or {}).get(chapter_index),
-        )
+    if not outline_only:
+        for local_index, chapter in enumerate(chapters):
+            chapter_index = (
+                scope_chapters[local_index] if scope_chapters else local_index
+            )
+            _check_chapter(
+                chapter,
+                f"{label}第 {chapter_index + 1} 章",
+                issues,
+                failed,
+                failed_chapters,
+                index,
+                chapter_index,
+                (chapter_points or {}).get(chapter_index),
+            )
 
     if not skip_phase_level:
         _check_project(phase, label, issues, failed, index)

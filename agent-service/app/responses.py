@@ -11,6 +11,8 @@ def _plan_result_status(plan: StudyPlan) -> Literal["plan", "partial", "error"]:
     """按章节正文判定交付成色：全有正文 → plan，部分 → partial，全空 → error。
 
     这是内容完整性口径，不是质量校验口径；质量门槛由 validators 决定是否回炉。
+    仅重生成链（regen_scope 存在）使用；大纲-only 首展的空正文是合法态，
+    不适用本口径（见 build_response）。
     """
     chapters = [chapter for phase in plan.phases for chapter in phase.chapters]
     filled_count = sum(bool((chapter.content_md or "").strip()) for chapter in chapters)
@@ -22,7 +24,12 @@ def _plan_result_status(plan: StudyPlan) -> Literal["plan", "partial", "error"]:
 
 
 def build_response(final_state: dict[str, Any]) -> PlanResponse:
-    """将图终态组装为包络；该模块不依赖 FastAPI 端点或任务注册表。"""
+    """将图终态组装为包络；该模块不依赖 FastAPI 端点或任务注册表。
+
+    大纲-only 首展（regen_scope 为空）：空正文是合法态，骨架（含每章
+    week/estimatedHours 与阶段轻装）拼装完成即算成功（status=plan）——
+    不能按「正文完整性」把一份全新的、等着按需生成正文的计划判成 error。
+    """
     clarifications = final_state.get("clarifications")
     if clarifications:
         return PlanResponse(
@@ -31,6 +38,8 @@ def build_response(final_state: dict[str, Any]) -> PlanResponse:
         )
 
     plan = StudyPlan.model_validate(final_state["plan"])
+    if not final_state.get("regen_scope"):
+        return PlanResponse(status="plan", plan=plan)
     status = _plan_result_status(plan)
     if status == "error":
         return PlanResponse(
