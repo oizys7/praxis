@@ -48,8 +48,12 @@ import type {
  * 计划页的重生成按钮经 isRegenInFlight 自动禁用，反之亦然。
  */
 const props = defineProps<{
-  /** 跨页导航目标（结果页「去研读」入口）：{ planId, seq }，seq 保证同计划重复跳转也能触发 */
-  target: { planId: string; seq: number } | null;
+  /**
+   * 跨页导航目标（结果页「去研读」入口）：{ planId, seq }，seq 保证同计划
+   * 重复跳转也能触发；p/c 可选——携带时进入后直接选中该章节（优先于
+   * 上次章节记忆）。
+   */
+  target: { planId: string; seq: number; p?: number; c?: number } | null;
 }>();
 
 // ---------------- 计划与章节选择 ----------------
@@ -78,7 +82,9 @@ const currentChapter = computed<Chapter | null>(() => {
 });
 
 function isSelected(p: number, c: number): boolean {
-  return !!selection.value && selection.value.p === p && selection.value.c === c;
+  return (
+    !!selection.value && selection.value.p === p && selection.value.c === c
+  );
 }
 
 /** 加载计划列表；默认选最近创建的一份（列表返回为收藏置顶序，此处按时间挑） */
@@ -96,8 +102,15 @@ async function loadPlans() {
   }
 }
 
-async function choosePlan(planId: string) {
-  if (loadedPlanId.value === planId && record.value) return;
+async function choosePlan(
+  planId: string,
+  focus: { p: number; c: number } | null = null,
+) {
+  if (loadedPlanId.value === planId && record.value) {
+    // 同计划重复「去研读」（早退路径）：仍要落实章节定位
+    if (focus && isValidChapter(focus)) selection.value = focus;
+    return;
+  }
   selectedPlanId.value = planId;
   selection.value = null;
   record.value = null;
@@ -107,6 +120,7 @@ async function choosePlan(planId: string) {
   try {
     record.value = await fetchPlanRecord(planId);
     loadedPlanId.value = planId;
+    restoreChapter(planId, focus);
   } catch (e) {
     recordError.value = normalizeError(e).message;
   } finally {
@@ -122,14 +136,68 @@ function onPlanSelect(event: Event) {
 
 function selectChapter(p: number, c: number) {
   selection.value = { p, c };
+  if (selectedPlanId.value) saveLastChapter(selectedPlanId.value, { p, c });
   // 窄屏抽屉：选完章收起左树，让位给正文
   leftOpen.value = false;
+}
+
+// ---------------- 上次章节记忆（按 planId 独立，localStorage 持久化） ----------------
+
+const LAST_CHAPTER_KEY = "praxis.studyLastChapter";
+
+function isValidChapter(sel: { p: number; c: number }): boolean {
+  return !!record.value?.plan.phases[sel.p]?.chapters?.[sel.c];
+}
+
+function readLastChapter(planId: string): { p: number; c: number } | null {
+  try {
+    const map = JSON.parse(
+      localStorage.getItem(LAST_CHAPTER_KEY) ?? "{}",
+    ) as Record<string, { p: number; c: number }>;
+    const saved = map[planId];
+    return saved &&
+      Number.isInteger(saved.p) &&
+      Number.isInteger(saved.c) &&
+      saved.p >= 0 &&
+      saved.c >= 0
+      ? { p: saved.p, c: saved.c }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveLastChapter(planId: string, sel: { p: number; c: number }): void {
+  try {
+    const map = JSON.parse(
+      localStorage.getItem(LAST_CHAPTER_KEY) ?? "{}",
+    ) as Record<string, { p: number; c: number }>;
+    map[planId] = sel;
+    localStorage.setItem(LAST_CHAPTER_KEY, JSON.stringify(map));
+  } catch {
+    // 存储不可用（配额/隐私模式）时静默降级，记忆功能不阻塞研读
+  }
+}
+
+/** 计划加载完成后恢复定位：跨页 target 的章节优先，其次上次章节记忆 */
+function restoreChapter(
+  planId: string,
+  focus: { p: number; c: number } | null,
+): void {
+  const restored =
+    focus && isValidChapter(focus) ? focus : readLastChapter(planId);
+  if (restored && isValidChapter(restored)) selection.value = restored;
 }
 
 watch(
   () => props.target,
   (target) => {
-    if (target) void choosePlan(target.planId);
+    if (!target) return;
+    const focus =
+      target.p != null && target.c != null
+        ? { p: target.p, c: target.c }
+        : null;
+    void choosePlan(target.planId, focus);
   },
   { immediate: true },
 );
@@ -278,7 +346,12 @@ watch(selection, () => {
   }
   streamIgnoreDeltas = false;
   streamBuf = "";
-  streamState.value = { active: false, typewriter: false, text: "", error: null };
+  streamState.value = {
+    active: false,
+    typewriter: false,
+    text: "",
+    error: null,
+  };
 });
 
 /** 左树状态点：ready / generating / failed / unread */
@@ -471,12 +544,12 @@ function closeDrawers() {
 
 <template>
   <div class="flex h-full min-h-0 flex-col" data-study-page>
-    <!-- 页头：标题 + 窄屏抽屉开关（三栏在 lg 及以上整列展开） -->
+    <!-- 页头：标题 + 抽屉开关（右栏在 xl 及以上才整列常驻，1280 以下走抽屉） -->
     <header
       class="flex shrink-0 items-center justify-between gap-3 border-b bg-card px-4 py-2.5 sm:px-6"
     >
       <h1 class="font-display text-xl font-semibold tracking-tight">研读</h1>
-      <div class="flex items-center gap-2 lg:hidden">
+      <div class="flex items-center gap-2 xl:hidden">
         <button
           type="button"
           class="flex min-h-9 items-center gap-1.5 rounded-lg border bg-card px-2.5 text-xs transition-colors hover:border-primary/40 hover:text-primary"
@@ -501,18 +574,18 @@ function closeDrawers() {
     </header>
 
     <div class="relative flex min-h-0 flex-1 overflow-hidden">
-      <!-- 窄屏抽屉遮罩 -->
+      <!-- 抽屉遮罩（右栏 xl 起常驻，遮罩随之用到 xl） -->
       <div
         v-if="leftOpen || rightOpen"
-        class="fixed inset-0 z-30 bg-foreground/25 lg:hidden"
+        class="fixed inset-0 z-30 bg-foreground/25 xl:hidden"
         aria-hidden="true"
         @click="closeDrawers"
       />
 
-      <!-- 左：计划选择 + 章节树（窄屏抽屉化，可折叠） -->
+      <!-- 左：计划选择 + 章节树（lg 起常驻；抽屉态宽度由 .study-drawer 钳在主区内） -->
       <aside
         data-study-tree
-        class="absolute inset-y-0 left-0 z-40 flex w-72 max-w-[85vw] shrink-0 flex-col border-r bg-card transition-transform duration-200 lg:static lg:z-auto"
+        class="study-drawer absolute inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r bg-card transition-transform duration-200 lg:static lg:z-auto 2xl:w-72"
         :class="
           leftOpen
             ? 'visible translate-x-0 shadow-2xl'
@@ -520,10 +593,9 @@ function closeDrawers() {
         "
       >
         <div class="shrink-0 border-b p-3">
-          <label
-            for="study-plan-select"
-            class="text-xs text-muted-foreground"
-          >选择计划</label>
+          <label for="study-plan-select" class="text-xs text-muted-foreground"
+            >选择计划</label
+          >
           <select
             id="study-plan-select"
             v-model="selectedPlanId"
@@ -561,6 +633,7 @@ function closeDrawers() {
               v-for="(chapter, c) in phase.chapters ?? []"
               :key="c"
               type="button"
+              v-tip="chapter.title"
               class="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors"
               :class="
                 isSelected(p, c)
@@ -575,20 +648,24 @@ function closeDrawers() {
               <span
                 class="h-1.5 w-1.5 shrink-0 rounded-full"
                 :class="DOT_CLASSES[chapterStatus(chapter, p, c)]"
+                :data-status="chapterStatus(chapter, p, c)"
                 aria-hidden="true"
               />
               <span class="min-w-0 flex-1 truncate">{{ chapter.title }}</span>
               <span
                 v-if="chapter.week != null"
                 class="shrink-0 rounded bg-secondary-2 px-1.5 py-0.5 text-[10px] tabular-nums text-secondary-foreground"
-              >第 {{ chapter.week }} 周</span>
+                >第 {{ chapter.week }} 周</span
+              >
             </button>
           </div>
         </nav>
       </aside>
 
-      <!-- 中：章节内容（含打字机与标注交互） -->
-      <div class="relative flex min-h-0 min-w-0 flex-1 flex-col">
+      <!-- 中：章节内容（含打字机与标注交互）；lg 起 480px 下限防三栏挤压坍缩 -->
+      <div
+        class="relative flex min-h-0 min-w-0 flex-1 flex-col lg:min-w-[480px]"
+      >
         <StudyReader
           ref="readerRef"
           :chapter="currentChapter"
@@ -628,13 +705,13 @@ function closeDrawers() {
         </div>
       </div>
 
-      <!-- 右：标注 / 笔记 / 聊天（窄屏抽屉化） -->
+      <!-- 右：标注 / 笔记 / 聊天（xl 起常驻；1280 以下走抽屉，见 P0-1 断点评审） -->
       <aside
-        class="absolute inset-y-0 right-0 z-40 flex w-[360px] max-w-[88vw] shrink-0 flex-col border-l bg-card transition-transform duration-200 lg:static lg:z-auto"
+        class="study-drawer absolute inset-y-0 right-0 z-40 flex w-80 shrink-0 flex-col border-l bg-card transition-transform duration-200 xl:static xl:z-auto 2xl:w-[360px]"
         :class="
           rightOpen
             ? 'visible translate-x-0 shadow-2xl'
-            : 'invisible translate-x-full lg:visible lg:translate-x-0'
+            : 'invisible translate-x-full xl:visible xl:translate-x-0'
         "
       >
         <StudyPanel

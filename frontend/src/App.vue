@@ -72,17 +72,25 @@ type PageId = "plan" | "study" | "calendar" | "notes" | "settings";
 const activePage = ref<PageId>("plan");
 const readerFocused = ref(false);
 provide("readerFocused", readerFocused);
-watch(activePage, () => { readerFocused.value = false; });
+watch(activePage, () => {
+  readerFocused.value = false;
+});
 
 /**
  * 研读页跨页导航（结果页章节「去研读」入口）：携带目标计划 id，
- * StudyView 内部 watch target 完成预选。seq 保证同一计划重复跳转也触发。
+ * StudyView 内部 watch target 完成预选。seq 保证同一计划重复跳转也触发；
+ * p/c 可选——携带时研读页直接选中该章节（优先于上次章节记忆）。
  */
-const studyTarget = shallowRef<{ planId: string; seq: number } | null>(null);
+const studyTarget = shallowRef<{
+  planId: string;
+  seq: number;
+  p?: number;
+  c?: number;
+} | null>(null);
 
 /** 打开研读页并预选计划（provide 给 ChapterSection 等深层组件） */
-function openStudy(planId: string) {
-  studyTarget.value = { planId, seq: Date.now() };
+function openStudy(planId: string, p?: number, c?: number) {
+  studyTarget.value = { planId, seq: Date.now(), p, c };
   activePage.value = "study";
 }
 provide("openStudy", openStudy);
@@ -206,7 +214,10 @@ onUnmounted(() => disposeProgressListener());
 </script>
 
 <template>
-  <div class="app-shell flex flex-col overflow-hidden bg-background" :class="{ 'is-focused': readerFocused }">
+  <div
+    class="app-shell flex flex-col overflow-hidden bg-background"
+    :class="{ 'is-focused': readerFocused }"
+  >
     <!-- 启动页：连云端库（10s+）与起 Agent 期间阻塞进入，
          此前这段等待只表现为各页面转圈，看起来像应用坏了 -->
     <StartupSplash
@@ -219,7 +230,9 @@ onUnmounted(() => disposeProgressListener());
     <template v-else>
       <!-- 顶部栏 -->
       <header class="app-header shrink-0 border-b bg-card">
-        <div class="flex h-[76px] items-center justify-between gap-3 px-4 sm:px-7">
+        <div
+          class="flex h-[76px] items-center justify-between gap-3 px-4 sm:px-7"
+        >
           <div class="flex items-center gap-3">
             <div
               class="flex h-10 w-10 items-center justify-center rounded-xl bg-primary font-display text-2xl font-semibold text-primary-foreground"
@@ -231,9 +244,7 @@ onUnmounted(() => disposeProgressListener());
               <p class="font-display text-base font-semibold leading-tight">
                 Praxis
               </p>
-              <p class="text-xs text-muted-foreground">
-                按目标规划学习路线
-              </p>
+              <p class="text-xs text-muted-foreground">按目标规划学习路线</p>
             </div>
           </div>
           <div class="flex items-center gap-3">
@@ -258,7 +269,8 @@ onUnmounted(() => disposeProgressListener());
               "
             >
               <span class="mr-1">●</span>
-              <span class="hidden sm:inline">Agent 服务</span>{{
+              <span class="hidden sm:inline">Agent 服务</span
+              >{{
                 agentOnline === null ? "检测中…" : agentOnline ? "在线" : "离线"
               }}
             </Badge>

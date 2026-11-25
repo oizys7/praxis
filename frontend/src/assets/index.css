@@ -248,6 +248,27 @@
   display: none;
 }
 
+/*
+ * 研读页抽屉（章节树 / 伴学面板）在抽屉态的最大宽度约束。
+ * main 区带 overflow-hidden，抽屉是 main 内的绝对定位元素：左沿一旦越过
+ * 主区左缘（侧栏右缘）就被整体裁切——375 上伴学面板 x=45、标题首字被
+ * 64px 图标栏「压住」即此因。因此抽屉最大宽度必须钳在主区宽度内，
+ * 基准随侧栏宽度变化：<768 固定 64px 图标栏；≥768 展开栏 216px；
+ * ≥768 手动折叠后 72px（兄弟选择器跨过 main 命中）。
+ * 静态展示（lg/xl 以上）视口远宽于抽屉宽度，约束自然不生效。
+ */
+.study-drawer {
+  max-width: calc(100vw - 64px);
+}
+@media (min-width: 768px) {
+  .study-drawer {
+    max-width: calc(100vw - 216px);
+  }
+  .app-sidebar.is-collapsed ~ main .study-drawer {
+    max-width: calc(100vw - 72px);
+  }
+}
+
 .praxis-tip {
   position: fixed;
   z-index: 9999;
@@ -413,7 +434,8 @@ button:not(:disabled) {
     );
 }
 .markdown-code .table-scroll.is-overflow.at-start {
-  background-image: none,
+  background-image:
+    none,
     linear-gradient(
       to right,
       transparent calc(100% - 104px),
@@ -421,7 +443,8 @@ button:not(:disabled) {
     );
 }
 .markdown-code .table-scroll.is-overflow.at-end {
-  background-image: linear-gradient(
+  background-image:
+    linear-gradient(
       to left,
       transparent calc(100% - 104px),
       hsl(var(--card) / 0.9) calc(100% - 2px)

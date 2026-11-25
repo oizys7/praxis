@@ -1,6 +1,12 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from "vue";
-import { Highlighter, NotebookPen, Send, MessagesSquare, Trash2 } from "lucide-vue-next";
+import {
+  Highlighter,
+  NotebookPen,
+  Send,
+  MessagesSquare,
+  Trash2,
+} from "lucide-vue-next";
 import {
   deleteAnnotation,
   fetchAnnotations,
@@ -48,6 +54,27 @@ const TABS = [
   { id: "note", label: "笔记", icon: NotebookPen },
 ] as const;
 
+/**
+ * 选项卡键盘导航（WAI-ARIA tabs 模式）：左右方向键循环切换，Home/End
+ * 直达首尾；roving tabindex——激活页签可 Tab 进入，其余 -1 跳过。
+ */
+function onTabKeydown(event: KeyboardEvent) {
+  const ids = TABS.map((tab) => tab.id);
+  const current = ids.indexOf(activeTab.value);
+  let next = -1;
+  if (event.key === "ArrowRight") next = (current + 1) % ids.length;
+  else if (event.key === "ArrowLeft")
+    next = (current - 1 + ids.length) % ids.length;
+  else if (event.key === "Home") next = 0;
+  else if (event.key === "End") next = ids.length - 1;
+  if (next < 0) return;
+  event.preventDefault();
+  const id = ids[next];
+  if (!id) return;
+  activeTab.value = id;
+  void nextTick(() => document.getElementById(`study-tab-${id}`)?.focus());
+}
+
 // ---------------- 标注 ----------------
 
 const annotations = ref<ChapterAnnotation[]>([]);
@@ -72,7 +99,12 @@ async function refreshAnnotations() {
 
 async function onRemoveAnnotation(id: string) {
   try {
-    await deleteAnnotation(props.planId, props.phaseIndex, props.chapterIndex, id);
+    await deleteAnnotation(
+      props.planId,
+      props.phaseIndex,
+      props.chapterIndex,
+      id,
+    );
     annotations.value = annotations.value.filter((item) => item.id !== id);
   } catch (e) {
     annotationError.value = normalizeError(e).message;
@@ -84,7 +116,12 @@ function formatTime(iso?: string): string {
   const date = new Date(iso);
   return Number.isNaN(date.getTime())
     ? ""
-    : date.toLocaleString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+    : date.toLocaleString("zh-CN", {
+        month: "numeric",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
 }
 
 // ---------------- 笔记（章节级 markdown，防抖保存） ----------------
@@ -234,14 +271,16 @@ defineExpose({
 
 <template>
   <div class="flex min-h-0 flex-col" data-study-panel>
-    <!-- 分区选项卡：quiet，正文权重永远在中栏 -->
+    <!-- 分区选项卡：quiet，正文权重永远在中栏（tabs 键盘模型见 onTabKeydown） -->
     <div
       class="flex shrink-0 items-center gap-1 border-b px-3 py-2"
       role="tablist"
       aria-label="研读工具"
+      @keydown="onTabKeydown"
     >
       <button
         v-for="tab in TABS"
+        :id="`study-tab-${tab.id}`"
         :key="tab.id"
         type="button"
         role="tab"
@@ -252,6 +291,8 @@ defineExpose({
             : 'text-muted-foreground hover:bg-muted hover:text-foreground'
         "
         :aria-selected="activeTab === tab.id"
+        :aria-controls="`study-tabpanel-${tab.id}`"
+        :tabindex="activeTab === tab.id ? 0 : -1"
         :data-study-tab="tab.id"
         @click="activeTab = tab.id"
       >
@@ -273,6 +314,9 @@ defineExpose({
     <!-- 聊天 -->
     <div
       v-show="activeTab === 'chat'"
+      id="study-tabpanel-chat"
+      role="tabpanel"
+      aria-labelledby="study-tab-chat"
       class="flex min-h-0 flex-1 flex-col"
     >
       <div
@@ -285,9 +329,10 @@ defineExpose({
           v-if="!chatMessages.length && !chatStreaming"
           class="px-1 py-6 text-center text-xs leading-relaxed text-muted-foreground"
         >
-          针对本章内容提问，Agent
-          会带着章节上下文回答。历史对话按章节独立保存。
+          针对本章内容提问，Agent 会带着章节上下文回答。历史对话按章节独立保存。
         </p>
+        <!-- 用户消息用 3 阶基准色底（亮色下 2 阶近纸面、气泡不显形），
+             明暗两主题「3 = 族基准」语义一致 -->
         <div
           v-for="(message, index) in chatMessages"
           :key="message.id ?? `m${index}`"
@@ -299,7 +344,7 @@ defineExpose({
             class="max-w-[85%] whitespace-pre-wrap break-words rounded-xl px-3 py-2 text-sm leading-relaxed"
             :class="
               message.role === 'user'
-                ? 'bg-primary-2 text-primary-5'
+                ? 'bg-primary-3 text-primary-foreground'
                 : 'bg-muted text-foreground'
             "
           >
@@ -327,10 +372,7 @@ defineExpose({
           {{ chatError }}
         </p>
       </div>
-      <form
-        class="shrink-0 border-t p-3"
-        @submit.prevent="submitQuestion"
-      >
+      <form class="shrink-0 border-t p-3" @submit.prevent="submitQuestion">
         <div class="flex items-end gap-2">
           <textarea
             v-model="question"
@@ -355,7 +397,13 @@ defineExpose({
     </div>
 
     <!-- 标注 -->
-    <div v-show="activeTab === 'annotations'" class="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+    <div
+      v-show="activeTab === 'annotations'"
+      id="study-tabpanel-annotations"
+      role="tabpanel"
+      aria-labelledby="study-tab-annotations"
+      class="min-h-0 flex-1 overflow-y-auto px-3 py-3"
+    >
       <p
         v-if="annotationError"
         class="mb-2 break-all rounded-lg bg-destructive-1 px-2.5 py-2 text-xs text-destructive"
@@ -409,7 +457,13 @@ defineExpose({
     </div>
 
     <!-- 笔记：章节级 markdown，防抖 700ms 自动保存 -->
-    <div v-show="activeTab === 'note'" class="flex min-h-0 flex-1 flex-col px-3 py-3">
+    <div
+      v-show="activeTab === 'note'"
+      id="study-tabpanel-note"
+      role="tabpanel"
+      aria-labelledby="study-tab-note"
+      class="flex min-h-0 flex-1 flex-col px-3 py-3"
+    >
       <textarea
         v-model="noteText"
         data-study-note-input

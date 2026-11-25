@@ -159,7 +159,10 @@ async function main() {
     });
     ws.addEventListener("message", (event) => {
       const message = JSON.parse(event.data);
-      if (message.method === "Runtime.consoleAPICalled" && message.params?.type === "warning") {
+      if (
+        message.method === "Runtime.consoleAPICalled" &&
+        message.params?.type === "warning"
+      ) {
         consoleWarnings.push(
           (message.params.args ?? [])
             .map((arg) => arg.value ?? arg.description ?? "")
@@ -315,7 +318,8 @@ async function main() {
     await sleep(150);
     check(
       "tooltip 点击立即收起",
-      tipBeforeClick && !(await evaluate("!!document.querySelector('.praxis-tip--show')")),
+      tipBeforeClick &&
+        !(await evaluate("!!document.querySelector('.praxis-tip--show')")),
     );
     await evaluate(`(() => {
       const item = [...document.querySelectorAll('.nav-item')].find((b) => b.textContent.includes('打卡日历'));
@@ -329,7 +333,8 @@ async function main() {
     await sleep(150);
     check(
       "tooltip 键盘聚焦显示且失焦收起",
-      tipOnFocus && !(await evaluate("!!document.querySelector('.praxis-tip--show')")),
+      tipOnFocus &&
+        !(await evaluate("!!document.querySelector('.praxis-tip--show')")),
     );
     await evaluate(
       "[...document.querySelectorAll('button')].find((b) => b.textContent.includes('展开菜单') || b.getAttribute('aria-label') === '展开菜单')?.click()",
@@ -417,7 +422,9 @@ async function main() {
     await sleep(250);
     check(
       "IME 组合中的 Enter 不提交重命名",
-      await evaluate("!!document.querySelector('input[aria-label=\"分组新名称\"]')"),
+      await evaluate(
+        "!!document.querySelector('input[aria-label=\"分组新名称\"]')",
+      ),
     );
     await pressKey("Enter", 13);
     await sleep(400);
@@ -901,7 +908,7 @@ async function main() {
       setText.call(goal, '学习数据可视化与叙事表达');
       goal.dispatchEvent(new Event('input', { bubbles: true }));
       const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
-      for (const [id, value] of [['weekly-hours', 8], ['weeks', 6]]) {
+      for (const [id, value] of [['weekly-hours', 8], ['weeks', 2]]) {
         const el = document.getElementById(id);
         set.call(el, String(value));
         el.dispatchEvent(new Event('input', { bubbles: true }));
@@ -971,6 +978,12 @@ async function main() {
       ),
     );
     check(
+      "mock 大纲周次随表单缩放（weeks=2 不越界）",
+      await evaluate(
+        "(() => { const t = document.querySelector('[data-week-timeline]')?.textContent ?? ''; const weeks = [...t.matchAll(/第 (\\d+) 周/g)].map((m) => Number(m[1])); return weeks.length > 0 && Math.max(...weeks) <= 2; })()",
+      ),
+    );
+    check(
       "周时间线章节 chips 可点击",
       (await evaluate(
         "document.querySelectorAll('[data-week-timeline] button').length",
@@ -993,6 +1006,13 @@ async function main() {
       await waitFor(
         "document.querySelector('h1')?.textContent.includes('研读') && (document.querySelector('[data-study-plan-select]')?.selectedOptions?.[0]?.textContent ?? '').includes('学习数据可视化')",
         8000,
+      ),
+    );
+    check(
+      "去研读携带章节直达（aria-current 落在源章节）",
+      await waitFor(
+        "document.querySelector('h1')?.textContent.includes('研读') && document.querySelector('[data-study-chapter][aria-current=\"true\"]')?.getAttribute('data-study-chapter') === '0:0'",
+        6000,
       ),
     );
 
@@ -1082,7 +1102,12 @@ async function main() {
     await shot("reader-dark-mermaid");
 
     // 预览徽标不遮挡工具条/标题/目录弹层（375/500/768/1024）
-    for (const [width, height] of [[375, 812], [500, 900], [768, 900], [1024, 900]]) {
+    for (const [width, height] of [
+      [375, 812],
+      [500, 900],
+      [768, 900],
+      [1024, 900],
+    ]) {
       await send("Emulation.setDeviceMetricsOverride", {
         width,
         height,
@@ -1104,7 +1129,9 @@ async function main() {
       })()`);
       check(
         `${width} 预览徽标不遮工具条/标题`,
-        clear.badge && !clear.overlap && (clear.text || "").includes("刷新即复位"),
+        clear.badge &&
+          !clear.overlap &&
+          (clear.text || "").includes("刷新即复位"),
         clear,
       );
       await evaluate(
@@ -1118,7 +1145,11 @@ async function main() {
         if (!badge || !toc) return { badge: !!badge, toc: !!toc, overlap: true };
         return { badge: true, toc: true, overlap: intersects(badge.getBoundingClientRect(), toc.getBoundingClientRect()) };
       })()`);
-      check(`${width} 预览徽标不遮目录弹层`, tocClear.badge && tocClear.toc && !tocClear.overlap, tocClear);
+      check(
+        `${width} 预览徽标不遮目录弹层`,
+        tocClear.badge && tocClear.toc && !tocClear.overlap,
+        tocClear,
+      );
       await evaluate(
         "document.querySelector('#reader-toc')?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))",
       );
@@ -1172,7 +1203,9 @@ async function main() {
     })()`);
     check(
       "375 日历不溢出且翻页可达",
-      !calNarrow.docOverflow && !calNarrow.mainOverflow && calNarrow.nextReachable,
+      !calNarrow.docOverflow &&
+        !calNarrow.mainOverflow &&
+        calNarrow.nextReachable,
       calNarrow,
     );
     await shot("calendar-375");
@@ -1209,7 +1242,11 @@ async function main() {
       cal375.chipsHidden && cal375.countShown,
       cal375,
     );
-    check("375 月份导航可达且无页面横滚", cal375.navReachable && !cal375.docOverflow && !cal375.mainOverflow, cal375);
+    check(
+      "375 月份导航可达且无页面横滚",
+      cal375.navReachable && !cal375.docOverflow && !cal375.mainOverflow,
+      cal375,
+    );
     await evaluate(`(() => {
       const item = [...document.querySelectorAll('.nav-item')].find((b) => b.textContent.includes('学习计划'));
       item?.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
@@ -1239,7 +1276,11 @@ async function main() {
     );
 
     // 768 / 1024 / 1440：七列完整、恢复摘要、导航可达
-    for (const [width, height] of [[768, 900], [1024, 900], [1440, 1000]]) {
+    for (const [width, height] of [
+      [768, 900],
+      [1024, 900],
+      [1440, 1000],
+    ]) {
       await send("Emulation.setDeviceMetricsOverride", {
         width,
         height,
@@ -1275,7 +1316,12 @@ async function main() {
       })()`);
       check(
         `${width} 月历七列完整且摘要恢复`,
-        info.columns === 7 && info.inside && info.chipsShown && info.navReachable && !info.docOverflow && !info.mainOverflow,
+        info.columns === 7 &&
+          info.inside &&
+          info.chipsShown &&
+          info.navReachable &&
+          !info.docOverflow &&
+          !info.mainOverflow,
         info,
       );
     }
@@ -1368,7 +1414,11 @@ async function main() {
     );
     await sleep(600);
     const dayDec1 = await openDayTitle("12 月 1 日");
-    check("日历跨月星期：12-01 为周二", dayDec1.includes("周二"), dayDec1.slice(0, 40));
+    check(
+      "日历跨月星期：12-01 为周二",
+      dayDec1.includes("周二"),
+      dayDec1.slice(0, 40),
+    );
     await closeDay();
 
     await goto(`${BASE}?mode=mock&theme=light&page=settings`);
@@ -1421,9 +1471,57 @@ async function main() {
         "(document.querySelector('[data-study-tree]')?.textContent ?? '').includes('第 1 周')",
       ),
     );
+    check(
+      "树节点状态点：已生成章为 ready",
+      await evaluate(
+        "document.querySelector('[data-study-chapter=\"0:0\"] [data-status]')?.getAttribute('data-status') === 'ready'",
+      ),
+    );
+    check(
+      "选项卡带 tabpanel 关联",
+      await evaluate(
+        "document.querySelector('[data-study-tab=\"chat\"]')?.getAttribute('aria-controls') === 'study-tabpanel-chat' && document.querySelector('#study-tabpanel-chat')?.getAttribute('role') === 'tabpanel' && document.querySelector('#study-tabpanel-chat')?.getAttribute('aria-labelledby') === 'study-tab-chat' && document.querySelector('#study-tabpanel-note')?.getAttribute('role') === 'tabpanel' && document.querySelector('#study-tabpanel-annotations')?.getAttribute('role') === 'tabpanel'",
+      ),
+    );
+    check(
+      "选项卡方向键切换与 roving tabindex",
+      await evaluate(`(async () => {
+        const tab = document.querySelector('[data-study-tab="chat"]');
+        tab?.focus();
+        const key = (k) => tab?.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+        key('ArrowRight');
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        const moved = document.querySelector('[data-study-tab="annotations"]')?.getAttribute('aria-selected') === 'true'
+          && document.activeElement?.id === 'study-tab-annotations';
+        key('Home');
+        await new Promise((resolve) => setTimeout(resolve, 80));
+        const back = document.querySelector('[data-study-tab="chat"]')?.getAttribute('aria-selected') === 'true'
+          && document.querySelector('[data-study-tab="chat"]')?.getAttribute('tabindex') === '0'
+          && document.querySelector('[data-study-tab="annotations"]')?.getAttribute('tabindex') === '-1';
+        return moved && back;
+      })()`),
+    );
+    await evaluate(`(() => {
+      const chapter = document.querySelector('[data-study-chapter="0:0"]');
+      chapter?.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
+    })()`);
+    await sleep(600);
+    check(
+      "左树章节名 tooltip 可用",
+      await evaluate(
+        "(document.querySelector('.praxis-tip--show')?.textContent ?? '').includes('先让程序跑起来')",
+      ),
+    );
+    await evaluate(`(() => {
+      const chapter = document.querySelector('[data-study-chapter="0:0"]');
+      chapter?.dispatchEvent(new MouseEvent('mouseleave', { bubbles: false }));
+    })()`);
+    await sleep(300);
     await shotStudy("three-column");
     // 已生成章节：直接渲染，无打字机
-    await evaluate("document.querySelector('[data-study-chapter=\"0:0\"]')?.click()");
+    await evaluate(
+      "document.querySelector('[data-study-chapter=\"0:0\"]')?.click()",
+    );
     check(
       "已生成章节直接渲染正文",
       await waitFor(
@@ -1451,12 +1549,22 @@ async function main() {
         6000,
       ),
     );
+    check(
+      "树节点状态点：未研读章为 unread（空态不亮绿）",
+      await evaluate(
+        "[...document.querySelectorAll('[data-study-chapter]')].find((b) => b.textContent.includes('待补齐的一章'))?.querySelector('[data-status]')?.getAttribute('data-status') === 'unread'",
+      ),
+    );
+    await shotStudy("fix-tree-status");
     await evaluate(
       "[...document.querySelectorAll('[data-study-chapter]')].find((b) => b.textContent.includes('待补齐的一章'))?.click()",
     );
     check(
       "空章自动进入打字机生成",
-      await waitFor("!!document.querySelector('[data-study-typewriter]')", 4000),
+      await waitFor(
+        "!!document.querySelector('[data-study-typewriter]')",
+        4000,
+      ),
     );
     const typeLen1 = await evaluate(
       "(document.querySelector('[data-study-typewriter]')?.textContent ?? '').length",
@@ -1479,7 +1587,9 @@ async function main() {
     );
 
     // 重进已生成章节：直接渲染（不打字机）
-    await evaluate("document.querySelector('[data-study-chapter=\"1:0\"]')?.click()");
+    await evaluate(
+      "document.querySelector('[data-study-chapter=\"1:0\"]')?.click()",
+    );
     await sleep(400);
     await evaluate(
       "[...document.querySelectorAll('[data-study-chapter]')].find((b) => b.textContent.includes('待补齐的一章'))?.click()",
@@ -1491,6 +1601,80 @@ async function main() {
         2500,
       ),
     );
+
+    // 拖拽选区（受信任鼠标事件跨段拖选）：松手在阅读器外也能浮出气泡
+    //（评审 P0-2：旧实现只听 section 自身 mouseup，拖出中栏松手即丢入口）
+    await evaluate(
+      "document.querySelector('[data-study-reader]').scrollTop = 0",
+    );
+    await sleep(200);
+    const dragPoints = await evaluate(`(() => {
+      const ps = [...document.querySelectorAll('[data-study-content] .markdown-code p')]
+        .filter((p) => p.getBoundingClientRect().height > 0);
+      if (ps.length < 2) return null;
+      const a = ps[0].getBoundingClientRect();
+      const b = ps[1].getBoundingClientRect();
+      return { from: { x: Math.round(a.left + 40), y: Math.round(a.top + 6) }, to: { x: Math.round(b.left + 100), y: Math.round(b.bottom - 6) } };
+    })()`);
+    if (dragPoints) {
+      await send("Input.dispatchMouseEvent", {
+        type: "mousePressed",
+        x: dragPoints.from.x,
+        y: dragPoints.from.y,
+        button: "left",
+        buttons: 1,
+        clickCount: 1,
+      });
+      for (let i = 1; i <= 6; i += 1) {
+        await send("Input.dispatchMouseEvent", {
+          type: "mouseMoved",
+          x: Math.round(
+            dragPoints.from.x + ((dragPoints.to.x - dragPoints.from.x) * i) / 6,
+          ),
+          y: Math.round(
+            dragPoints.from.y + ((dragPoints.to.y - dragPoints.from.y) * i) / 6,
+          ),
+          button: "left",
+          buttons: 1,
+        });
+        await sleep(40);
+      }
+      // 松手点落在右栏（阅读器外）：document 级监听兜住
+      await send("Input.dispatchMouseEvent", {
+        type: "mouseReleased",
+        x: 1240,
+        y: 200,
+        button: "left",
+        buttons: 1,
+        clickCount: 1,
+      });
+      await sleep(400);
+    }
+    check(
+      "拖拽跨行选区浮出标注气泡（松手在阅读器外）",
+      dragPoints !== null &&
+        (await evaluate("!!document.querySelector('[data-study-annotate]')")),
+    );
+    check(
+      "标注气泡不遮挡章节头与正文标题",
+      await evaluate(`(() => {
+        const bubble = document.querySelector('[data-study-annotate]')?.getBoundingClientRect();
+        if (!bubble) return false;
+        const obstacles = [
+          ...document.querySelectorAll('[data-study-reader] header, [data-study-reader] h2, [data-study-reader] h3, [data-study-reader] h4'),
+        ];
+        return obstacles.every((el) => {
+          const r = el.getBoundingClientRect();
+          return r.right <= bubble.left || r.left >= bubble.right || r.bottom <= bubble.top || r.top >= bubble.bottom;
+        });
+      })()`),
+    );
+    await shotStudy("fix-drag-bubble");
+    await evaluate(`(() => {
+      window.getSelection()?.removeAllRanges();
+      document.querySelector('[data-study-reader]')?.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+    })()`);
+    await sleep(250);
 
     // 标注：选中文本 → 浮动按钮 → 评论保存 → 定位 → 删除
     check(
@@ -1585,7 +1769,9 @@ async function main() {
       ),
     );
     await shotStudy("panel-note");
-    await evaluate("document.querySelector('[data-study-chapter=\"1:0\"]')?.click()");
+    await evaluate(
+      "document.querySelector('[data-study-chapter=\"1:0\"]')?.click()",
+    );
     await sleep(400);
     await evaluate(
       "[...document.querySelectorAll('[data-study-chapter]')].find((b) => b.textContent.includes('待补齐的一章'))?.click()",
@@ -1636,8 +1822,20 @@ async function main() {
         "(document.querySelectorAll('[data-study-chat-message]')[1]?.textContent ?? '').includes('输入、处理、输出')",
       ),
     );
+    check(
+      "用户消息气泡有色底（与助手气泡可区分）",
+      await evaluate(`(() => {
+        const bubbles = [...document.querySelectorAll('[data-study-chat-message] > div')];
+        if (bubbles.length < 2) return false;
+        const user = getComputedStyle(bubbles[0]).backgroundColor;
+        const bot = getComputedStyle(bubbles[1]).backgroundColor;
+        return user !== 'rgba(0, 0, 0, 0)' && user !== bot;
+      })()`),
+    );
     await shotStudy("panel");
-    await evaluate("document.querySelector('[data-study-chapter=\"1:0\"]')?.click()");
+    await evaluate(
+      "document.querySelector('[data-study-chapter=\"1:0\"]')?.click()",
+    );
     await sleep(400);
     check(
       "切换章节聊天为空（按章独立）",
@@ -1656,6 +1854,145 @@ async function main() {
       ),
     );
     await shotStudy("three-column-final");
+
+    // 跨行引用定位（评审 P1-5）：引用起点跨行内代码节点（reading_minutes
+    // 被拆成多个文本节点），逐字面单节点匹配必失败——规范化拼接后应命中
+    await evaluate(`(() => {
+      const select = document.querySelector('[data-study-plan-select]');
+      const option = [...select.options].find((o) => o.textContent.includes('Python 编程'));
+      const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+      set.call(select, option.value);
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await waitFor(
+      "(document.querySelector('[data-study-tree]')?.textContent ?? '').includes('先让程序跑起来')",
+      6000,
+    );
+    await evaluate(
+      "document.querySelector('[data-study-chapter=\"0:0\"]')?.click()",
+    );
+    await waitFor(
+      "!!document.querySelector('[data-study-content] .reader-body')",
+      4000,
+    );
+    await sleep(300);
+    const crossQuote = await evaluate(`(() => {
+      const root = document.querySelector('[data-study-content]');
+      const ps = [...root.querySelectorAll('.markdown-code p')];
+      const i = ps.findIndex((p) => (p.textContent ?? '').includes('reading_minutes'));
+      if (i < 0 || i + 1 >= ps.length) return null;
+      const startNode = ps[i].firstChild;
+      const endP = ps[i + 1];
+      const endNode = endP.firstChild;
+      if (!startNode || !endNode || startNode === endNode) return null;
+      const range = document.createRange();
+      range.setStart(startNode, 1);
+      range.setEnd(endNode, Math.min(10, (endNode.textContent ?? '').length));
+      const quote = range.toString();
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.body.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      return quote;
+    })()`);
+    check(
+      "跨段选区浮出标注气泡（引用跨行内代码）",
+      typeof crossQuote === "string" &&
+        crossQuote.includes("\n") &&
+        (await evaluate("!!document.querySelector('[data-study-annotate]')")),
+    );
+    await evaluate("document.querySelector('[data-study-annotate]')?.click()");
+    await waitFor(
+      "!!document.querySelector('[data-study-annotate-pop]')",
+      2000,
+    );
+    await evaluate(`(() => {
+      const input = document.querySelector('[data-study-annotate-pop] textarea');
+      const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
+      set.call(input, '跨行定位验证');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+      document.querySelector('[data-study-annotate-save]')?.click();
+    })()`);
+    check(
+      "跨段标注保存入列表",
+      await waitFor(
+        "document.querySelectorAll('[data-study-annotation-item]').length === 1",
+        3000,
+      ),
+    );
+    await evaluate(
+      "document.querySelector('[data-study-tab=\"annotations\"]')?.click()",
+    );
+    await sleep(150);
+    await evaluate(
+      "document.querySelector('[data-study-reader]').scrollTop = 0",
+    );
+    await sleep(200);
+    await evaluate(
+      "document.querySelector('[data-study-annotation-item] button')?.click()",
+    );
+    await sleep(250);
+    check(
+      "跨行引用定位滚动并落在正确块",
+      await evaluate(
+        "document.querySelector('[data-study-reader]').scrollTop > 40 && [...document.querySelectorAll('[data-study-reader] .annotation-flash')].some((el) => (el.textContent ?? '').includes('reading_minutes'))",
+      ),
+    );
+    await shotStudy("fix-locate-flash");
+    await sleep(2000);
+    check(
+      "闪烁动画类按时移除",
+      await evaluate(
+        "!document.querySelector('[data-study-reader] .annotation-flash')",
+      ),
+    );
+    await evaluate(
+      "document.querySelector('[aria-label^=\"删除标注\"]')?.click()",
+    );
+    await waitFor(
+      "document.querySelectorAll('[data-study-annotation-item]').length === 0",
+      3000,
+    );
+
+    // 章节记忆（评审 P1-6）：按 planId 各自记忆，切换计划回到各自上次章节
+    await evaluate(
+      "document.querySelector('[data-study-chapter=\"1:0\"]')?.click()",
+    );
+    await sleep(400);
+    await evaluate(`(() => {
+      const select = document.querySelector('[data-study-plan-select]');
+      const option = [...select.options].find((o) => o.textContent.includes('理解 Web'));
+      const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+      set.call(select, option.value);
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await waitFor(
+      "(document.querySelector('[data-study-tree]')?.textContent ?? '').includes('待补齐的一章')",
+      6000,
+    );
+    check(
+      "章节记忆：切回计划 B 回到上次章节",
+      await evaluate(
+        "[...document.querySelectorAll('[data-study-chapter]')].find((b) => b.textContent.includes('待补齐的一章'))?.getAttribute('aria-current') === 'true'",
+      ),
+    );
+    await evaluate(`(() => {
+      const select = document.querySelector('[data-study-plan-select]');
+      const option = [...select.options].find((o) => o.textContent.includes('Python 编程'));
+      const set = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
+      set.call(select, option.value);
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    })()`);
+    await waitFor(
+      "(document.querySelector('[data-study-tree]')?.textContent ?? '').includes('先让程序跑起来')",
+      6000,
+    );
+    check(
+      "章节记忆：切回计划 A 回到 1:0",
+      await evaluate(
+        "document.querySelector('[data-study-chapter=\"1:0\"]')?.getAttribute('aria-current') === 'true'",
+      ),
+    );
 
     // 窄屏：单列不溢出，树抽屉收起
     await send("Emulation.setDeviceMetricsOverride", {
@@ -1696,6 +2033,95 @@ async function main() {
       studyNarrow,
     );
     await shotStudy("375");
+    // 伴学抽屉不被 64px 图标侧栏裁切（评审 P0-3）：面板左沿不得越过主区
+    await evaluate(
+      "document.querySelector('[aria-label=\"伴学面板\"]')?.click()",
+    );
+    await sleep(400);
+    check(
+      "375 伴学面板不被图标侧栏裁切",
+      await evaluate(`(() => {
+        const panelAside = [...document.querySelectorAll('aside')].find((a) => a.querySelector('[data-study-panel]'));
+        const sidebar = document.querySelector('.app-sidebar');
+        if (!panelAside || !sidebar) return false;
+        const pr = panelAside.getBoundingClientRect();
+        const sr = sidebar.getBoundingClientRect();
+        const title = document.querySelector('[data-study-panel] > p');
+        const tr = title?.getBoundingClientRect();
+        return pr.left >= sr.right - 1 &&
+          pr.right <= window.innerWidth + 1 &&
+          !!tr && tr.left >= sr.right - 1 && tr.right <= pr.right + 1;
+      })()`),
+    );
+    await shotStudy("fix-375-panel");
+    await evaluate(
+      "document.querySelector('[aria-label=\"伴学面板\"]')?.click()",
+    );
+    await sleep(350);
+
+    // 1024/1280/1440 中栏不坍缩（评审 P0-1）：右栏 xl 起常驻、lg–xl 走抽屉
+    for (const [width, height] of [
+      [1024, 900],
+      [1280, 900],
+      [1440, 1000],
+    ]) {
+      await send("Emulation.setDeviceMetricsOverride", {
+        width,
+        height,
+        deviceScaleFactor: 1,
+        mobile: false,
+      });
+      await goto(`${BASE}?mode=mock&theme=light&page=study`);
+      await waitFor(
+        "document.querySelector('h1')?.textContent.includes('研读')",
+        8000,
+      );
+      const cols = await evaluate(`(() => {
+        const reader = document.querySelector('[data-study-reader]');
+        const tree = document.querySelector('[data-study-tree]');
+        const panelAside = [...document.querySelectorAll('aside')].find((a) => a.querySelector('[data-study-panel]'));
+        const toggle = document.querySelector('[aria-label="伴学面板"]');
+        const r = reader?.getBoundingClientRect();
+        const tr = tree?.getBoundingClientRect();
+        const pr = panelAside?.getBoundingClientRect();
+        return {
+          readerWidth: r ? Math.round(r.width) : null,
+          treeStatic: tr ? tr.left >= 200 : null,
+          // 静态判定不能用 transform（translate-x-0 也是恒等矩阵）：
+          // 看可见性 + 右缘贴合（抽屉态收起时 visibility=invisible 且整体移出屏外）
+          panelStatic: pr
+            ? pr.width > 200 &&
+              getComputedStyle(panelAside).visibility === 'visible' &&
+              Math.abs(pr.right - window.innerWidth) <= 2
+            : null,
+          toggleVisible:
+            !!toggle &&
+            toggle.getBoundingClientRect().width > 0 &&
+            getComputedStyle(toggle).display !== 'none',
+        };
+      })()`);
+      check(
+        `${width} 研读中栏不坍缩（≥480）`,
+        (cols.readerWidth ?? 0) >= 480,
+        cols,
+      );
+      if (width === 1024) {
+        check(
+          "1024 右栏走抽屉（开关可见、面板不占位）",
+          cols.toggleVisible === true && cols.panelStatic === false,
+          cols,
+        );
+        await shotStudy("fix-1024");
+      }
+      if (width === 1280) {
+        check(
+          "1280 右栏常驻（开关隐藏、面板贴右缘）",
+          cols.toggleVisible === false && cols.panelStatic === true,
+          cols,
+        );
+      }
+    }
+
     // 恢复视口，供后续真实数据段使用
     await send("Emulation.setDeviceMetricsOverride", {
       width: 1440,

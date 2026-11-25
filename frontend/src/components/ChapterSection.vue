@@ -127,10 +127,13 @@ watch(
 );
 
 /**
- * 跨页「去研读」入口（App provide）：大纲-only 改版后空正文是正常态，
- * 主入口从「重新生成此章」让位给研读页的按需生成。
+ * 跨页「去研读」入口（App provide）：聊天/标注/笔记都在研读页，章节卡
+ * 常驻入口（评审 P1-7：此前只有未研读空章才有）；大纲-only 后空正文也是
+ * 正常态，主入口从「重新生成此章」让位给研读页的按需生成。
  */
-const openStudy = inject<((planId: string) => void) | null>("openStudy", null);
+const openStudy = inject<
+  ((planId: string, p?: number, c?: number) => void) | null
+>("openStudy", null);
 
 /**
  * 大纲-only 新口径：空正文 + 大纲已分配周次（week != null）且非生成中/失败
@@ -145,9 +148,11 @@ const unreadNewStyle = computed(
     props.chapter.status !== "failed",
 );
 
-/** 去研读：跳研读页并预选本计划 */
+/** 去研读：跳研读页并预选本计划，携带本章节直接定位 */
 function goStudy() {
-  if (props.planId) openStudy?.(props.planId);
+  if (props.planId) {
+    openStudy?.(props.planId, props.phaseIndex, props.chapterIndex);
+  }
 }
 
 /**
@@ -300,15 +305,16 @@ function scrollToHeading(index: number) {
         </div>
       </button>
       <div
-        v-if="statusBadge || canRegenerate || (unreadNewStyle && props.planId)"
+        v-if="statusBadge || canRegenerate || props.planId"
         class="flex shrink-0 items-center gap-2"
       >
         <Badge v-if="statusBadge" :variant="statusBadge.variant">
           {{ statusBadge.label }}
         </Badge>
-        <!-- 未研读（大纲-only 正常态）：去研读页按需生成 -->
+        <!-- 去研读：历史详情内常驻（聊天/标注/笔记都在研读页）；携带
+             章节，研读页落地即选中本章 -->
         <Button
-          v-if="unreadNewStyle && props.planId"
+          v-if="props.planId"
           variant="outline"
           size="sm"
           data-study-goto
@@ -370,8 +376,10 @@ function scrollToHeading(index: number) {
           :content-md="props.chapter.contentMd"
           :empty-hint="
             unreadNewStyle
-              ? '本章尚未研读——到「研读」页选中即可生成正文。'
-              : undefined
+              ? '本章尚未研读——点上方「去研读」进入研读页即可生成正文。'
+              : props.planId
+                ? '本章暂无正文——可重新生成，或点上方「去研读」到研读页发起。'
+                : undefined
           "
         />
       </div>

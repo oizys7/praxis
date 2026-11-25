@@ -189,7 +189,6 @@ function exitToPlanList() {
   resultRevealPending.value = false;
 }
 
-
 /** 目录跳转（悬浮两级目录，与回顶同层 fixed）：只在 main 内定位，避免顶栏被根滚动顶出 */
 function scrollToPhase(index: number) {
   scrollToWithinMain(
@@ -628,18 +627,15 @@ function onLocateChapter(target: { phaseIndex: number; chapterIndex: number }) {
 /**
  * 骨架树章条目尾注（大纲-only 语义适配）：outline 载荷带 chapterWeeks
  * （新链路）→ 尾注「待研读」（正文本就不在此链生成）；旧载荷（无周次数组）
- * 保持「待生成」。章节完成/阶段收口后无尾注。
+ * 保持「待生成」。尾注只在章正文真落库（chapterDone 事件）后撤掉——
+ * 阶段大纲收口不代表章已生成，不能提前摘掉「待研读」。
  */
 function skeletonChapterSuffix(
   phase: OutlinePhasePayload,
   phaseIndex: number,
   chapterIndex: number,
 ): string {
-  const state = genState.value;
-  if (
-    state?.chapterDone?.[`${phaseIndex}:${chapterIndex}`] ||
-    state?.phaseStatuses[phaseIndex] === "complete"
-  ) {
+  if (genState.value?.chapterDone?.[`${phaseIndex}:${chapterIndex}`]) {
     return "";
   }
   return phase.chapterWeeks?.length ? "（待研读）" : "（待生成）";
@@ -816,7 +812,10 @@ function skeletonChapterSuffix(
                   class="mb-1.5 flex justify-between text-xs text-muted-foreground"
                 >
                   <span
-                    >第 {{ progressDone }}/{{ progressTotal }} 阶段完成</span
+                    >已生成 {{ progressDone }}/{{
+                      progressTotal
+                    }}
+                    阶段大纲</span
                   >
                   <span
                     >{{
@@ -989,12 +988,13 @@ function skeletonChapterSuffix(
                         class="min-w-16 text-right text-xs tabular-nums text-muted-foreground"
                         >{{ phase.weekRange }}</span
                       >
-                      <!-- 阶段位：complete 绿 / failed 红 / 进行中不标
+                      <!-- 阶段位：大纲已产出 = 已生成（绿，语义是「大纲好了，
+                           正文待研读」，不再说「已完成」）；failed 红 / 进行中不标
                            （无真实失败信号不标红，storageIssue 走提示） -->
                       <Badge
                         v-if="genState?.phaseStatuses[i] === 'complete'"
                         variant="success"
-                        >✓ 已完成</Badge
+                        >已生成</Badge
                       >
                       <Badge
                         v-else-if="genState?.phaseStatuses[i] === 'failed'"
@@ -1009,13 +1009,13 @@ function skeletonChapterSuffix(
                       :key="ci"
                       class="flex items-center gap-2 text-sm text-muted-foreground"
                     >
-                      <!-- 章节点：chapterDone 事件点亮章级真完成（emerald，
-                           task-D2）；阶段整段完成同为绿；failed 红；进行中灰 -->
+                      <!-- 章节点：只有 chapterDone 事件（章正文真落库）才点亮绿；
+                           大纲-only 流程里阶段收口 ≠ 章完成，未研读章保持灰
+                           （评审：绿点曾被误读为「已读完」）；failed 阶段红 -->
                       <span
                         class="h-1.5 w-1.5 shrink-0 rounded-full"
                         :class="
-                          genState?.chapterDone?.[`${i}:${ci}`] ||
-                          genState?.phaseStatuses[i] === 'complete'
+                          genState?.chapterDone?.[`${i}:${ci}`]
                             ? 'bg-emerald-500'
                             : genState?.phaseStatuses[i] === 'failed'
                               ? 'bg-destructive'

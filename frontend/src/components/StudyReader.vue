@@ -39,8 +39,8 @@ import type { Chapter, ChapterAnnotation } from "@/types/agent";
  * 流式中但非打字机形态（中途进入 / 用户已滚走）同样走 MarkdownContent，
  * 渲染父侧节流后的累积文本，终态以 get_plan 回读内容为准。
  *
- * 选区标注：mouseup 捕获中栏选区 → 浮动「标注」按钮 → 可选评论保存
- * （quote 必填，comment 可选 = 纯划线）。
+ * 选区标注：document 级 mouseup + selectionchange 统一捕获中栏选区 →
+ * 浮动「标注」按钮 → 可选评论保存（quote 必填，comment 可选 = 纯划线）。
  */
 const props = defineProps<{
   chapter: Chapter | null;
@@ -61,7 +61,9 @@ const KIND_LABELS: Record<string, string> = {
   review: "复习",
 };
 
-const kindLabel = computed(() => KIND_LABELS[props.chapter?.kind ?? ""] ?? null);
+const kindLabel = computed(
+  () => KIND_LABELS[props.chapter?.kind ?? ""] ?? null,
+);
 
 /** 权威正文：DB 回读优先；流刚结束、记录刷新前的空窗用累积文本兜底 */
 const contentMd = computed(
@@ -157,10 +159,16 @@ watch(
 
 onMounted(() => {
   rootEl.value?.addEventListener("scroll", onReaderScroll, { passive: true });
+  document.addEventListener("mouseup", onDocMouseup);
+  document.addEventListener("selectionchange", onDocSelectionChange);
 });
 onBeforeUnmount(() => {
   stopTypewriterLoop();
   rootEl.value?.removeEventListener("scroll", onReaderScroll);
+  if (selectionChangeTimer) {
+    clearTimeout(selectionChangeTimer);
+    selectionChangeTimer = 0;
+  }
   teardownSelectionListeners();
 });
 
@@ -175,7 +183,52 @@ const comment = ref("");
 /** 选区引用文本上限：后端 quote 列有长度约束，超长截断保序 */
 const QUOTE_MAX = 500;
 
-function onMouseup(event: MouseEvent) {
+/** 气泡几何估算（按钮 min-h-9 + 余量），用于避障判定与视口钳制 */
+const BUBBLE_HALF = 60;
+const BUBBLE_HEIGHT = 40;
+
+/**
+ * 气泡定位：默认悬在选区上方；若会压住章节头或正文标题（h2–h4），
+ * 或顶部放不下，翻到选区下方（评审 P2：气泡曾盖住「本章要点」）。
+ */
+function bubblePosition(rect: DOMRect): { x: number; y: number } {
+  const x = Math.min(
+    Math.max(rect.left + rect.width / 2, 72),
+    window.innerWidth - 72,
+  );
+  const collides = (y: number) => {
+    const box = {
+      left: x - BUBBLE_HALF,
+      right: x + BUBBLE_HALF,
+      top: y,
+      bottom: y + BUBBLE_HEIGHT,
+    };
+    const overlaps = (r: DOMRect) =>
+      !(
+        r.right <= box.left ||
+        r.left >= box.right ||
+        r.bottom <= box.top ||
+        r.top >= box.bottom
+      );
+    return [
+      ...(rootEl.value?.querySelectorAll<HTMLElement>("header, h2, h3, h4") ??
+        []),
+    ].some((el) => overlaps(el.getBoundingClientRect()));
+  };
+  const above = Math.max(rect.top - 46, 8);
+  const below = rect.bottom + 10;
+  if (!collides(above)) return { x, y: above };
+  if (below + BUBBLE_HEIGHT <= window.innerHeight - 8 && !collides(below)) {
+    return { x, y: below };
+  }
+  return { x, y: above };
+}
+
+/**
+ * 从当前窗口选区解析「标注」气泡（无有效选区即收起）。
+ * 只响应锚点在中栏内部的选区；跨元素拖拽选区同样成立。
+ */
+function evaluateSelection() {
   if (annotating.value) return;
   const selection = window.getSelection();
   const quote = (selection?.toString() ?? "").trim();
@@ -183,7 +236,6 @@ function onMouseup(event: MouseEvent) {
     pick.value = null;
     return;
   }
-  // 只响应中栏内部的选区（浮层/右栏里划选不算）
   const anchor = selection.anchorNode;
   if (!anchor || !rootEl.value?.contains(anchor)) {
     pick.value = null;
@@ -194,16 +246,36 @@ function onMouseup(event: MouseEvent) {
     pick.value = null;
     return;
   }
+  pick.value = {
+    ...bubblePosition(rect),
+    quote: quote.length > QUOTE_MAX ? `${quote.slice(0, QUOTE_MAX)}…` : quote,
+  };
+}
+
+/** 浮动按钮/评论浮层自身的 mouseup 不参与选区捕获（否则点「标注」会先清选区） */
+function onDocMouseup(event: MouseEvent) {
   const button = event.target as HTMLElement | null;
-  // 浮动按钮/评论浮层自身的 mouseup 不参与选区捕获（否则点「标注」会先清选区）
   if (button?.closest("[data-study-annotate], [data-study-annotate-pop]")) {
     return;
   }
-  pick.value = {
-    x: Math.min(Math.max(rect.left + rect.width / 2, 72), window.innerWidth - 72),
-    y: Math.max(rect.top - 46, 8),
-    quote: quote.length > QUOTE_MAX ? `${quote.slice(0, QUOTE_MAX)}…` : quote,
-  };
+  evaluateSelection();
+}
+
+/**
+ * 选区监听统一收口在 document：拖拽跨行/跨段选区常在阅读器外松开鼠标
+ * （拖出中栏或窗口边缘自动滚动），section 自身的 mouseup 收不到，入口就
+ * 丢了。selectionchange 兜底键盘选区（Shift+方向键）；节流避免拖拽中途
+ * 高频触发，落点在拖拽结束后一帧。
+ */
+let selectionChangeTimer = 0;
+
+function onDocSelectionChange() {
+  if (annotating.value) return;
+  if (selectionChangeTimer) clearTimeout(selectionChangeTimer);
+  selectionChangeTimer = window.setTimeout(() => {
+    selectionChangeTimer = 0;
+    evaluateSelection();
+  }, 180);
 }
 
 function openAnnotate() {
@@ -218,11 +290,7 @@ function cancelAnnotate() {
 }
 
 function saveAnnotate() {
-  if (
-    !pick.value ||
-    props.phaseIndex === null ||
-    props.chapterIndex === null
-  ) {
+  if (!pick.value || props.phaseIndex === null || props.chapterIndex === null) {
     cancelAnnotate();
     return;
   }
@@ -253,6 +321,8 @@ function onDocPointerDown(event: PointerEvent) {
 
 function teardownSelectionListeners() {
   document.removeEventListener("pointerdown", onDocPointerDown, true);
+  document.removeEventListener("mouseup", onDocMouseup);
+  document.removeEventListener("selectionchange", onDocSelectionChange);
 }
 
 watch(annotating, (open) => {
@@ -265,26 +335,39 @@ watch(annotating, (open) => {
 
 // ---------------- 标注定位（右栏点击条目 → 滚动到原文并闪烁） ----------------
 
-/** 取引用文本的首个可靠检索片段：跨元素选区会引入换行，按行取首段 */
-function firstSearchSegment(quote: string): string {
-  for (const line of quote.split(/\r?\n/)) {
-    const trimmed = line.trim();
-    if (trimmed.length >= 6) return trimmed;
-  }
-  return quote.replace(/\s+/g, " ").trim().slice(0, 12);
-}
-
+/**
+ * 跨元素选区的引用定位：选区文本会夹入换行，且加粗/行内代码会把一句话
+ * 切成多个文本节点，逐字面匹配必然漏配。做法：把根内全部文本节点拼成
+ * 去空白长串并记录每个字符的来源节点，再依次尝试「整段规范化 quote →
+ * 各行 ≥6 字规范化片段」，任一命中即把命中起点所在块滚入视口并闪烁。
+ */
 function locateQuote(quote: string) {
   const root = rootEl.value;
-  const segment = firstSearchSegment(quote);
-  if (!root || !segment) return;
+  if (!root || !quote.trim()) return;
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let node = walker.nextNode();
-  while (node) {
-    if ((node.textContent ?? "").includes(segment)) break;
-    node = walker.nextNode();
+  const owners: Text[] = [];
+  let haystack = "";
+  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+    const text = node.textContent ?? "";
+    // 按码元遍历（不用 for-of）：owners 与 haystack 必须逐字符对齐
+    for (let i = 0; i < text.length; i++) {
+      if (/\s/.test(text[i]!)) continue;
+      owners.push(node as Text);
+      haystack += text[i];
+    }
   }
-  const el = (node as Text | null)?.parentElement;
+  const segments = [quote.replace(/\s+/g, "")];
+  for (const line of quote.split(/\r?\n/)) {
+    const norm = line.replace(/\s+/g, "");
+    if (norm.length >= 6) segments.push(norm);
+  }
+  let at = -1;
+  for (const segment of segments) {
+    at = haystack.indexOf(segment);
+    if (at >= 0) break;
+  }
+  if (at < 0) return;
+  const el = owners[at]?.parentElement;
   if (!el) return;
   const block =
     el.closest<HTMLElement>("p, h2, h3, h4, li, pre, blockquote, td") ?? el;
@@ -314,7 +397,6 @@ defineExpose({ locateQuote });
     ref="rootEl"
     data-study-reader
     class="scroll-stable min-h-0 min-w-0 flex-1 overflow-y-auto"
-    @mouseup="onMouseup"
   >
     <div class="mx-auto w-full max-w-[760px] px-5 py-8 sm:px-8">
       <!-- 未选章空态 -->
@@ -374,7 +456,10 @@ defineExpose({ locateQuote });
           <p class="mt-2 text-sm font-medium text-destructive">
             本章内容生成失败
           </p>
-          <p v-if="stream.error" class="mt-1 break-all text-xs text-muted-foreground">
+          <p
+            v-if="stream.error"
+            class="mt-1 break-all text-xs text-muted-foreground"
+          >
             {{ stream.error }}
           </p>
           <p v-else class="mt-1 text-xs text-muted-foreground">
@@ -396,9 +481,13 @@ defineExpose({ locateQuote });
           <p
             v-if="stream.text"
             class="whitespace-pre-wrap break-words text-[17px] leading-[1.9] text-foreground/90"
-            >{{ displayedText }}<span class="study-caret" aria-hidden="true"
-          /></p>
-          <p v-else class="flex items-center gap-2 text-sm text-muted-foreground">
+          >
+            {{ displayedText }}<span class="study-caret" aria-hidden="true" />
+          </p>
+          <p
+            v-else
+            class="flex items-center gap-2 text-sm text-muted-foreground"
+          >
             <span
               class="h-3.5 w-3.5 animate-spin rounded-full border-2 border-primary border-t-transparent"
             />
@@ -414,11 +503,7 @@ defineExpose({ locateQuote });
             />
             正在生成本章内容…
           </p>
-          <div
-            v-if="stream.text"
-            data-study-content
-            class="mt-5 opacity-80"
-          >
+          <div v-if="stream.text" data-study-content class="mt-5 opacity-80">
             <MarkdownContent :content-md="stream.text" />
           </div>
         </div>

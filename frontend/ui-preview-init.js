@@ -525,7 +525,7 @@ function createBridge({
       "3. 把疑问发给伴学聊天，带着章节上下文提问。",
       "",
       "```python",
-      'def check(understanding: str) -> bool:',
+      "def check(understanding: str) -> bool:",
       '    return "能讲清楚" in understanding',
       "```",
     ].join("\n");
@@ -658,10 +658,11 @@ function createBridge({
       studyDays: request?.studyDays ?? [1, 2, 3, 4, 5, 6, 7],
       createdAt: new Date().toISOString(),
       // 大纲-only：首展只产骨架+周次/学时，正文留白到研读页按需生成
-      phases: makePhases(
-        ["建立编程思维", "探索数据与结构"],
-        { outlineOnly: true },
-      ),
+      phases: makePhases(["建立编程思维", "探索数据与结构"], {
+        outlineOnly: true,
+        weeks: request?.weeks,
+        weeklyHours: request?.weeklyHours,
+      }),
     });
     records.unshift(record);
     resetForGeneration(record);
@@ -843,7 +844,7 @@ function todayKey() {
   return `${now.getFullYear()}-${pad2(now.getMonth() + 1)}-${pad2(now.getDate())}`;
 }
 
-function makeChapters(prefix, weekBase = 1) {
+function makeChapters(prefix, weekBase = 1, hoursBase = 4, weekCap = 99) {
   return [
     {
       title: `${prefix}：先让程序跑起来`,
@@ -851,8 +852,8 @@ function makeChapters(prefix, weekBase = 1) {
       contentMd: CONTENT_MAIN,
       kind: "concept",
       keyTerms: ["输入", "处理", "输出"],
-      week: weekBase,
-      estimatedHours: 4,
+      week: Math.min(weekBase, weekCap),
+      estimatedHours: hoursBase,
       visualizations: [],
       exercises: [],
       done: true,
@@ -864,8 +865,8 @@ function makeChapters(prefix, weekBase = 1) {
       contentMd: CONTENT_SHORT,
       kind: "practice",
       keyTerms: ["反馈", "复盘"],
-      week: weekBase + 1,
-      estimatedHours: 3,
+      week: Math.min(weekBase + 1, weekCap),
+      estimatedHours: Math.max(2, hoursBase - 1),
       visualizations: [],
       exercises: [],
       done: false,
@@ -891,8 +892,15 @@ function makeProject(name) {
 
 function makePhases(
   names,
-  { withEmptyChapter = false, outlineOnly = false } = {},
+  { withEmptyChapter = false, outlineOnly = false, weeks, weeklyHours } = {},
 ) {
+  // 预览联动表单参数（评审顺带项）：周次不越过计划总周数、学时随每周
+  // 可投时长缩放，避免 mock 固定数字与表单打架
+  const weekCap = Number.isInteger(weeks) && weeks >= 1 ? weeks : 99;
+  const hoursBase =
+    Number.isFinite(weeklyHours) && weeklyHours > 0
+      ? Math.min(6, Math.max(2, Math.round(weeklyHours / 2)))
+      : 4;
   return names.map((name, index) => {
     const weekBase = index * 2 + 1;
     let chapters =
@@ -913,7 +921,7 @@ function makePhases(
               status: "pending",
             },
           ]
-        : makeChapters(name, weekBase);
+        : makeChapters(name, weekBase, hoursBase, weekCap);
     if (outlineOnly) {
       // 大纲-only 新链路：首展只有骨架+周次/学时，正文留白待研读
       chapters = chapters.map((chapter) => ({
@@ -1120,7 +1128,9 @@ function mountPreviewBadge(mode) {
   ].join(";");
   const label = document.createElement("span");
   label.textContent =
-    mode === "real" ? "预览 · 真实数据只读" : "预览 · Mock 内存数据，刷新即复位";
+    mode === "real"
+      ? "预览 · 真实数据只读"
+      : "预览 · Mock 内存数据，刷新即复位";
   label.title =
     mode === "real"
       ? "来自本机数据库的只读导出，不上传；所有写操作被拒绝"
@@ -1159,7 +1169,10 @@ function rewriteExternalImages(records) {
   for (const record of records) {
     for (const phase of record?.plan?.phases ?? []) {
       for (const chapter of phase?.chapters ?? []) {
-        if (typeof chapter?.contentMd === "string" && chapter.contentMd.includes("](")) {
+        if (
+          typeof chapter?.contentMd === "string" &&
+          chapter.contentMd.includes("](")
+        ) {
           chapter.contentMd = chapter.contentMd.replace(
             pattern,
             (_match, alt) =>

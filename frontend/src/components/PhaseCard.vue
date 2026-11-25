@@ -49,7 +49,9 @@ const statusBadge = computed<{
 } | null>(() => {
   switch (props.phase.status) {
     case "complete":
-      return { label: "✓ 已完成", variant: "success" };
+      // 「已生成」而非「已完成」：大纲-only 口径下阶段收口只代表大纲产出，
+      // 章正文多数待研读；旧计划里正文也已生成，语义同样成立
+      return { label: "已生成", variant: "success" };
     case "generating":
       // 重生成落库的持久态（反馈①）：退出重进也由 DB 驱动转圈，不再落空
       return { label: "⟳ 生成中", variant: "secondary" };
@@ -163,9 +165,7 @@ async function onRegenerate() {
                 {{ index + 1 }}
               </span>
               <div class="min-w-0">
-                <div
-                  class="text-lg font-semibold leading-relaxed"
-                >
+                <div class="text-lg font-semibold leading-relaxed">
                   {{ phase.name }}
                 </div>
                 <div
