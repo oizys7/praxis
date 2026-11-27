@@ -309,7 +309,8 @@ button:not(:disabled) {
 }
 .markdown-code {
   color: hsl(var(--foreground));
-  line-height: 1.95;
+  /* 行距跟随阅读设置档位（StudyView 注入 --reader-line-height，默认同旧值） */
+  line-height: var(--reader-line-height, 1.95);
   overflow-wrap: anywhere;
   text-align: start;
 }

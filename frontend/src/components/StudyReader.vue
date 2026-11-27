@@ -315,7 +315,11 @@ function onDocPointerDown(event: PointerEvent) {
   if (target?.closest("[data-study-annotate-pop], [data-study-annotate]")) {
     return;
   }
-  if (annotating.value) return;
+  if (annotating.value) {
+    // 评论浮层打开时点外部：关闭浮层（含清选区状态）
+    cancelAnnotate();
+    return;
+  }
   pick.value = null;
 }
 
@@ -480,7 +484,11 @@ defineExpose({ locateQuote });
         <div v-else-if="showTypewriter" class="mt-7" data-study-typewriter>
           <p
             v-if="stream.text"
-            class="whitespace-pre-wrap break-words text-[17px] leading-[1.9] text-foreground/90"
+            class="whitespace-pre-wrap break-words text-foreground/90"
+            :style="{
+              fontSize: 'var(--reader-font-size, 17px)',
+              lineHeight: 'var(--reader-line-height, 1.95)',
+            }"
           >
             {{ displayedText }}<span class="study-caret" aria-hidden="true" />
           </p>

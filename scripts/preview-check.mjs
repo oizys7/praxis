@@ -1707,6 +1707,46 @@ async function main() {
         2000,
       ),
     );
+    // 点击浮层外部（正文任意处）应关闭评论浮层
+    await evaluate(`(() => {
+      document
+        .querySelector('[data-study-content]')
+        ?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    })()`);
+    check(
+      "点击外部关闭标注评论浮层",
+      await waitFor(
+        "!document.querySelector('[data-study-annotate-pop]')",
+        2000,
+      ),
+    );
+    // 重新走一遍选区 → 按钮 → 打开浮层，继续原有保存流程
+    await evaluate(`(async () => {
+      const root = document.querySelector('[data-study-content]');
+      if (!root) return false;
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+      while (node && !(node.textContent ?? '').includes('自检清单')) node = walker.nextNode();
+      if (!node) return false;
+      const start = (node.textContent ?? '').indexOf('自检清单');
+      const range = document.createRange();
+      range.setStart(node, start);
+      range.setEnd(node, start + 4);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      root.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      document.querySelector('[data-study-annotate]')?.click();
+      return true;
+    })()`);
+    check(
+      "标注评论浮层重新打开",
+      await waitFor(
+        "!!document.querySelector('[data-study-annotate-pop]')",
+        2000,
+      ),
+    );
     await evaluate(`(() => {
       const input = document.querySelector('[data-study-annotate-pop] textarea');
       const set = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set;
@@ -1994,6 +2034,155 @@ async function main() {
       ),
     );
 
+    // ---- 阅读设置：字号 / 行距滑块 + 持久化 ----
+    await evaluate(
+      "document.querySelector('[data-study-settings-btn]')?.click()",
+    );
+    check(
+      "阅读设置：Aa 按钮打开滑块面板",
+      await waitFor(
+        "!!document.querySelector('[data-study-font-slider]') && !!document.querySelector('[data-study-line-slider]')",
+        2000,
+      ),
+    );
+    await evaluate(`(() => {
+      const fire = (sel, val) => {
+        const el = document.querySelector(sel);
+        if (!el) return false;
+        el.value = val;
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+      };
+      return fire('[data-study-font-slider]', '20') && fire('[data-study-line-slider]', '2.1');
+    })()`);
+    await sleep(200);
+    check(
+      "阅读设置：字号滑块调到 20px 生效",
+      await evaluate(`(() => {
+        const body = document.querySelector('[data-study-reader] .reader-body');
+        return !!body && parseFloat(getComputedStyle(body).fontSize) === 20;
+      })()`),
+    );
+    check(
+      "阅读设置：行距滑块调到 2.1 生效",
+      await evaluate(`(() => {
+        const el = document.querySelector('[data-study-reader] .markdown-code');
+        if (!el) return false;
+        const cs = getComputedStyle(el);
+        return Math.abs(parseFloat(cs.lineHeight) / parseFloat(cs.fontSize) - 2.1) < 0.01;
+      })()`),
+    );
+    await evaluate(
+      "document.querySelector('[data-study-reader]')?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))",
+    );
+    await sleep(150);
+    check(
+      "阅读设置：点击外部关闭面板",
+      await evaluate("!document.querySelector('[data-study-reader-settings]')"),
+    );
+
+    // ---- 专注阅读：App 级顶栏/导航侧栏与本页页头两栏全部隐藏，正文独占 ----
+    await evaluate(`(() => {
+      const vis = (el) => { const r = el?.getBoundingClientRect(); return !!r && r.width > 0 && r.height > 0; };
+      window.__focusBefore = {
+        header: vis(document.querySelector('[data-study-page] header')),
+        appHeader: vis(document.querySelector('.app-header')),
+        sidebar: vis(document.querySelector('.app-sidebar')),
+        tree: vis(document.querySelector('[data-study-tree]')),
+        panel: vis(document.querySelector('[data-study-panel]')),
+        readerW: document.querySelector('[data-study-reader]')?.getBoundingClientRect().width ?? 0,
+      };
+      return true;
+    })()`);
+    await evaluate("document.querySelector('[data-study-focus-btn]')?.click()");
+    await sleep(300);
+    check(
+      "专注模式：App 顶栏/导航侧栏与本页页头两栏全部隐藏、悬浮热区就位、正文变宽",
+      await evaluate(`(() => {
+        const vis = (el) => { const r = el?.getBoundingClientRect(); return !!r && r.width > 0 && r.height > 0; };
+        const before = window.__focusBefore ?? {};
+        const readerW = document.querySelector('[data-study-reader]')?.getBoundingClientRect().width ?? 0;
+        return (
+          before.header === true && !vis(document.querySelector('[data-study-page] header')) &&
+          before.appHeader === true && !vis(document.querySelector('.app-header')) &&
+          before.sidebar === true && !vis(document.querySelector('.app-sidebar')) &&
+          (!before.tree || !vis(document.querySelector('[data-study-tree]'))) &&
+          (!before.panel || !vis(document.querySelector('[data-study-panel]'))) &&
+          vis(document.querySelector('[data-study-focus-hotspot]')) &&
+          ((before.tree || before.panel) ? readerW > before.readerW : readerW >= before.readerW)
+        );
+      })()`),
+    );
+
+    // Esc 直接退出专注（不再先关设置弹层），并浮现退出提示
+    await evaluate(
+      "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))",
+    );
+    await sleep(400);
+    check(
+      "专注模式：Esc 直接退出 + 顶栏导航恢复 + 退出提示浮现",
+      await evaluate(`(() => {
+        const vis = (el) => { const r = el?.getBoundingClientRect(); return !!r && r.width > 0 && r.height > 0; };
+        const toast = document.querySelector('[data-study-focus-toast]');
+        const before = window.__focusBefore ?? {};
+        const header = document.querySelector('[data-study-page] header');
+        const hr = header?.getBoundingClientRect();
+        return (
+          !!hr && hr.height > 0 && !document.querySelector('[data-study-focus-hotspot]') &&
+          vis(document.querySelector('.app-sidebar')) === (before.sidebar ?? true) &&
+          !!toast && getComputedStyle(toast).opacity === '1' && (toast.textContent ?? '').includes('已退出专注模式')
+        );
+      })()`),
+    );
+    await sleep(2500);
+    check(
+      "专注模式：退出提示自动消失",
+      await evaluate(`(() => {
+        const toast = document.querySelector('[data-study-focus-toast]');
+        return !!toast && parseFloat(getComputedStyle(toast).opacity) < 0.05;
+      })()`),
+    );
+
+    // 悬浮工具条退出按钮：同样出提示
+    await evaluate("document.querySelector('[data-study-focus-btn]')?.click()");
+    await sleep(250);
+    await evaluate(
+      "document.querySelector('[data-study-focus-exit]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }))",
+    );
+    await sleep(400);
+    check(
+      "专注模式：悬浮工具条退出按钮同样出提示",
+      await evaluate(`(() => {
+        const toast = document.querySelector('[data-study-focus-toast]');
+        return !!toast && getComputedStyle(toast).opacity === '1' && !document.querySelector('[data-study-focus-hotspot]');
+      })()`),
+    );
+    await sleep(2400);
+
+    // 刷新后阅读偏好保持（localStorage 持久化）
+    await evaluate("location.reload()");
+    await waitFor(
+      "!!document.querySelector('[data-study-reader] .markdown-code')",
+      8000,
+    );
+    await evaluate(
+      "document.querySelector('[data-study-settings-btn]')?.click()",
+    );
+    await sleep(200);
+    check(
+      "阅读设置：刷新后滑块值保持（20px / 2.1）",
+      await evaluate(`(() => {
+        const fs = document.querySelector('[data-study-font-slider]');
+        const ls = document.querySelector('[data-study-line-slider]');
+        const el = document.querySelector('[data-study-reader] .markdown-code');
+        if (!fs || !ls || !el) return false;
+        const cs = getComputedStyle(el);
+        return fs.value === '20' && ls.value === '2.1' &&
+          parseFloat(cs.fontSize) === 20 &&
+          Math.abs(parseFloat(cs.lineHeight) / parseFloat(cs.fontSize) - 2.1) < 0.01;
+      })()`),
+    );
+
     // 窄屏：单列不溢出，树抽屉收起
     await send("Emulation.setDeviceMetricsOverride", {
       width: 375,
@@ -2053,6 +2242,21 @@ async function main() {
           !!tr && tr.left >= sr.right - 1 && tr.right <= pr.right + 1;
       })()`),
     );
+    check(
+      "375 抽屉遮罩只盖中栏（不盖侧栏/页头）",
+      await evaluate(`(() => {
+        const overlay = [...document.querySelectorAll('main div')].find((d) => d.getAttribute('aria-hidden') === 'true' && d.className.includes('bg-foreground/25'));
+        if (!overlay) return false;
+        const or = overlay.getBoundingClientRect();
+        const sidebar = document.querySelector('.app-sidebar')?.getBoundingClientRect();
+        const main = document.querySelector('main')?.getBoundingClientRect();
+        const header = document.querySelector('[data-study-page] header')?.getBoundingClientRect();
+        return !!sidebar && !!main &&
+          or.left >= sidebar.right - 1 &&
+          or.width <= main.width + 1 &&
+          !!header && or.top >= header.bottom - 1;
+      })()`),
+    );
     await shotStudy("fix-375-panel");
     await evaluate(
       "document.querySelector('[aria-label=\"伴学面板\"]')?.click()",
@@ -2062,6 +2266,7 @@ async function main() {
     // 1024/1280/1440 中栏不坍缩（评审 P0-1）：右栏 xl 起常驻、lg–xl 走抽屉
     for (const [width, height] of [
       [1024, 900],
+      [1160, 900],
       [1280, 900],
       [1440, 1000],
     ]) {
@@ -2081,6 +2286,7 @@ async function main() {
         const tree = document.querySelector('[data-study-tree]');
         const panelAside = [...document.querySelectorAll('aside')].find((a) => a.querySelector('[data-study-panel]'));
         const toggle = document.querySelector('[aria-label="伴学面板"]');
+        const chapterToggle = document.querySelector('[aria-label="章节目录"]');
         const r = reader?.getBoundingClientRect();
         const tr = tree?.getBoundingClientRect();
         const pr = panelAside?.getBoundingClientRect();
@@ -2098,6 +2304,10 @@ async function main() {
             !!toggle &&
             toggle.getBoundingClientRect().width > 0 &&
             getComputedStyle(toggle).display !== 'none',
+          chapterToggleVisible:
+            !!chapterToggle &&
+            chapterToggle.getBoundingClientRect().width > 0 &&
+            getComputedStyle(chapterToggle).display !== 'none',
         };
       })()`);
       check(
@@ -2105,12 +2315,20 @@ async function main() {
         (cols.readerWidth ?? 0) >= 480,
         cols,
       );
-      if (width === 1024) {
+      if (width === 1024 || width === 1160) {
         check(
-          "1024 右栏走抽屉（开关可见、面板不占位）",
+          `${width} 右栏走抽屉（开关可见、面板不占位）`,
           cols.toggleVisible === true && cols.panelStatic === false,
           cols,
         );
+        // 左树 lg 起常驻：抽屉开关必须同步隐藏，否则点击只弹全屏遮罩（无效按钮）
+        check(
+          `${width} 左树常驻（章节开关隐藏）`,
+          cols.chapterToggleVisible === false && cols.treeStatic === true,
+          cols,
+        );
+      }
+      if (width === 1024) {
         await shotStudy("fix-1024");
       }
       if (width === 1280) {

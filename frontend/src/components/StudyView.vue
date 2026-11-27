@@ -1,7 +1,22 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from "vue";
+import {
+  computed,
+  inject,
+  nextTick,
+  onMounted,
+  onUnmounted,
+  ref,
+  watch,
+} from "vue";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { BookOpenText, MessagesSquare, TriangleAlert } from "lucide-vue-next";
+import {
+  BookOpenText,
+  CheckCircle2,
+  Focus,
+  MessagesSquare,
+  TriangleAlert,
+  Type,
+} from "lucide-vue-next";
 import {
   isRegenInFlight,
   normalizeError,
@@ -17,6 +32,7 @@ import {
   saveAnnotation,
   sendChatMessage,
 } from "@/composables/useStudy";
+import ReaderSettings from "@/components/ReaderSettings.vue";
 import StudyPanel from "@/components/StudyPanel.vue";
 import StudyReader, {
   type StudyStreamState,
@@ -205,6 +221,7 @@ watch(
 onMounted(() => {
   void loadPlans();
   void subscribeEvents();
+  document.addEventListener("keydown", onDocKeydown);
 });
 
 // ---------------- 按需生成与打字机 ----------------
@@ -529,6 +546,8 @@ onUnmounted(() => {
   unlistens = [];
   if (streamFlushTimer) clearTimeout(streamFlushTimer);
   if (chatFlushTimer) clearTimeout(chatFlushTimer);
+  document.removeEventListener("keydown", onDocKeydown);
+  document.removeEventListener("pointerdown", onSettingsPointerDown, true);
 });
 
 // ---------------- 窄屏抽屉 ----------------
@@ -540,19 +559,172 @@ function closeDrawers() {
   leftOpen.value = false;
   rightOpen.value = false;
 }
+
+// ---------------- 阅读偏好与专注模式 ----------------
+
+/** 字号滑块持久化 key（沿用 praxis.* 前缀约定） */
+const FONT_KEY = "praxis.studyReaderFont";
+/** 行距滑块持久化 key */
+const LINE_KEY = "praxis.studyReaderLineHeight";
+
+/** 字号滑块范围（px）：默认 17 与样式表 fallback 一致 */
+const FONT_RANGE = { min: 14, max: 22, step: 1, fallback: 17 } as const;
+/** 行距滑块范围（无单位倍数）：默认 1.95 与样式表 fallback 一致 */
+const LINE_RANGE = { min: 1.6, max: 2.4, step: 0.05, fallback: 1.95 } as const;
+
+/** 滑块范围（min/max/step/fallback）；FONT_RANGE / LINE_RANGE 共用 */
+type SliderRange = { min: number; max: number; step: number; fallback: number };
+
+/** 从 localStorage 恢复滑块值：非法回退默认，并对齐步长、钳在范围内（防脏数据） */
+function loadRange(key: string, range: SliderRange) {
+  const raw = Number(localStorage.getItem(key));
+  if (!Number.isFinite(raw)) return range.fallback;
+  const aligned =
+    range.min + Math.round((raw - range.min) / range.step) * range.step;
+  return Math.min(range.max, Math.max(range.min, Number(aligned.toFixed(2))));
+}
+
+/** 正文字号（px）与行距（倍数）；经 CSS 变量注入 .reader-body / .markdown-code */
+const readerFont = ref(loadRange(FONT_KEY, FONT_RANGE));
+const readerLine = ref(loadRange(LINE_KEY, LINE_RANGE));
+
+watch([readerFont, readerLine], ([font, line]) => {
+  localStorage.setItem(FONT_KEY, String(font));
+  localStorage.setItem(LINE_KEY, String(line));
+});
+
+/** 阅读设置弹层开合（页头按钮与专注悬浮条共用） */
+const settingsOpen = ref(false);
+
+function onSettingsPointerDown(event: PointerEvent) {
+  const target = event.target as HTMLElement | null;
+  // 面板与两个触发按钮内部的按压不算「点别处」
+  if (
+    target?.closest(
+      "[data-study-reader-settings], [data-study-settings-btn], [data-study-focus-settings]",
+    )
+  ) {
+    return;
+  }
+  settingsOpen.value = false;
+}
+
+watch(settingsOpen, (open) => {
+  if (open) {
+    document.addEventListener("pointerdown", onSettingsPointerDown, true);
+  } else {
+    document.removeEventListener("pointerdown", onSettingsPointerDown, true);
+  }
+});
+
+/** 专注阅读：复用 App.vue provide 的 readerFocused——.app-shell.is-focused
+ * 会隐藏 App 级导航侧栏与顶栏，本页页头/两栏随之收起，正文独占窗口。
+ * 切换页面时 App 侧 watch 会自动复位（会话内有效，不持久化）。 */
+const readerFocused = inject("readerFocused", ref(false));
+
+/** 退出专注提示：按钮与 Esc 两种退出路径都浮现，短暂停留后自动消失 */
+const focusToastVisible = ref(false);
+let focusToastTimer: ReturnType<typeof setTimeout> | null = null;
+
+function showFocusToast() {
+  focusToastVisible.value = true;
+  if (focusToastTimer) clearTimeout(focusToastTimer);
+  focusToastTimer = setTimeout(() => {
+    focusToastVisible.value = false;
+    focusToastTimer = null;
+  }, 2200);
+}
+
+onUnmounted(() => {
+  if (focusToastTimer) clearTimeout(focusToastTimer);
+});
+
+async function toggleFocus() {
+  readerFocused.value = !readerFocused.value;
+  if (readerFocused.value) {
+    settingsOpen.value = false;
+    closeDrawers();
+    return;
+  }
+  showFocusToast();
+  // 与预览页（PlanWorkbench）同约定：退出后焦点还给触发按钮，键盘用户不落回 body
+  await nextTick();
+  document.querySelector<HTMLButtonElement>('[aria-label="专注阅读"]')?.focus();
+}
+
+function onDocKeydown(event: KeyboardEvent) {
+  if (event.key !== "Escape") return;
+  // 专注态下 Esc 直接退出（设置弹层随专注一起消失）；否则 Esc 关设置弹层
+  if (readerFocused.value) {
+    void toggleFocus();
+    return;
+  }
+  if (settingsOpen.value) settingsOpen.value = false;
+}
 </script>
 
 <template>
-  <div class="flex h-full min-h-0 flex-col" data-study-page>
-    <!-- 页头：标题 + 抽屉开关（右栏在 xl 及以上才整列常驻，1280 以下走抽屉） -->
+  <div
+    class="flex h-full min-h-0 flex-col"
+    data-study-page
+    :style="{
+      '--reader-font-size': `${readerFont}px`,
+      '--reader-line-height': String(readerLine),
+    }"
+  >
+    <!-- 页头：标题 + 抽屉开关（各自跟随对应栏的常驻断点：左树 lg 起
+         常驻、右栏 xl 起常驻；两开关若共用断点，会出“只弹遮罩的无效按钮”） -->
     <header
+      v-show="!readerFocused"
       class="flex shrink-0 items-center justify-between gap-3 border-b bg-card px-4 py-2.5 sm:px-6"
     >
       <h1 class="font-display text-xl font-semibold tracking-tight">研读</h1>
-      <div class="flex items-center gap-2 xl:hidden">
+      <div class="flex items-center gap-2">
+        <!-- 阅读设置：字号 / 行距（弹层面板复用于专注悬浮条） -->
+        <div class="relative">
+          <button
+            type="button"
+            data-study-settings-btn
+            class="flex min-h-9 items-center gap-1.5 rounded-lg border bg-card px-2.5 text-xs transition-colors hover:border-primary/40 hover:text-primary"
+            :aria-expanded="settingsOpen"
+            aria-label="阅读设置"
+            @click="settingsOpen = !settingsOpen"
+          >
+            <Type class="h-3.5 w-3.5" aria-hidden="true" />
+            Aa
+          </button>
+          <ReaderSettings
+            v-if="settingsOpen"
+            class="absolute right-0 top-full z-50 mt-2"
+            :font-size="readerFont"
+            :font-min="FONT_RANGE.min"
+            :font-max="FONT_RANGE.max"
+            :line-height="readerLine"
+            :line-min="LINE_RANGE.min"
+            :line-max="LINE_RANGE.max"
+            @update="
+              (kind, value) =>
+                kind === 'fontSize'
+                  ? (readerFont = value)
+                  : (readerLine = value)
+            "
+          />
+        </div>
+        <!-- 专注阅读：完全沉浸（页头/左右栏隐藏，Esc 或顶部悬浮条退出） -->
         <button
           type="button"
+          data-study-focus-btn
           class="flex min-h-9 items-center gap-1.5 rounded-lg border bg-card px-2.5 text-xs transition-colors hover:border-primary/40 hover:text-primary"
+          :aria-pressed="readerFocused"
+          aria-label="专注阅读"
+          @click="toggleFocus"
+        >
+          <Focus class="h-3.5 w-3.5" aria-hidden="true" />
+          专注阅读
+        </button>
+        <button
+          type="button"
+          class="flex min-h-9 items-center gap-1.5 rounded-lg border bg-card px-2.5 text-xs transition-colors hover:border-primary/40 hover:text-primary lg:hidden"
           :aria-expanded="leftOpen"
           aria-label="章节目录"
           @click="leftOpen = !leftOpen"
@@ -562,7 +734,7 @@ function closeDrawers() {
         </button>
         <button
           type="button"
-          class="flex min-h-9 items-center gap-1.5 rounded-lg border bg-card px-2.5 text-xs transition-colors hover:border-primary/40 hover:text-primary"
+          class="flex min-h-9 items-center gap-1.5 rounded-lg border bg-card px-2.5 text-xs transition-colors hover:border-primary/40 hover:text-primary xl:hidden"
           :aria-expanded="rightOpen"
           aria-label="伴学面板"
           @click="rightOpen = !rightOpen"
@@ -573,17 +745,63 @@ function closeDrawers() {
       </div>
     </header>
 
-    <div class="relative flex min-h-0 flex-1 overflow-hidden">
-      <!-- 抽屉遮罩（右栏 xl 起常驻，遮罩随之用到 xl） -->
+    <!-- 专注模式顶部悬浮条：鼠标移到窗口顶缘浮现（Esc 也可退出）；
+         pointer-events 仅 hover 态放开，避免不可见时拦截正文点击 -->
+    <div
+      v-if="readerFocused"
+      data-study-focus-hotspot
+      class="group fixed inset-x-0 top-0 z-50 flex h-4 justify-center"
+    >
       <div
-        v-if="leftOpen || rightOpen"
-        class="fixed inset-0 z-30 bg-foreground/25 xl:hidden"
-        aria-hidden="true"
-        @click="closeDrawers"
-      />
+        data-study-focus-bar
+        class="pointer-events-none mt-1 flex h-9 items-center gap-1.5 rounded-full border bg-popover px-2 shadow-xl opacity-0 transition-opacity duration-200 group-hover:pointer-events-auto group-hover:opacity-100"
+      >
+        <div class="relative">
+          <button
+            type="button"
+            data-study-focus-settings
+            class="flex min-h-7 items-center gap-1 rounded-full px-2.5 text-xs transition-colors hover:text-primary"
+            :aria-expanded="settingsOpen"
+            aria-label="阅读设置"
+            @click="settingsOpen = !settingsOpen"
+          >
+            <Type class="h-3.5 w-3.5" aria-hidden="true" />
+            Aa
+          </button>
+          <ReaderSettings
+            v-if="settingsOpen"
+            class="absolute left-1/2 top-full z-50 mt-2 -translate-x-1/2"
+            :font-size="readerFont"
+            :font-min="FONT_RANGE.min"
+            :font-max="FONT_RANGE.max"
+            :line-height="readerLine"
+            :line-min="LINE_RANGE.min"
+            :line-max="LINE_RANGE.max"
+            @update="
+              (kind, value) =>
+                kind === 'fontSize'
+                  ? (readerFont = value)
+                  : (readerLine = value)
+            "
+          />
+        </div>
+        <button
+          type="button"
+          data-study-focus-exit
+          class="flex min-h-7 items-center gap-1 rounded-full px-2.5 text-xs transition-colors hover:text-primary"
+          aria-label="退出专注"
+          @click="toggleFocus"
+        >
+          <Focus class="h-3.5 w-3.5" aria-hidden="true" />
+          退出专注
+        </button>
+      </div>
+    </div>
 
+    <div class="relative flex min-h-0 flex-1 overflow-hidden">
       <!-- 左：计划选择 + 章节树（lg 起常驻；抽屉态宽度由 .study-drawer 钳在主区内） -->
       <aside
+        v-show="!readerFocused"
         data-study-tree
         class="study-drawer absolute inset-y-0 left-0 z-40 flex w-64 shrink-0 flex-col border-r bg-card transition-transform duration-200 lg:static lg:z-auto 2xl:w-72"
         :class="
@@ -675,6 +893,14 @@ function closeDrawers() {
           @retry="startGeneration(true)"
           @annotate="onAnnotate"
         />
+        <!-- 抽屉遮罩：只盖中栏正文（fixed 全屏会连侧栏/页头一起盖住），
+             左右抽屉 z-40 在其上不受影响；点击正文任意处收起抽屉 -->
+        <div
+          v-if="leftOpen || rightOpen"
+          class="absolute inset-0 z-20 bg-foreground/25 xl:hidden"
+          aria-hidden="true"
+          @click="closeDrawers"
+        />
         <!-- 计划加载/失败覆盖层 -->
         <div
           v-if="recordError"
@@ -707,6 +933,7 @@ function closeDrawers() {
 
       <!-- 右：标注 / 笔记 / 聊天（xl 起常驻；1280 以下走抽屉，见 P0-1 断点评审） -->
       <aside
+        v-show="!readerFocused"
         class="study-drawer absolute inset-y-0 right-0 z-40 flex w-80 shrink-0 flex-col border-l bg-card transition-transform duration-200 xl:static xl:z-auto 2xl:w-[360px]"
         :class="
           rightOpen
@@ -729,6 +956,26 @@ function closeDrawers() {
           @locate="onLocate"
         />
       </aside>
+    </div>
+
+    <!-- 退出专注提示：按钮与 Esc 两种退出路径共用，浮现后自动消失 -->
+    <div
+      data-study-focus-toast
+      class="pointer-events-none fixed left-1/2 top-6 z-[60] -translate-x-1/2 transition-all duration-300"
+      :class="
+        focusToastVisible
+          ? 'translate-y-0 opacity-100'
+          : '-translate-y-2 opacity-0'
+      "
+      role="status"
+      aria-live="polite"
+    >
+      <div
+        class="flex items-center gap-2 rounded-full border bg-popover/95 px-4 py-2 text-sm shadow-xl backdrop-blur"
+      >
+        <CheckCircle2 class="h-4 w-4 text-primary" aria-hidden="true" />
+        已退出专注模式
+      </div>
     </div>
   </div>
 </template>
