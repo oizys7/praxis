@@ -123,3 +123,40 @@ Rust/TS 携带）。字段全�� **camelCase**。
 - 分支：`main`；远程：`github.com/oizys7/praxis`
 - commit message 用中文，首行 `类型: 摘要`（如 `init:` / `fix:` / `feat:` / `docs:`）
 - 协议：MIT（见 LICENSE）
+
+## AOCI 本地集成
+
+本仓库已集成 AOCI（AI-Oriented Cognition Infrastructure，仓库级认知索引层）。本机集成事实：
+
+- 二进制：`C:\package\aoci\aoci.exe`，版本 `0.2.0-rc3`（commit `0a00a2b952ca6f6c40556b0fc37d4230baac98ae`）；来源 GitHub Release `v0.2.0-rc3`，安装包已通过 SHA256SUMS 校验（基础级验证）；二进制 SHA256 `d5e74716568be5644e5a72dfbdc0f1753d69372e6fa47f9b403881ad4ffaa21a`
+- MCP 接入：pi host 不在 `aoci init --agent` 支持列表（claude/codex/cursor/opencode/qoder）内，按官方文档「Other MCP hosts」手动接入；项目级配置在 `.pi/mcp.json`（stdio：`C:/package/aoci/aoci.exe --repo C:/code/rs-app/praxis mcp`，共 9 个工具，含 `aoci_rules` / `aoci_overview` / `aoci_maintain` / `aoci_update_entry` / `aoci_report`）
+- 当前状态：`aoci init` 与 `aoci scan` 已完成（Baseline 覆盖 271 个文件）；**首次索引尚未构建**（193 个 Entry 待建，约 5 轮 Maintain，等待用户指示后继续）
+- 常用命令：`aoci status` 看对齐状态；`aoci verify` 验证治理状态；`aoci --repo C:\code\rs-app\praxis doctor` 诊断集成环境
+
+<!-- aoci:begin -->
+## AOCI Repository Cognition
+
+AOCI 维护仓库级认知索引 `aoci.txt`：每个受管文件/表/对象一个 Entry，用标签与 F/R/A/S 语义描述职责、关系、外部契约与关键约束。受管内容变化时通常只需维护受影响 Entry，无需重建全索引。详细机器协议以 `aoci_rules` 与 live Guide 为准，本文件不重复手册。
+
+### 入口工具
+- `aoci_rules`：当前版本的会话级运行契约。
+- `aoci_overview`：建立/恢复本仓库完整认知。
+- `aoci_maintain`：受管对象到达最终稳定态后检查是否需维护。
+- `aoci_update_entry`：提交绑定当前证据与源摘要的完整语义更新批。
+- `aoci_report`：证据不足时记录待办，不猜测。
+
+### 认知使用原则
+1. 新 Run 先判断是否已有可用完整索引、当前上下文认知是否可靠匹配（仓库根/索引版本/服务）。
+2. 有索引但认知不可靠时先 `aoci_rules` 再 `aoci_overview`；可靠认知直接复用，按需只读当前任务直接涉及的源码/测试/配置/契约——AOCI 不替代被改对象的直接源码证据。
+3. 已知上下文压缩（含注入的压缩摘要）后视旧认知为不可靠：以 `refresh_reasons=["context_compaction"]` 做一次完整 `aoci_overview`，按 `next_cursor` 取完并完成 Attestation；chunk/attestation/容量停止/状态投影等细节遵循 `aoci_rules` 与 Guide。
+4. 无可用完整索引时取 `aoci_rules` 进入 Guide 建立；`aoci_maintain` 不替代建立流程，不在本文件硬编码生成状态机。
+
+### 任务收尾与维护
+5. 纯只读/不改受管对象的任务无需维护调用。
+6. 受管对象变化后在最终稳定态调一次 `aoci_maintain`（不要逐次中间编辑都维护）；返回语义候选时由模型据证据独立撰写完整标签/F-R-A-S，一次 `aoci_update_entry` 提交整批；`remaining` 非零则 Apply 后再 Maintain 续做。证据不足用 `aoci_report`。
+7. 遵守工具安全态（`repair_required`/`stopped` 等）与冲突/审批/权限信号；对齐后不重复维护。维护后若受管对象再变，旧结果失效，从新稳定态重新收尾。
+8. 用户仅限业务文件范围时，可在收尾更新 AOCI 受管资产以保持一致（审计/提交中与业务文件区分）；用户明确禁止改 `aoci.txt`/`.aoci`/元数据时遵守并如实报告残留不一致。
+
+### 专门流程
+初始化、全索引/Header/Entry 生成、数据库结构索引、Curation、人工评审、失败恢复等只遵循当前 Guide/工具在该阶段返回的指令与安全停止；不预载、不猜测、不在本文件重建。
+<!-- aoci:end -->

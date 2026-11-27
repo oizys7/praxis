@@ -1,6 +1,5 @@
 # 后台生成与可靠进度 —— 实施计划 v7（Python 任务化 + WS 主动推送版）
 
-> 2026-10-14 晚。取代 v6：用户裁定 **Python→Rust 也改为主动通知**，不依赖任何长超时。
 > 基线 dev/v0.0.1 @ b1b4684。5 个真实反馈问题（进度虚标/概述丢失/空历史条目/生成超时/
 > 绿点转圈防重复）对应方案保留，传输架构按任务化重构。
 
@@ -37,22 +36,22 @@
   Rust 切换后标记 deprecated
 - 测试：pytest-asyncio 下任务执行用 httpx AsyncClient 测提交/快照端点；
   WS 用 FastAPI TestClient websocket_connect 测回放/直播/断线补齐
-（uvicorn[standard] 的 websockets 依赖核对：缺则补）
+  （uvicorn[standard] 的 websockets 依赖核对：缺则补）
 
 ### 2. Rust 侧（客户端 + 生命周期）
 
 - 新依赖 tokio-tungstenite（WS 客户端）
 - `generate_plan` 命令改造：
   a. pre-create plans 行 → `POST /api/generations` 拿 taskId → **同步返回 planId**
-     （响应形状三端同步：`{ planId }`）
+  （响应形状三端同步：`{ planId }`）
   b. spawn 后台任务：WS 连接 → 事件循环；JSON 形状与现有 StreamEvent 一致
-     （serde_json 直接 from_str，parse 复用），逐事件 upsert 落库 + 
-     `tauri::Emitter` 全局 emit `plan-progress`（{planId, kind, payload}）
+  （serde_json 直接 from_str，parse 复用），逐事件 upsert 落库 +
+  `tauri::Emitter` 全局 emit `plan-progress`（{planId, kind, payload}）
   c. **断线重连**：指数退避（1s→2s→5s→10s，重试上限 ~8 次），重连时带已消费
-     最大 seq 游标；snapshot 端点用于诊断旧任务（kind 与 planId 对号）
+  最大 seq 游标；snapshot 端点用于诊断旧任务（kind 与 planId 对号）
   d. done/error 事件 → 收尾 + emit 终态；取消事件 → 收尾 failed
   e. 收尾语义（v6 裁定保留）：**有任何 phase 行 → finalize complete**；
-     零内容 → finalize failed
+  零内容 → finalize failed
 - **超时归位**：删除生成级 600s/1800s 规则；只留 PING_TIMEOUT 3s（提交握手）+
   WS ping/pong 无响应 → 视为断线走重连
 - **重启收尾**：tauri 启动时扫描 status=generating 且 Python 侧无对应活动任务
@@ -66,7 +65,7 @@
 - generate 返回 planId → 「后台生成中」形态，全局 listen 进度事件驱动骨架树
 - 骨架计数改**成功阶段索引集合**（幂等，失败红点不占位）
 - 章节点：complete 绿 / failed 红 / pending+generating **转圈**；重进页面从 DB 拉
-  + 监听事件自动刷新；完成事件到达自动刷新视图
+  - 监听事件自动刷新；完成事件到达自动刷新视图
 - regenInFlight → `Map<planId, Set<scope>>` 锁细化
 - 历史条目：generating「生成中」徽标、failed「生成失败」徽标（可删除），
   不再有裸空卡片
@@ -82,18 +81,22 @@
 ## 任务分解（4 个任务）
 
 ### 任务 21：Python 任务管理器 + WS 端点（tasks.py/main.py/schemas.py）
+
 - §1 全部；pytest 覆盖（提交即返/回放/直播/断线游标补齐/取消/驱逐）
 - 提交 `feat: 生成与重生成任务化——后台执行、事件日志与 WS 推送`
 
 ### 任务 22：Rust WS 客户端 + 提交即返 + 收尾/重启收尾 + overview 落库
+
 - §2 全部（协议三端同步 { planId }）；cargo test/clippy/fmt + 集成测试
   （收终语义：部分阶段 → complete 新用例）
 - 提交 `feat: 生成命令任务化——WS 消费、断线重连与重启收尾`
 
 ### 任务 23：前端（§3）
+
 - 提交 `feat: 进度事件驱动视图——转圈/红点/锁细化与历史徽标`
 
 ### 任务 24：e2e 收口
+
 - mock uvicorn 真进程：提交即返 + WS 补齐 + 取消 + 重启收尾真库用例
 - 真库 `cargo test -- --ignored`（DATABASE_URL 待用户）
 - GUI 清单（v6 a-e 全保留）；真实 GLM 质量观察并裁定深入内容二次生成
